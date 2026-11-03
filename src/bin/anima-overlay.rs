@@ -37,9 +37,10 @@ use anima_engine_rs::cache::FrameCache;
 use anima_engine_rs::control::{ControlState, InputMode, MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
 use anima_engine_rs::state::SecondaryState;
 
+use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{
-    wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_surface,
+    wl_compositor, wl_output, wl_pointer, wl_region, wl_registry, wl_seat, wl_surface,
 };
 use smithay_client_toolkit::reexports::client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
@@ -181,7 +182,38 @@ struct OverlayState {
     pointer_inside: bool,
     /// Whether the pointer is currently over an opaque pixel.
     pointer_over: bool,
+    outputs: OutputState,
+    /// Output the surface was last seen on (used for clipping).
+    active_output: Option<wl_output::WlOutput>,
+    /// Last logical output size we saw, kept when the surface leaves the output.
+    last_output_size: Option<(u32, u32)>,
 }
+
+impl OutputHandler for OverlayState {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.outputs
+    }
+
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+
+    fn update_output(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        if let Some(info) = self.outputs.info(&output)
+            && let Some((width, height)) = info.logical_size
+        {
+            self.last_output_size = Some((width.max(1) as u32, height.max(1) as u32));
+        }
+        reapply_clamp(self);
+    }
+
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+}
+
+smithay_client_toolkit::delegate_output!(OverlayState);
 
 impl OverlayState {
     /// True when the surface-local point hits an opaque pixel of the frame
@@ -224,13 +256,23 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for OverlayState {
 
 impl Dispatch<wl_surface::WlSurface, ()> for OverlayState {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &wl_surface::WlSurface,
-        _: wl_surface::Event,
+        event: wl_surface::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        match event {
+            wl_surface::Event::Enter { output } => {
+                state.active_output = Some(output);
+                reapply_clamp(state);
+            }
+            // Keep the last known output on leave: the surface can leave the
+            // output mid-drag, and we still need its size to clamp it back.
+            wl_surface::Event::Leave { .. } => {}
+            _ => {}
+        }
     }
 }
 
@@ -306,11 +348,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                 // moving the pointer right/down must *increase* the margin.
                 let new_left = (f64::from(state.frame_margin_left) + dx).round() as i32;
                 let new_top = (f64::from(state.frame_margin_top) + dy).round() as i32;
-                state.margin_left = new_left.max(0);
-                state.margin_top = new_top.max(0);
-                state
-                    .layer_surface
-                    .set_margin(state.margin_top, 0, 0, state.margin_left);
+                let (left, top) = clamp_margin(state, new_left, new_top);
+                state.margin_left = left;
+                state.margin_top = top;
+                state.layer_surface.set_margin(top, 0, 0, left);
                 state.surface.commit();
             }
             wl_pointer::Event::Button {
@@ -537,6 +578,55 @@ fn apply_opaque_region(state: &mut OverlayState) {
     state.applied_rects = rects;
 }
 
+/// Logical size of the output the surface is on: the last output it entered,
+/// falling back to the last size seen and then to any output we have info for.
+fn output_size(state: &OverlayState) -> Option<(u32, u32)> {
+    let size_of = |output: &wl_output::WlOutput| {
+        state
+            .outputs
+            .info(output)
+            .and_then(|info| info.logical_size)
+            .map(|(width, height)| (width.max(1) as u32, height.max(1) as u32))
+    };
+    if let Some(size) = state.active_output.as_ref().and_then(size_of) {
+        return Some(size);
+    }
+    if let Some(size) = state.last_output_size {
+        return Some(size);
+    }
+    state.outputs.outputs().find_map(|output| size_of(&output))
+}
+
+/// Clamp a margin pair so the whole surface stays inside the output.
+fn clamp_margin(state: &OverlayState, left: i32, top: i32) -> (i32, i32) {
+    let Some(output) = output_size(state) else {
+        return (left.max(0), top.max(0));
+    };
+    clamp_position(left, top, scaled_size(state), output)
+}
+
+/// Keep the whole `surface` inside `output`; a surface larger than the output is
+/// pinned at the origin.
+fn clamp_position(left: i32, top: i32, surface: (u32, u32), output: (u32, u32)) -> (i32, i32) {
+    let max_left = output.0.saturating_sub(surface.0) as i32;
+    let max_top = output.1.saturating_sub(surface.1) as i32;
+    (left.clamp(0, max_left.max(0)), top.clamp(0, max_top.max(0)))
+}
+
+/// Clamp the current margins to the output, committing if they moved.
+fn reapply_clamp(state: &mut OverlayState) {
+    let (left, top) = clamp_margin(state, state.margin_left, state.margin_top);
+    if (left, top) == (state.margin_left, state.margin_top) {
+        return;
+    }
+    state.margin_left = left;
+    state.margin_top = top;
+    state.layer_surface.set_margin(top, 0, 0, left);
+    state.surface.commit();
+    eprintln!("[overlay] clamped position to ({left}, {top})");
+    persist_geometry(state);
+}
+
 /// The displayed surface size for the current scale and orientation.
 fn scaled_size(state: &OverlayState) -> (u32, u32) {
     let (disp_w, disp_h) = state.orientation.size(state.native_size);
@@ -564,6 +654,7 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
         state.surface.commit();
         state.applied_rects.clear();
         eprintln!("[overlay] scale {percent}% -> {width}x{height}");
+        reapply_clamp(state);
     }
     persist_geometry(state);
 }
@@ -589,6 +680,7 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
             "shown"
         }
     );
+    reapply_clamp(state);
 }
 
 /// Persist position, display size, click-through, lock and hover-hide for this
@@ -941,6 +1033,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=4, ())?;
     let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ())?;
     let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=9, ())?;
+    let outputs = OutputState::new(&globals, &qh);
 
     let surface = compositor.create_surface(&qh, ());
     let layer = if always_on_top {
@@ -996,6 +1089,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hidden: false,
         pointer_inside: false,
         pointer_over: false,
+        outputs,
+        active_output: None,
+        last_output_size: None,
     };
     event_queue.roundtrip(&mut state)?;
     // Configures the input region for the restored mode (Opaque builds the
@@ -1280,9 +1376,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if next.generation != control.generation {
                 control = next;
                 if control.reset {
-                    state.margin_left = pos_x;
-                    state.margin_top = pos_y;
-                    state.layer_surface.set_margin(pos_y, 0, 0, pos_x);
+                    let (left, top) = clamp_margin(&state, pos_x, pos_y);
+                    state.margin_left = left;
+                    state.margin_top = top;
+                    state.layer_surface.set_margin(top, 0, 0, left);
                     state.surface.commit();
                     // Reset restores the naive interaction state, like the
                     // Python `_reset_interactions`.
@@ -1315,6 +1412,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.height = h.max(1);
             wgpu_surface.configure(&device, &config);
             state.applied_rects.clear();
+            reapply_clamp(&mut state);
         }
 
         let now = Instant::now();
@@ -1402,4 +1500,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     persist_geometry(&state);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_position;
+
+    #[test]
+    fn clamp_keeps_surface_fully_on_screen() {
+        let output = (1920, 1080);
+        let surface = (256, 256);
+
+        assert_eq!(clamp_position(100, 100, surface, output), (100, 100));
+        assert_eq!(clamp_position(5000, 5000, surface, output), (1664, 824));
+        assert_eq!(clamp_position(-10, -10, surface, output), (0, 0));
+        assert_eq!(
+            clamp_position(i32::MAX, i32::MAX, surface, output),
+            (1664, 824)
+        );
+
+        // a surface larger than the output is pinned at the origin
+        assert_eq!(clamp_position(50, 50, (2000, 1200), output), (0, 0));
+    }
 }

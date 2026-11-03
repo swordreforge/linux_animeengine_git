@@ -89,6 +89,11 @@ Interaction and control:
   takes `--instance <animation path>` to target one; the portal shortcut handler
   also broadcasts (shortcut ids are per-instance). `secondary_instances.json`
   already holds one entry per path.
+- **in-screen clamping**: margins are clamped to `[0, output - surface]` so the
+  whole surface stays inside the output — at startup, on every drag motion, on
+  scale change, when showing from hidden, and after a configure. The output size
+  comes from SCTK's `OutputState` (the output the surface last entered; the last
+  known size is kept when the surface leaves it mid-drag).
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
   (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
@@ -163,6 +168,12 @@ Interaction and control:
   `input: click-through` in **both** logs, while `--instance <p1> mode full` only
   affected the first and `--instance <p2> scale 50` only the second; a broadcast
   `quit` exited both with rc 0, and both trays registered.
+- In-screen clamping: seeding an off-screen position (5000, 5000) for a 593×412
+  image logged `clamped position to (1327, 668)` — i.e. it detected the
+  1920×1080 output — and wrote the corrected geometry back to
+  `secondary_instances.json`; an on-screen (100, 100) seed was left untouched.
+  `clamp_position` unit tests cover the bounds, negatives and a surface larger
+  than the output.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -301,4 +312,4 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
   per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
   geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
-  → 1x1 keep-alive hide/show → multi-instance.
+  → 1x1 keep-alive hide/show → multi-instance → in-screen clamping.
