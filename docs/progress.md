@@ -77,6 +77,11 @@ Interaction and control:
   `rotation`/`flip_h`/`flip_v` (shader UV transform, shared with the hit-test and
   the per-pixel input region so all three agree); `click_through` and `locked`
   are written back, the rest are read at startup
+- **show/hide**: hiding resizes the layer surface to **1x1** instead of unmapping
+  it, so the surface — and therefore the render loop, tray and control channel —
+  stays alive (the pattern Wayland needs; an unmapped surface cannot come back);
+  showing restores the scaled size. Tray "Visible", `anima-overlay-ctl
+  hide|show|toggle-hidden`, `Mod+Alt+H`
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
   (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
@@ -142,6 +147,10 @@ Interaction and control:
   quarters 1/2/3, each built its per-pixel region (990 rects) and quit cleanly;
   `Orientation` unit tests cover the inverse mapping, the axis swap and rect
   remapping.
+- Hide/show keep-alive: `hide` logged `hidden (1x1 keep-alive)`, and *while
+  hidden* the overlay still applied `scale 75% (hidden)`, `input: full surface`
+  and `show` → `shown`, then quit cleanly — the 1x1 surface keeps the event loop
+  and control channel alive, matching the live2d-rs approach.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -169,9 +178,12 @@ Interaction and control:
 - [x] Wire the remaining `Instance` fields: `click_through` (restored + written
       back), `locked`, `fps`, `always_on_top`, `hover_hide`,
       `rotation`/`flip_h`/`flip_v`
-- [ ] `hover_hide` fidelity: the Python hid the window and kept tracking the
-      global cursor; on Wayland we keep the input region installed so pointer
-      events arrive, so clicks are still captured while the overlay is hidden
+- [x] Show/hide via the 1x1 keep-alive (surface stays mapped, so the tray and CLI
+      keep working while hidden)
+- [ ] `hover_hide` fidelity: it has to track the cursor *while* the overlay is
+      hidden, which needs a global pointer on Wayland (a 1x1 surface cannot see
+      the cursor elsewhere), so today the input region stays installed and clicks
+      are still captured while hidden
 - [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
       largely covered by the tray
 - [ ] Multi-instance: one process per animation (or multiple surfaces)
@@ -221,6 +233,8 @@ Interaction and control:
 - `rotation` is honoured as quarter turns (rounded to the nearest 90°); other
   angles are not supported. `fps` defaults to 0 (native frame delays) rather than
   the Python's fixed 15 fps timer.
+- Hiding uses a 1x1 surface. A few compositors dislike tiny surfaces (live2d-rs
+  falls back to 50x50 or `set_minimized` on GNOME/KDE); niri is fine with 1x1.
 - The control file is read-modify-written by tray and portal without a lock, so a
   rare concurrent toggle could lose an update.
 - Overlay is Wayland-only (layer-shell); X11/Windows not targeted yet.
@@ -252,4 +266,5 @@ anima-overlay-ctl scale 50                         # shrink the overlay to 50%
 - Commit history: pure core → workshop RE + scanner → Steam bridge → overlay
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
   per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
-  geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation).
+  geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
+  → 1x1 keep-alive hide/show.

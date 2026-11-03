@@ -6,6 +6,7 @@
 //! anima-overlay-ctl mode <full|opaque|pass-through>
 //! anima-overlay-ctl scale <percent|up|down>         # 10-100%, never upscales
 //! anima-overlay-ctl lock | unlock                   # disable/enable dragging
+//! anima-overlay-ctl hide | show | toggle-hidden     # hide keeps the surface alive (1x1)
 //! anima-overlay-ctl reset                           # initial position + native size
 //! anima-overlay-ctl quit
 //! anima-overlay-ctl status
@@ -48,12 +49,17 @@ fn main() -> ExitCode {
         },
         Some("lock") => update(&path, |state| state.set_locked(true)),
         Some("unlock") => update(&path, |state| state.set_locked(false)),
+        Some("hide") => update(&path, |state| state.set_hidden(true)),
+        Some("show") => update(&path, |state| state.set_hidden(false)),
+        Some("toggle-hidden") => update(&path, ControlState::toggle_hidden),
         Some("status") => {
             status(&path);
             Ok(())
         }
         _ => {
-            return usage("<toggle|mode <m>|scale <s>|lock|unlock|reset|quit|status>");
+            return usage(
+                "<toggle|toggle-hidden|mode <m>|scale <s>|lock|unlock|hide|show|reset|quit|status>",
+            );
         }
     };
 
@@ -88,6 +94,7 @@ fn status(path: &Path) {
     println!("mode:       {mode}");
     println!("scale:      {}%", state.scale_percent);
     println!("locked:     {}", state.locked);
+    println!("hidden:     {}", state.hidden);
     println!("generation: {}", state.generation);
     println!("file:       {}", path.display());
 }

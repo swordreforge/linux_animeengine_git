@@ -40,6 +40,9 @@ anima-overlay-ctl scale up            # +10%
 anima-overlay-ctl scale down          # -10%
 anima-overlay-ctl lock                # disable dragging (persisted)
 anima-overlay-ctl unlock
+anima-overlay-ctl hide                # hide (surface stays alive at 1x1)
+anima-overlay-ctl show
+anima-overlay-ctl toggle-hidden
 anima-overlay-ctl reset              # initial position + native size + opaque input
 anima-overlay-ctl quit
 anima-overlay-ctl status
@@ -58,6 +61,7 @@ binds {
     Mod+Alt+O       { spawn "/home/you/.local/bin/anima-overlay-ctl" "toggle"; }
     Mod+Alt+Equal   { spawn "/home/you/.local/bin/anima-overlay-ctl" "scale" "up"; }
     Mod+Alt+Minus   { spawn "/home/you/.local/bin/anima-overlay-ctl" "scale" "down"; }
+    Mod+Alt+H       { spawn "/home/you/.local/bin/anima-overlay-ctl" "toggle-hidden"; }
     Mod+Alt+R       { spawn "/home/you/.local/bin/anima-overlay-ctl" "reset"; }
     Mod+Alt+Shift+Q { spawn "/home/you/.local/bin/anima-overlay-ctl" "quit"; }
 }
@@ -68,12 +72,21 @@ The `Mod+Alt` tier is chosen deliberately: a typical niri keymap already binds
 reload, compositor quit, reset-window-height). niri can only override a bind, not
 unbind it, so reusing those would silently break those functions.
 
+## Show / hide
+
+Hiding does **not** unmap the surface: the layer surface is resized to **1x1**,
+which keeps it mapped so the render loop, tray and control channel stay alive
+(an unmapped Wayland surface cannot be brought back). Showing restores the
+scaled size. This is the live2d-rs pattern; a few compositors dislike tiny
+surfaces (live2d-rs falls back to 50x50 / `set_minimized` on GNOME/KDE), but
+niri is fine with 1x1.
+
 ## Tray
 
 The overlay registers a `StatusNotifierItem`. niri has no tray host by default —
-run one (e.g. `waybar` with the `tray` module) to see the icon. The menu has an
-"Input" submenu (full / opaque / click-through) plus "Reset position and
-interaction" and "Quit overlay".
+run one (e.g. `waybar` with the `tray` module) to see the icon. The menu has
+"Input" and "Size" submenus, "Visible" and "Lock position" checkmarks, plus
+"Reset position and interaction" and "Quit overlay".
 
 ## Portal global shortcuts
 

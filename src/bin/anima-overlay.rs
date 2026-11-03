@@ -175,6 +175,8 @@ struct OverlayState {
     locked: bool,
     /// Hide the surface while the pointer is over an opaque pixel.
     hover_hide: bool,
+    /// Hidden via the 1x1 keep-alive (surface stays mapped).
+    hidden: bool,
     /// Whether the pointer is currently over the surface.
     pointer_inside: bool,
     /// Whether the pointer is currently over an opaque pixel.
@@ -535,6 +537,16 @@ fn apply_opaque_region(state: &mut OverlayState) {
     state.applied_rects = rects;
 }
 
+/// The displayed surface size for the current scale and orientation.
+fn scaled_size(state: &OverlayState) -> (u32, u32) {
+    let (disp_w, disp_h) = state.orientation.size(state.native_size);
+    let percent = u64::from(state.scale_percent);
+    (
+        (u64::from(disp_w) * percent / 100).max(1) as u32,
+        (u64::from(disp_h) * percent / 100).max(1) as u32,
+    )
+}
+
 /// Resize the surface to `percent` of the native frame size. Only shrinking is
 /// allowed (clamped at 100%), so the GPU can sample the frame texture down and
 /// no resampling is ever required.
@@ -544,14 +556,39 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
         return;
     }
     state.scale_percent = percent;
-    let (disp_w, disp_h) = state.orientation.size(state.native_size);
-    let width = (u64::from(disp_w) * u64::from(percent) / 100).max(1) as u32;
-    let height = (u64::from(disp_h) * u64::from(percent) / 100).max(1) as u32;
+    if state.hidden {
+        eprintln!("[overlay] scale {percent}% (hidden)");
+    } else {
+        let (width, height) = scaled_size(state);
+        state.layer_surface.set_size(width, height);
+        state.surface.commit();
+        state.applied_rects.clear();
+        eprintln!("[overlay] scale {percent}% -> {width}x{height}");
+    }
+    persist_geometry(state);
+}
+
+/// Show or hide the overlay. Hiding resizes the layer surface to 1x1 instead of
+/// unmapping it: the surface — and therefore our event loop, tray and pointer
+/// handling — stays alive, which Wayland needs, since an unmapped surface cannot
+/// be brought back.
+fn apply_hidden(state: &mut OverlayState, hidden: bool) {
+    if state.hidden == hidden {
+        return;
+    }
+    state.hidden = hidden;
+    let (width, height) = if hidden { (1, 1) } else { scaled_size(state) };
     state.layer_surface.set_size(width, height);
     state.surface.commit();
     state.applied_rects.clear();
-    eprintln!("[overlay] scale {percent}% -> {width}x{height}");
-    persist_geometry(state);
+    eprintln!(
+        "[overlay] {}",
+        if hidden {
+            "hidden (1x1 keep-alive)"
+        } else {
+            "shown"
+        }
+    );
 }
 
 /// Persist position, display size, click-through, lock and hover-hide for this
@@ -671,6 +708,14 @@ impl ksni::Tray for OverlayTray {
                 checked: state.locked,
                 activate: Box::new(|tray: &mut Self| {
                     write_control(&tray.control_path, ControlState::toggle_locked);
+                }),
+                ..Default::default()
+            }),
+            MenuItem::Checkmark(CheckmarkItem {
+                label: "Visible".into(),
+                checked: !state.hidden,
+                activate: Box::new(|tray: &mut Self| {
+                    write_control(&tray.control_path, ControlState::toggle_hidden);
                 }),
                 ..Default::default()
             }),
@@ -910,6 +955,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fps,
         locked: initial_locked,
         hover_hide: initial_hover_hide,
+        hidden: false,
         pointer_inside: false,
         pointer_over: false,
     };
@@ -1213,6 +1259,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     state.locked = control.locked;
                     eprintln!("[overlay] locked {}", state.locked);
                 }
+                if control.hidden != state.hidden {
+                    apply_hidden(&mut state, control.hidden);
+                }
                 persist_geometry(&state);
                 if control.quit {
                     state.closed = true;
@@ -1257,8 +1306,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         );
 
-        // Hover-hide renders nothing while the cursor sits on a solid pixel.
-        let hide_now = state.hover_hide && state.pointer_over;
+        // Hidden (1x1 keep-alive) or hover-hide: draw nothing.
+        let hide_now = state.hidden || (state.hover_hide && state.pointer_over);
 
         match wgpu_surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)

@@ -62,6 +62,9 @@ pub struct ControlState {
     /// Whether dragging the overlay is disabled.
     #[serde(default)]
     pub locked: bool,
+    /// Whether the overlay is hidden (kept alive as a 1x1 surface).
+    #[serde(default)]
+    pub hidden: bool,
     /// One-shot: put the window back at its start position and native size.
     #[serde(default)]
     pub reset: bool,
@@ -79,6 +82,7 @@ impl Default for ControlState {
             input_mode: InputMode::default(),
             scale_percent: MAX_SCALE_PERCENT,
             locked: false,
+            hidden: false,
             reset: false,
             quit: false,
             generation: 0,
@@ -145,6 +149,20 @@ impl ControlState {
     pub fn toggle_locked(self) -> Self {
         let locked = !self.locked;
         self.set_locked(locked)
+    }
+
+    /// Show or hide the overlay (a hidden overlay stays alive at 1x1).
+    #[must_use]
+    pub fn set_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self.touched()
+    }
+
+    /// Flip the hidden flag.
+    #[must_use]
+    pub fn toggle_hidden(self) -> Self {
+        let hidden = !self.hidden;
+        self.set_hidden(hidden)
     }
 
     /// Toggle between per-pixel input (`Opaque`) and full click-through.
@@ -226,6 +244,7 @@ mod tests {
             input_mode: InputMode::PassThrough,
             scale_percent: 50,
             locked: true,
+            hidden: true,
             reset: false,
             quit: false,
             generation: 7,
@@ -297,5 +316,10 @@ mod tests {
         assert!(locked.locked);
         assert!(locked.generation > start.generation);
         assert!(!locked.request_reset().locked);
+
+        // hide/show round-trips
+        let hidden = start.clone().toggle_hidden();
+        assert!(hidden.hidden);
+        assert!(!hidden.clone().toggle_hidden().hidden);
     }
 }
