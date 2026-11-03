@@ -25,7 +25,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | `input_map` | `deteccionDeTeclas.py` / `funciones.py` | `configTeclas.json` bindings, activation modes, function catalog |
 | `cache` | `monoModule.py` | `FrameCache`: sha256 key, ZIP+PNG frames, LRU eviction |
 | `anim` | `nuevoMotor.py` | GIF/APNG/WebP decode → composited RGBA frames (via `image`), plus `alpha_at` / `alpha_hit` |
-| `control` | — (new) | cross-process overlay control file (`overlay_control.json`): click-through / reset / quit + generation |
+| `control` | — (new) | cross-process overlay control file (`overlay_control.json`): `InputMode` (full / opaque / pass-through) + reset / quit + generation |
 | `error` | — | shared error type |
 
 ### Workshop
@@ -55,11 +55,16 @@ Interaction and control:
   only starts a drag on an opaque pixel (`Animation::alpha_hit`, threshold 25,
   surface-local → frame pixel mapping), and motion updates the layer-shell
   margins (anchors are Top|Left, so margins grow with pointer movement)
-- **click-through**: an empty `wl_region` set as the input region makes the whole
-  surface pass clicks through (whole-surface toggle, like the original's
-  `WS_EX_TRANSPARENT`); restoring uses `set_input_region(None)`
-- **tray** (`ksni`): `StatusNotifierItem` menu with a "Click-through" checkmark,
-  "Reset position and interaction", and "Quit overlay"
+- **input modes** (`wl_region` input region):
+  - `Opaque` (default) — a region built from the visible frame's alpha, so only
+    solid pixels grab clicks and transparent ones pass through to what is below
+  - `PassThrough` — an empty region: the whole surface is click-through (the
+    original's `WS_EX_TRANSPARENT`)
+  - `Full` — `set_input_region(None)`: the whole surface is interactive
+  - the region is rebuilt when the visible frame's silhouette changes; identical
+    silhouettes skip the update, and >4096 rects fall back to the bounding box
+- **tray** (`ksni`): `StatusNotifierItem` menu with an "Input" submenu
+  (full / opaque / click-through), "Reset position and interaction", "Quit overlay"
 - **global shortcuts** (`ashpd`, `xdg-desktop-portal` GlobalShortcuts):
   `Ctrl+Shift+T` toggle click-through, `Ctrl+Shift+R` reset
 - tray/portal do not touch the overlay directly: they write
@@ -75,7 +80,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **99** default, **102** with `workshop-web,steamworks`.
+- `cargo test`: **102** default, **105** with `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
@@ -85,10 +90,16 @@ Interaction and control:
   - workshop `miku12.apng` (64 frames, 1500×1125, 412 MiB decoded) — 12.4 s
     first decode, then just-in-time upload playback
 - Control channel driven from the shell (same writes the tray/portal perform):
-  toggle → `[overlay] click-through on`, reset → `[overlay] reset to initial
+  mode changes → `[overlay] input: …`, reset → `[overlay] reset to initial
   position`, quit → process exits 0. Verified repeatable.
 - Tray registers on this machine (`tray registered (StatusNotifierItem)` —
   a StatusNotifierWatcher is running).
+- Per-pixel input verified live: switching modes through the control file logs
+  `input: opaque pixels (N rects)` / `input: click-through` / `input: full
+  surface`; the generated 256² test animation yields 64–83 rects and workshop
+  `miku12.apng` (1500×1125) yields 3289 rects (under the 4096 cap).
+- A real drag against the running overlay moved the margins as expected
+  (`drag start` → `drag end; margins …`), confirming alpha hit-testing in practice.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -100,10 +111,12 @@ Interaction and control:
 - [x] Per-pixel alpha hit-test (`Animation::alpha_hit`) — drag only on opaque pixels
 - [x] Drag to move
 - [ ] Persist position to `secondary_instances.json`
-- [x] Click-through toggle (empty input region)
-- [x] Tray (`ksni`) + portal GlobalShortcuts for toggle / reset / quit
-- [ ] Per-pixel transparent pass-through (input region from alpha spans; note the
-      surface then receives no pointer events over the excluded area)
+- [x] Click-through (empty input region) and per-pixel pass-through
+      (`Opaque` default: region from the frame's alpha; transparent areas pass
+      clicks through — note the surface then receives no pointer events there)
+- [x] Tray (`ksni`, Input submenu) + portal GlobalShortcuts for mode / reset / quit
+- [ ] Throttle or coarsen the per-pixel region for very detailed silhouettes
+      (>4096 rects currently collapse to a bounding box)
 - [ ] Recover hotkeys on niri: either install a portal backend implementing
       `GlobalShortcuts`, or ship a tiny `anima-overlay-ctl` CLI and bind it in
       `niri`'s config (tray already works today)
@@ -147,6 +160,8 @@ Interaction and control:
 - No live Steamworks validation (missing `libsteam_api.so` on this machine).
 - Portal GlobalShortcuts depends on a portal backend that implements it (this
   machine's does not); the tray is the working control path here.
+- Per-pixel input sends one region rectangle per opaque span whenever the
+  silhouette changes (thousands for detailed art); it is not throttled yet.
 - The control file is read-modify-written by tray and portal without a lock, so a
   rare concurrent toggle could lose an update.
 - Overlay is Wayland-only (layer-shell); X11/Windows not targeted yet.
@@ -156,8 +171,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (99 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (102)
+cargo test                                        # pure logic (102 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (105)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -171,4 +186,5 @@ cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
 
 - `docs/workshop-steamworks-re.md` — reverse engineering of the shipped build.
 - Commit history: pure core → workshop RE + scanner → Steam bridge → overlay
-  scaffold → multi-frame playback → alpha drag → tray + portal control.
+  scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
+  per-pixel input region.

@@ -11,8 +11,12 @@
 //! layer-shell margins.
 //!
 //! A StatusNotifierItem tray and `xdg-desktop-portal` GlobalShortcuts control
-//! the overlay from outside (toggle click-through, reset, quit) by writing
+//! the overlay from outside (input mode, reset, quit) by writing
 //! [`anima_engine_rs::control::ControlState`]; the render loop polls it.
+//!
+//! Input modes: `Opaque` (default) installs a `wl_region` built from the
+//! visible frame's alpha, so only solid pixels grab clicks; `PassThrough` makes
+//! the whole surface click-through; `Full` keeps the whole surface interactive.
 //!
 //! Usage:
 //! ```text
@@ -30,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use anima_engine_rs::anim::{Animation, Frame};
 use anima_engine_rs::cache::FrameCache;
-use anima_engine_rs::control::ControlState;
+use anima_engine_rs::control::{ControlState, InputMode};
 
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{
@@ -136,9 +140,15 @@ struct OverlayState {
     animation: Arc<Animation>,
     frame_index: usize,
     surface_size: (u32, u32),
-    /// Empty input region, used to make the whole surface click-through.
+    compositor: wl_compositor::WlCompositor,
+    qh: QueueHandle<OverlayState>,
+    /// Empty region used for full click-through.
     empty_region: wl_region::WlRegion,
-    click_through: bool,
+    input_mode: InputMode,
+    /// Region currently installed as the surface input region (kept alive).
+    region: Option<wl_region::WlRegion>,
+    /// Rectangles backing `region`, so redundant updates are skipped.
+    applied_rects: Vec<(i32, i32, i32, i32)>,
 }
 
 impl OverlayState {
@@ -419,27 +429,81 @@ fn test_animation() -> Animation {
     }
 }
 
-/// Apply the click-through flag to the surface's input region.
-fn apply_click_through(state: &mut OverlayState, on: bool) {
-    if state.click_through == on {
+/// Rectangle budget for the per-pixel input region. Beyond this the silhouette
+/// is simplified to its bounding box.
+const MAX_INPUT_RECTS: usize = 4096;
+
+/// Apply an input mode to the surface.
+fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
+    if state.input_mode == mode {
         return;
     }
-    state.click_through = on;
-    if on {
-        state.surface.set_input_region(Some(&state.empty_region));
-    } else {
-        state.surface.set_input_region(None);
+    state.input_mode = mode;
+    match mode {
+        InputMode::Full => {
+            state.region = None;
+            state.applied_rects.clear();
+            state.surface.set_input_region(None);
+            state.surface.commit();
+            eprintln!("[overlay] input: full surface");
+        }
+        InputMode::PassThrough => {
+            state.region = None;
+            state.applied_rects.clear();
+            state.surface.set_input_region(Some(&state.empty_region));
+            state.surface.commit();
+            eprintln!("[overlay] input: click-through");
+        }
+        InputMode::Opaque => {
+            apply_opaque_region(state);
+            eprintln!(
+                "[overlay] input: opaque pixels ({} rects)",
+                state.applied_rects.len()
+            );
+        }
     }
+}
+
+/// Build an input region from the opaque pixels of the visible frame and install
+/// it, so transparent pixels pass clicks through to whatever is below.
+/// Silhouettes wider than [`MAX_INPUT_RECTS`] fall back to their bounding box.
+fn apply_opaque_region(state: &mut OverlayState) {
+    let mut rects =
+        state
+            .animation
+            .alpha_rects(state.frame_index, state.surface_size, ALPHA_HIT_THRESHOLD);
+    if rects.len() > MAX_INPUT_RECTS
+        && let Some(bounds) = anima_engine_rs::anim::bounds_rect(&rects)
+    {
+        rects = vec![bounds];
+    }
+    if rects == state.applied_rects && state.region.is_some() {
+        return;
+    }
+
+    let region = state.compositor.create_region(&state.qh, ());
+    for &(x, y, w, h) in &rects {
+        region.add(x, y, w, h);
+    }
+    state.surface.set_input_region(Some(&region));
     state.surface.commit();
-    eprintln!("[overlay] click-through {}", if on { "on" } else { "off" });
+    if let Some(previous) = state.region.replace(region) {
+        previous.destroy();
+    }
+    state.applied_rects = rects;
 }
 
 /// Read-modify-write helper for the control file.
-fn write_control(path: &Path, action: fn(ControlState) -> ControlState) {
+fn write_control(path: &Path, action: impl FnOnce(ControlState) -> ControlState) {
     let next = action(ControlState::load(path));
     if let Err(err) = next.save(path) {
         eprintln!("[overlay] control write failed: {err}");
     }
+}
+
+/// Write a specific input mode to the control file.
+fn write_mode(path: &Path, mode: InputMode) {
+    write_control(path, move |state| state.set_input_mode(mode));
 }
 
 /// `StatusNotifierItem` (DBus) tray: lets the user toggle click-through, reset
@@ -465,16 +529,27 @@ impl ksni::Tray for OverlayTray {
     }
 
     fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
-        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem, SubMenu};
 
         let state = ControlState::load(&self.control_path);
-        vec![
+        let mode_item = |label: &str, mode: InputMode| {
             MenuItem::Checkmark(CheckmarkItem {
-                label: "Click-through".into(),
-                checked: state.click_through,
-                activate: Box::new(|tray: &mut Self| {
-                    write_control(&tray.control_path, ControlState::toggle_click_through);
+                label: label.into(),
+                checked: state.input_mode == mode,
+                activate: Box::new(move |tray: &mut Self| {
+                    write_mode(&tray.control_path, mode);
                 }),
+                ..Default::default()
+            })
+        };
+        vec![
+            MenuItem::SubMenu(SubMenu {
+                label: "Input".into(),
+                submenu: vec![
+                    mode_item("Full surface", InputMode::Full),
+                    mode_item("Opaque pixels only", InputMode::Opaque),
+                    mode_item("Click-through (all)", InputMode::PassThrough),
+                ],
                 ..Default::default()
             }),
             MenuItem::Separator,
@@ -641,8 +716,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         animation: Arc::clone(&animation),
         frame_index: 0,
         surface_size: (width, height),
+        compositor: compositor.clone(),
+        qh: qh.clone(),
         empty_region,
-        click_through: false,
+        input_mode: InputMode::Opaque,
+        region: None,
+        applied_rects: Vec::new(),
     };
     event_queue.roundtrip(&mut state)?;
 
@@ -912,7 +991,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let next = ControlState::load(&control_path);
             if next.generation != control.generation {
                 control = next;
-                apply_click_through(&mut state, control.click_through);
                 if control.reset {
                     state.margin_left = pos_x;
                     state.margin_top = pos_y;
@@ -920,6 +998,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     state.surface.commit();
                     eprintln!("[overlay] reset to initial position");
                 }
+                apply_input_mode(&mut state, control.input_mode);
                 if control.quit {
                     state.closed = true;
                     continue;
@@ -933,6 +1012,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.width = w.max(1);
             config.height = h.max(1);
             wgpu_surface.configure(&device, &config);
+            state.applied_rects.clear();
         }
 
         let now = Instant::now();
@@ -999,6 +1079,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // must use the frame that is actually visible.
         next_change = now + frame_delay(&animation.frames[index]);
         state.frame_index = index;
+        if state.input_mode == InputMode::Opaque {
+            apply_opaque_region(&mut state);
+        }
         index = (index + 1) % frame_count;
     }
 

@@ -94,6 +94,126 @@ impl Animation {
         }
         self.alpha_at(frame, fx, fy) >= threshold
     }
+
+    /// Rectangles `(x, y, w, h)` in surface-local coordinates covering the
+    /// opaque pixels of `frame`, where each frame pixel is stretched to
+    /// `surface`. Wayland input regions are rectangle lists, so rows with
+    /// identical opaque runs are merged into taller rectangles.
+    pub fn alpha_rects(
+        &self,
+        frame: usize,
+        surface: (u32, u32),
+        threshold: u8,
+    ) -> Vec<(i32, i32, i32, i32)> {
+        let (sw, sh) = surface;
+        if sw == 0 || sh == 0 || self.width == 0 || self.height == 0 {
+            return Vec::new();
+        }
+        let Some(frame) = self.frames.get(frame) else {
+            return Vec::new();
+        };
+
+        let mut rects = Vec::new();
+        let mut band: Vec<(u32, u32)> = Vec::new();
+        let mut band_start = 0u32;
+        let mut band_height = 0u32;
+
+        for y in 0..self.height {
+            let runs = row_runs(frame, y, self.width, threshold);
+            if y == 0 {
+                band = runs;
+                band_start = 0;
+                band_height = 1;
+            } else if runs == band {
+                band_height += 1;
+            } else {
+                emit_band(
+                    &band,
+                    band_start,
+                    band_height,
+                    surface,
+                    (self.width, self.height),
+                    &mut rects,
+                );
+                band = runs;
+                band_start = y;
+                band_height = 1;
+            }
+        }
+        emit_band(
+            &band,
+            band_start,
+            band_height,
+            surface,
+            (self.width, self.height),
+            &mut rects,
+        );
+        rects
+    }
+}
+
+/// Horizontal opaque runs `[x0, x1)` of one frame row.
+fn row_runs(frame: &Frame, y: u32, width: u32, threshold: u8) -> Vec<(u32, u32)> {
+    let row_start = y as usize * width as usize * 4;
+    let Some(row) = frame.rgba.get(row_start..row_start + width as usize * 4) else {
+        return Vec::new();
+    };
+
+    let mut runs = Vec::new();
+    let mut start: Option<u32> = None;
+    for (x, pixel) in row.chunks_exact(4).enumerate() {
+        let solid = pixel[3] >= threshold;
+        match (solid, start) {
+            (true, None) => start = Some(x as u32),
+            (false, Some(from)) => {
+                runs.push((from, x as u32));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        runs.push((from, width));
+    }
+    runs
+}
+
+/// Scale a merged row band to surface coordinates and append its rectangles.
+fn emit_band(
+    runs: &[(u32, u32)],
+    y0: u32,
+    height: u32,
+    surface: (u32, u32),
+    frame: (u32, u32),
+    rects: &mut Vec<(i32, i32, i32, i32)>,
+) {
+    if runs.is_empty() {
+        return;
+    }
+    let (sw, sh) = surface;
+    let (fw, fh) = frame;
+    let sy = (u64::from(y0) * u64::from(sh) / u64::from(fh)) as i32;
+    let sy_end = (u64::from(y0 + height) * u64::from(sh) / u64::from(fh)) as i32;
+    let rect_height = (sy_end - sy).max(1);
+    for &(x0, x1) in runs {
+        let sx = (u64::from(x0) * u64::from(sw) / u64::from(fw)) as i32;
+        let sx_end = (u64::from(x1) * u64::from(sw) / u64::from(fw)) as i32;
+        rects.push((sx, sy, (sx_end - sx).max(1), rect_height));
+    }
+}
+
+/// Smallest rectangle containing all `rects`.
+pub fn bounds_rect(rects: &[(i32, i32, i32, i32)]) -> Option<(i32, i32, i32, i32)> {
+    let mut iter = rects.iter();
+    let &(x, y, w, h) = iter.next()?;
+    let (mut x0, mut y0, mut x1, mut y1) = (x, y, x + w, y + h);
+    for &(x, y, w, h) in iter {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x + w);
+        y1 = y1.max(y + h);
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
 }
 
 /// A decoder that turns a file into a composited [`Animation`].
@@ -575,5 +695,75 @@ mod tests {
 
         assert_eq!(anim.alpha_at(0, 0, 0), 255);
         assert_eq!(anim.alpha_at(0, 5, 5), 0);
+    }
+
+    #[test]
+    fn alpha_rects_merges_and_scales() {
+        // solid 3x2 block → one rectangle
+        let solid = Animation {
+            width: 3,
+            height: 2,
+            frames: vec![Frame {
+                rgba: vec![255; 3 * 2 * 4],
+                delay_ms: 0,
+            }],
+        };
+        assert_eq!(solid.alpha_rects(0, (3, 2), 25), vec![(0, 0, 3, 2)]);
+
+        // diagonal 2x2 → two single-pixel rectangles
+        let diagonal = Animation {
+            width: 2,
+            height: 2,
+            frames: vec![Frame {
+                rgba: vec![255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 255],
+                delay_ms: 0,
+            }],
+        };
+        assert_eq!(
+            diagonal.alpha_rects(0, (2, 2), 25),
+            vec![(0, 0, 1, 1), (1, 1, 1, 1)]
+        );
+
+        // fully transparent → no rectangles
+        let empty = Animation {
+            width: 2,
+            height: 2,
+            frames: vec![Frame {
+                rgba: vec![0; 2 * 2 * 4],
+                delay_ms: 0,
+            }],
+        };
+        assert!(empty.alpha_rects(0, (2, 2), 25).is_empty());
+
+        // surface stretched 2x
+        let half = Animation {
+            width: 2,
+            height: 1,
+            frames: vec![Frame {
+                rgba: vec![255, 0, 0, 255, 0, 255, 0, 0],
+                delay_ms: 0,
+            }],
+        };
+        assert_eq!(half.alpha_rects(0, (4, 2), 25), vec![(0, 0, 2, 2)]);
+
+        // below threshold → transparent
+        let faint = Animation {
+            width: 1,
+            height: 1,
+            frames: vec![Frame {
+                rgba: vec![0, 0, 0, 10],
+                delay_ms: 0,
+            }],
+        };
+        assert!(faint.alpha_rects(0, (1, 1), 25).is_empty());
+    }
+
+    #[test]
+    fn bounds_rect_wraps_all() {
+        assert_eq!(bounds_rect(&[]), None);
+        assert_eq!(
+            bounds_rect(&[(2, 3, 1, 1), (0, 0, 2, 2)]),
+            Some((0, 0, 3, 4))
+        );
     }
 }
