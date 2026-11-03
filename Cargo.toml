@@ -1,0 +1,26 @@
+[package]
+name = "anima-engine-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Rust rewrite of AnimaEngine — pure logic core (animation state, frame cache, preferences, i18n)."
+license = "MIT"
+
+[features]
+default = []
+# Enables the Steam Web API adapter (`workshop_web::WorkshopWeb`).
+workshop-web = ["dep:reqwest"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+image = { version = "0.25", default-features = false, features = ["gif", "png", "webp"] }
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+gif = "0.13"
+png = "0.17"
+image-webp = "0.2"
