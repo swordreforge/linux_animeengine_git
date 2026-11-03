@@ -1,22 +1,26 @@
 //! `anima-overlay` — minimal always-on-top overlay scaffold.
 //!
 //! Wayland layer-shell (`zwlr_layer_shell_v1`, **Overlay** layer) + a `wgpu`
-//! transparent surface, rendering one frame of an animation (or a generated
-//! test pattern such as `anima-overlay`) so the pipeline can be verified on
-//! niri/KDE/wlroots.
+//! transparent surface. It plays an animation sequence honouring each frame's
+//! `delay_ms`, using [`FrameCache`] so a file is only decoded once and then
+//! loaded from the cache on later runs.
 //!
 //! Usage:
 //! ```text
 //! cargo run --features overlay --bin anima-overlay -- [animation.gif|.apng|.webp]
 //! ```
 //!
-//! The process keeps the surface alive until closed by the compositor or
-//! Ctrl+C. Text/visual acceptance is manual.
+//! Without a path a generated multi-frame test pattern is shown. The process
+//! stays alive until closed by the compositor or Ctrl+C.
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use anima_engine_rs::anim::{Animation, Frame};
+use anima_engine_rs::cache::FrameCache;
 
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{
@@ -32,15 +36,20 @@ use smithay_client_toolkit::reexports::protocols_wlr::layer_shell::v1::client::{
 use wgpu::rwh::{RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle};
 use wgpu::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
-    BindingResource, BindingType, BlendState, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompositeAlphaMode, DeviceDescriptor, Extent3d, FragmentState,
-    LoadOp, MultisampleState, Operations, Origin3d, PipelineLayoutDescriptor, PresentMode,
-    PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
-    SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-    StoreOp, SurfaceConfiguration, SurfaceTargetUnsafe, TexelCopyBufferLayout,
-    TexelCopyTextureInfo, TextureAspect, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureSampleType, TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexState,
+    BindingResource, BindingType, BlendState, BufferBinding, BufferBindingType, BufferDescriptor,
+    BufferUsages, ColorTargetState, ColorWrites, CommandEncoderDescriptor, CompositeAlphaMode,
+    DeviceDescriptor, Extent3d, FragmentState, LoadOp, MultisampleState, Operations, Origin3d,
+    PipelineLayoutDescriptor, PresentMode, PrimitiveState, RenderPassColorAttachment,
+    RenderPassDescriptor, RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor,
+    ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, SurfaceConfiguration,
+    SurfaceTargetUnsafe, TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect,
+    TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
+    TextureViewDescriptor, TextureViewDimension, VertexState,
 };
+
+/// GPU budget for a fully pre-uploaded frame array. Larger animations fall back
+/// to uploading the current frame just in time.
+const ARRAY_BUDGET: u64 = 256 * 1024 * 1024;
 
 const SHADER: &str = r#"
 struct VsOut {
@@ -66,16 +75,31 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     return out;
 }
 
-@group(0) @binding(0) var src: texture_2d<f32>;
+struct FrameCtl {
+    layer: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
+@group(0) @binding(0) var src: texture_2d_array<f32>;
 @group(0) @binding(1) var smp: sampler;
+@group(0) @binding(2) var<uniform> ctl: FrameCtl;
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, smp, in.uv);
+    let c = textureSample(src, smp, in.uv, i32(ctl.layer));
     // The surface uses premultiplied alpha; premultiply the straight RGBA frame.
     return vec4<f32>(c.rgb * c.a, c.a);
 }
 "#;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FrameCtl {
+    layer: u32,
+    _pad: [u32; 3],
+}
 
 struct OverlayState {
     configured: Option<(u32, u32)>,
@@ -172,39 +196,100 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for OverlayState {
     }
 }
 
-/// Returns `(width, height, straight RGBA8)` for the first animation frame,
-/// or a generated test pattern when no path is given.
-fn load_frame(path: Option<&Path>) -> Result<(u32, u32, Vec<u8>), Box<dyn std::error::Error>> {
-    if let Some(path) = path {
-        let animation = anima_engine_rs::anim::decode(path)?;
-        let frame = animation.frames.first().ok_or("animation has no frames")?;
-        return Ok((animation.width, animation.height, frame.rgba.clone()));
+/// Load an animation, using the frame cache so a file is decoded only once.
+fn load_animation(path: Option<&Path>) -> Result<Arc<Animation>, Box<dyn std::error::Error>> {
+    let Some(path) = path else {
+        return Ok(Arc::new(test_animation()));
+    };
+
+    let cache = FrameCache::user_default();
+    if let Some(animation) = cache.read(path) {
+        eprintln!(
+            "[overlay] cache hit: {} frame(s), {}x{}",
+            animation.frame_count(),
+            animation.width,
+            animation.height
+        );
+        return Ok(Arc::new(animation));
     }
-    Ok(test_pattern())
+
+    let started = Instant::now();
+    let animation = Arc::new(anima_engine_rs::anim::decode(path)?);
+    eprintln!(
+        "[overlay] decoded {} frame(s), {}x{} in {:.2}s",
+        animation.frame_count(),
+        animation.width,
+        animation.height,
+        started.elapsed().as_secs_f32()
+    );
+
+    // Encode/write the cache in the background so playback is not blocked by
+    // PNG compression of large animations.
+    let cache_animation = Arc::clone(&animation);
+    let cache_path = path.to_path_buf();
+    std::thread::spawn(move || {
+        if let Err(err) = cache.write(&cache_path, &cache_animation) {
+            eprintln!("[overlay] cache write failed: {err}");
+        } else {
+            eprintln!(
+                "[overlay] cached {} frame(s)",
+                cache_animation.frame_count()
+            );
+        }
+    });
+
+    Ok(animation)
 }
 
-fn test_pattern() -> (u32, u32, Vec<u8>) {
+/// A small generated animation so the binary is useful with no arguments.
+fn test_animation() -> Animation {
     let (width, height) = (256u32, 256u32);
-    let mut rgba = vec![0u8; (width * height * 4) as usize];
-    let (cx, cy, radius) = (128.0f32, 128.0f32, 100.0f32);
-    for y in 0..height {
-        for x in 0..width {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let inside = (dx * dx + dy * dy).sqrt() <= radius;
-            let i = ((y * width + x) * 4) as usize;
-            rgba[i] = (x * 255 / width) as u8;
-            rgba[i + 1] = (y * 255 / height) as u8;
-            rgba[i + 2] = 200;
-            rgba[i + 3] = if inside { 255 } else { 0 };
+    let count = 24usize;
+    let mut frames = Vec::with_capacity(count);
+    for index in 0..count {
+        let t = index as f32 / count as f32;
+        let cx = 48.0 + t * 160.0;
+        let cy = 128.0 + (t * std::f32::consts::TAU).sin() * 48.0;
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                if (dx * dx + dy * dy).sqrt() <= 56.0 {
+                    let i = ((y * width + x) * 4) as usize;
+                    rgba[i] = (t * 255.0) as u8;
+                    rgba[i + 1] = ((1.0 - t) * 255.0) as u8;
+                    rgba[i + 2] = 220;
+                    rgba[i + 3] = 255;
+                }
+            }
         }
+        frames.push(Frame { rgba, delay_ms: 70 });
     }
-    (width, height, rgba)
+    Animation {
+        width,
+        height,
+        frames,
+    }
+}
+
+fn frame_delay(frame: &Frame) -> Duration {
+    let ms = if frame.delay_ms == 0 {
+        33
+    } else {
+        frame.delay_ms
+    };
+    Duration::from_millis(u64::from(ms))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).map(PathBuf::from);
-    let (mut frame_width, mut frame_height, rgba) = load_frame(path.as_deref())?;
+    let animation = load_animation(path.as_deref())?;
+    let frame_count = animation.frames.len();
+    if frame_count == 0 {
+        return Err("animation has no frames".into());
+    }
+    let (width, height) = (animation.width.max(1), animation.height.max(1));
     let (pos_x, pos_y) = (100i32, 100i32);
 
     let conn = Connection::connect_to_env()?;
@@ -224,7 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &qh,
         (),
     );
-    layer_surface.set_size(frame_width, frame_height);
+    layer_surface.set_size(width, height);
     layer_surface
         .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
@@ -267,6 +352,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }))?;
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default()))?;
 
+    let limits = adapter.limits();
+    if width > limits.max_texture_dimension_2d || height > limits.max_texture_dimension_2d {
+        return Err(format!(
+            "frame {width}x{height} exceeds max texture size {}",
+            limits.max_texture_dimension_2d
+        )
+        .into());
+    }
+
     let capabilities = wgpu_surface.get_capabilities(&adapter);
     let format = capabilities
         .formats
@@ -287,15 +381,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|m| *m == PresentMode::Fifo)
         .unwrap_or(capabilities.present_modes[0]);
 
-    if let Some((w, h)) = state.configured {
-        frame_width = w;
-        frame_height = h;
-    }
+    let (surface_width, surface_height) = state.configured.unwrap_or((width, height));
     let mut config = SurfaceConfiguration {
         usage: TextureUsages::RENDER_ATTACHMENT,
         format,
-        width: frame_width.max(1),
-        height: frame_height.max(1),
+        width: surface_width.max(1),
+        height: surface_height.max(1),
         present_mode,
         alpha_mode,
         view_formats: vec![],
@@ -303,13 +394,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     wgpu_surface.configure(&device, &config);
 
-    // --- frame texture + pipeline ------------------------------------------
+    // --- frame storage: whole array if it fits, else one re-uploaded layer --
+    let frame_bytes = u64::from(width) * u64::from(height) * 4;
+    let total_bytes = frame_bytes * frame_count as u64;
+    let use_array =
+        frame_count as u32 <= limits.max_texture_array_layers && total_bytes <= ARRAY_BUDGET;
+    let layers = if use_array { frame_count as u32 } else { 1 };
+    eprintln!(
+        "[overlay] {} frame(s) {}x{} — {:.1} MiB decoded, {}",
+        frame_count,
+        width,
+        height,
+        total_bytes as f64 / (1024.0 * 1024.0),
+        if use_array {
+            "array texture"
+        } else {
+            "just-in-time upload"
+        }
+    );
+
     let texture = device.create_texture(&TextureDescriptor {
-        label: Some("anima-frame"),
+        label: Some("anima-frames"),
         size: Extent3d {
-            width: frame_width.max(1),
-            height: frame_height.max(1),
-            depth_or_array_layers: 1,
+            width,
+            height,
+            depth_or_array_layers: layers,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -318,27 +427,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: Origin3d::ZERO,
-            aspect: TextureAspect::All,
-        },
-        &rgba,
-        TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(frame_width * 4),
-            rows_per_image: Some(frame_height),
-        },
-        Extent3d {
-            width: frame_width,
-            height: frame_height,
-            depth_or_array_layers: 1,
-        },
-    );
-    let texture_view = texture.create_view(&TextureViewDescriptor::default());
+    let upload_frame = |index: usize, layer: u32| {
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer,
+                },
+                aspect: TextureAspect::All,
+            },
+            &animation.frames[index].rgba,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    };
+    if use_array {
+        for index in 0..frame_count {
+            upload_frame(index, index as u32);
+        }
+    } else {
+        upload_frame(0, 0);
+    }
+
+    let texture_view = texture.create_view(&TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::D2Array),
+        ..Default::default()
+    });
     let sampler = device.create_sampler(&SamplerDescriptor::default());
+    let uniform = device.create_buffer(&BufferDescriptor {
+        label: Some("anima-frame-ctl"),
+        size: std::mem::size_of::<FrameCtl>() as u64,
+        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
 
     let shader = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("anima-shader"),
@@ -352,7 +484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 visibility: ShaderStages::FRAGMENT,
                 ty: BindingType::Texture {
                     sample_type: TextureSampleType::Float { filterable: true },
-                    view_dimension: TextureViewDimension::D2,
+                    view_dimension: TextureViewDimension::D2Array,
                     multisampled: false,
                 },
                 count: None,
@@ -361,6 +493,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 binding: 1,
                 visibility: ShaderStages::FRAGMENT,
                 ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
         ],
@@ -376,6 +518,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             BindGroupEntry {
                 binding: 1,
                 resource: BindingResource::Sampler(&sampler),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: &uniform,
+                    offset: 0,
+                    size: None,
+                }),
             },
         ],
     });
@@ -410,9 +560,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache: None,
     });
 
-    // --- present loop ------------------------------------------------------
-    let frame_interval = Duration::from_millis(33);
-    let mut last_tick = Instant::now();
+    // --- playback loop -----------------------------------------------------
+    let mut index = 0usize;
+    let mut next_change = Instant::now();
+    let mut uploaded_layer0 = 0usize;
+
     while !state.closed {
         event_queue.dispatch_pending(&mut state)?;
 
@@ -423,6 +575,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.height = h.max(1);
             wgpu_surface.configure(&device, &config);
         }
+
+        let now = Instant::now();
+        if now < next_change {
+            std::thread::sleep((next_change - now).min(Duration::from_millis(10)));
+            continue;
+        }
+
+        let layer = if use_array {
+            index as u32
+        } else {
+            if uploaded_layer0 != index {
+                upload_frame(index, 0);
+                uploaded_layer0 = index;
+            }
+            0
+        };
+        queue.write_buffer(
+            &uniform,
+            0,
+            bytemuck::bytes_of(&FrameCtl {
+                layer,
+                _pad: [0; 3],
+            }),
+        );
 
         match wgpu_surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -460,11 +636,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
 
-        let elapsed = last_tick.elapsed();
-        if elapsed < frame_interval {
-            std::thread::sleep(frame_interval - elapsed);
-        }
-        last_tick = Instant::now();
+        // The frame just presented stays up for its own delay.
+        next_change = now + frame_delay(&animation.frames[index]);
+        index = (index + 1) % frame_count;
     }
 
     Ok(())
