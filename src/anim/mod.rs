@@ -161,7 +161,7 @@ fn row_runs(frame: &Frame, y: u32, width: u32, threshold: u8) -> Vec<(u32, u32)>
 
     let mut runs = Vec::new();
     let mut start: Option<u32> = None;
-    for (x, pixel) in row.chunks_exact(4).enumerate() {
+    for (x, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
         let solid = pixel[3] >= threshold;
         match (solid, start) {
             (true, None) => start = Some(x as u32),
