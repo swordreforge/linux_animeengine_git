@@ -142,7 +142,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **108** default (106 lib + 2 CLI), **111** with
+- `cargo test`: **112** default (109 lib + 3 CLI), **115** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -334,8 +334,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (108 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (111)
+cargo test                                        # pure logic (112 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (115)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
