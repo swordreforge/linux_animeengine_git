@@ -94,6 +94,12 @@ Interaction and control:
   scale change, when showing from hidden, and after a configure. The output size
   comes from SCTK's `OutputState` (the output the surface last entered; the last
   known size is kept when the surface leaves it mid-drag).
+- **input-region updates**: generated in **surface space** (cost ∝ displayed area,
+  and it shares the display→native mapping with the hit-test), recomputed at most
+  every 3rd presented frame (a frame-count throttle, not a wall-clock timer), only
+  once for a static image, and force-refreshed on size changes. Above
+  `MAX_INPUT_RECTS` the sampling grid is coarsened (2x2, 4x4, ...) and only then
+  falls back to the bounding box.
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
   (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
@@ -174,6 +180,10 @@ Interaction and control:
   `secondary_instances.json`; an on-screen (100, 100) seed was left untouched.
   `clamp_position` unit tests cover the bounds, negatives and a surface larger
   than the output.
+- Region tuning: a 593×412 silhouette produced **990 rects at both 100% and 50%**
+  — the rectangle count follows edge complexity, not display scale — while the
+  surface-space scan costs 4× less at 50% (∝ area). Updates are throttled to every
+  3rd presented frame, and a static image is scanned once.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -189,8 +199,8 @@ Interaction and control:
       (`Opaque` default: region from the frame's alpha; transparent areas pass
       clicks through — note the surface then receives no pointer events there)
 - [x] Tray (`ksni`, Input submenu) + portal GlobalShortcuts for mode / reset / quit
-- [ ] Throttle or coarsen the per-pixel region for very detailed silhouettes
-      (>4096 rects currently collapse to a bounding box)
+- [x] Throttle the per-pixel region by frame count and coarsen the sampling grid
+      above `MAX_INPUT_RECTS` (bounding box only as a last resort)
 - [x] Recover hotkeys on niri: `anima-overlay-ctl` CLI + compositor keybinds
       (documented in `docs/overlay-control.md`); the portal path stays for
       backends that implement `GlobalShortcuts`
@@ -247,8 +257,9 @@ Interaction and control:
 - No live Steamworks validation (missing `libsteam_api.so` on this machine).
 - Portal GlobalShortcuts depends on a portal backend that implements it (this
   machine's does not); the tray is the working control path here.
-- Per-pixel input sends one region rectangle per opaque span whenever the
-  silhouette changes (thousands for detailed art); it is not throttled yet.
+- Per-pixel input still sends one region rectangle per edge span (thousands for
+  detailed art), and the count does not shrink with display scale; updates are
+  throttled but each update still carries the full list.
 - `secondary_instances.json` is read-modify-written per update without a lock, so
   two overlays saving at once can lose an update (as in the Python original).
 - The instance key is the canonical animation path, so moving/renaming a file
@@ -312,4 +323,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
   per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
   geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
-  → 1x1 keep-alive hide/show → multi-instance → in-screen clamping.
+  → 1x1 keep-alive hide/show → multi-instance → in-screen clamping →
+  frame-count region throttling/coarsening.

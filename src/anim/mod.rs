@@ -161,8 +161,13 @@ impl Animation {
             return false;
         }
         let (nu, nv) = orientation.display_to_native(sx / f64::from(sw), sy / f64::from(sh));
-        let fx = (nu * f64::from(self.width)).floor();
-        let fy = (nv * f64::from(self.height)).floor();
+        self.alpha_at_unit(frame, nu, nv, threshold)
+    }
+
+    /// Opaque test at native unit coordinates (0..1, origin top-left).
+    fn alpha_at_unit(&self, frame: usize, u: f64, v: f64, threshold: u8) -> bool {
+        let fx = (u * f64::from(self.width)).floor();
+        let fy = (v * f64::from(self.height)).floor();
         if fx < 0.0 || fy < 0.0 || fx >= f64::from(self.width) || fy >= f64::from(self.height) {
             return false;
         }
@@ -170,9 +175,9 @@ impl Animation {
     }
 
     /// Rectangles `(x, y, w, h)` in surface-local coordinates covering the
-    /// opaque pixels of `frame`, where each frame pixel is stretched to
-    /// `surface` and oriented by `orientation`. Wayland input regions are
-    /// rectangle lists, so rows with identical opaque runs are merged first.
+    /// opaque pixels of `frame`. The scan runs in **surface space** (each cell is
+    /// mapped back to a frame pixel), so its cost scales with the displayed size
+    /// rather than the native frame, and rows with identical runs are merged.
     pub fn alpha_rects(
         &self,
         frame: usize,
@@ -180,97 +185,110 @@ impl Animation {
         orientation: Orientation,
         threshold: u8,
     ) -> Vec<(i32, i32, i32, i32)> {
+        self.alpha_rects_step(frame, surface, orientation, threshold, 1)
+    }
+
+    /// Like [`Self::alpha_rects`] but samples `step`-pixel surface cells and
+    /// emits `step`-sized rectangles, to coarsen very detailed silhouettes.
+    pub fn alpha_rects_step(
+        &self,
+        frame: usize,
+        surface: (u32, u32),
+        orientation: Orientation,
+        threshold: u8,
+        step: u32,
+    ) -> Vec<(i32, i32, i32, i32)> {
         let (sw, sh) = surface;
+        let step = step.clamp(1, 32);
         if sw == 0 || sh == 0 || self.width == 0 || self.height == 0 {
             return Vec::new();
         }
-        let Some(frame) = self.frames.get(frame) else {
+        if self.frames.get(frame).is_none() {
             return Vec::new();
-        };
+        }
 
-        // Opaque row bands in native frame coordinates, merged vertically.
-        let mut bands: Vec<(i32, i32, i32, i32)> = Vec::new();
+        let cols = sw.div_ceil(step);
+        let rows = sh.div_ceil(step);
+        let surface_size = (sw, sh);
+
+        let mut rects: Vec<(i32, i32, i32, i32)> = Vec::new();
         let mut band: Vec<(u32, u32)> = Vec::new();
         let mut band_start = 0u32;
         let mut band_height = 0u32;
 
-        for y in 0..self.height {
-            let runs = row_runs(frame, y, self.width, threshold);
-            if y == 0 {
+        for gy in 0..rows {
+            let v = (f64::from((gy * step + step / 2).min(sh - 1)) + 0.5) / f64::from(sh);
+            let mut runs: Vec<(u32, u32)> = Vec::new();
+            let mut start: Option<u32> = None;
+            for gx in 0..cols {
+                let u = (f64::from((gx * step + step / 2).min(sw - 1)) + 0.5) / f64::from(sw);
+                let (nu, nv) = orientation.display_to_native(u, v);
+                let solid = self.alpha_at_unit(frame, nu, nv, threshold);
+                match (solid, start) {
+                    (true, None) => start = Some(gx),
+                    (false, Some(from)) => {
+                        runs.push((from, gx));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(from) = start {
+                runs.push((from, cols));
+            }
+
+            if gy == 0 {
                 band = runs;
                 band_start = 0;
                 band_height = 1;
             } else if runs == band {
                 band_height += 1;
             } else {
-                emit_band(&band, band_start, band_height, &mut bands);
+                emit_surface_band(
+                    &band,
+                    band_start,
+                    band_height,
+                    step,
+                    surface_size,
+                    &mut rects,
+                );
                 band = runs;
-                band_start = y;
+                band_start = gy;
                 band_height = 1;
             }
         }
-        emit_band(&band, band_start, band_height, &mut bands);
-
-        bands
-            .into_iter()
-            .map(|rect| map_frame_rect(rect, (self.width, self.height), surface, orientation))
-            .collect()
+        emit_surface_band(
+            &band,
+            band_start,
+            band_height,
+            step,
+            surface_size,
+            &mut rects,
+        );
+        rects
     }
 }
 
-/// Horizontal opaque runs `[x0, x1)` of one frame row.
-fn row_runs(frame: &Frame, y: u32, width: u32, threshold: u8) -> Vec<(u32, u32)> {
-    let row_start = y as usize * width as usize * 4;
-    let Some(row) = frame.rgba.get(row_start..row_start + width as usize * 4) else {
-        return Vec::new();
-    };
-
-    let mut runs = Vec::new();
-    let mut start: Option<u32> = None;
-    for (x, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
-        let solid = pixel[3] >= threshold;
-        match (solid, start) {
-            (true, None) => start = Some(x as u32),
-            (false, Some(from)) => {
-                runs.push((from, x as u32));
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(from) = start {
-        runs.push((from, width));
-    }
-    runs
-}
-
-/// Append the rectangles of one merged frame row band, in native coordinates.
-fn emit_band(runs: &[(u32, u32)], y0: u32, height: u32, rects: &mut Vec<(i32, i32, i32, i32)>) {
-    for &(x0, x1) in runs {
-        rects.push((x0 as i32, y0 as i32, (x1 - x0) as i32, height as i32));
-    }
-}
-
-/// Map an axis-aligned native rectangle onto the surface, honouring the
-/// orientation; quarter turns and mirrors keep it axis-aligned.
-fn map_frame_rect(
-    rect: (i32, i32, i32, i32),
-    frame: (u32, u32),
+/// Append the rectangles of one merged surface-space row band.
+fn emit_surface_band(
+    runs: &[(u32, u32)],
+    gy: u32,
+    gh: u32,
+    step: u32,
     surface: (u32, u32),
-    orientation: Orientation,
-) -> (i32, i32, i32, i32) {
-    let (fw, fh) = (f64::from(frame.0), f64::from(frame.1));
-    let (sw, sh) = (f64::from(surface.0), f64::from(surface.1));
-    let (x, y, w, h) = rect;
-    let (a, b) = (
-        orientation.native_to_display(x as f64 / fw, y as f64 / fh),
-        orientation.native_to_display((x + w) as f64 / fw, (y + h) as f64 / fh),
-    );
-    let x0 = (a.0.min(b.0) * sw).floor() as i32;
-    let y0 = (a.1.min(b.1) * sh).floor() as i32;
-    let x1 = (a.0.max(b.0) * sw).ceil() as i32;
-    let y1 = (a.1.max(b.1) * sh).ceil() as i32;
-    (x0, y0, (x1 - x0).max(1), (y1 - y0).max(1))
+    rects: &mut Vec<(i32, i32, i32, i32)>,
+) {
+    let (sw, sh) = surface;
+    for &(x0, x1) in runs {
+        let left = x0 * step;
+        let top = gy * step;
+        rects.push((
+            left as i32,
+            top as i32,
+            ((x1 * step).min(sw).saturating_sub(left)) as i32,
+            (((gy + gh) * step).min(sh).saturating_sub(top)) as i32,
+        ));
+    }
 }
 
 /// Smallest rectangle containing all `rects`.

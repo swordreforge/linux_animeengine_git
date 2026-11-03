@@ -187,6 +187,10 @@ struct OverlayState {
     active_output: Option<wl_output::WlOutput>,
     /// Last logical output size we saw, kept when the surface leaves the output.
     last_output_size: Option<(u32, u32)>,
+    /// Surface size changed: force the next input-region update.
+    region_dirty: bool,
+    /// Visible content changed: present a frame.
+    visual_dirty: bool,
 }
 
 impl OutputHandler for OverlayState {
@@ -512,9 +516,13 @@ fn test_animation() -> Animation {
     }
 }
 
-/// Rectangle budget for the per-pixel input region. Beyond this the silhouette
-/// is simplified to its bounding box.
+/// Rectangle budget for the per-pixel input region. Beyond this the sampling
+/// grid is coarsened (2x2, 4x4, ...) before falling back to a bounding box.
 const MAX_INPUT_RECTS: usize = 4096;
+
+/// Recompute the input region every N presented frames. Frame-count based on
+/// purpose: a wall-clock timer would make the hit area lag by a variable amount.
+const REGION_UPDATE_FRAMES: u64 = 3;
 
 /// Apply an input mode to the surface.
 fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
@@ -548,15 +556,30 @@ fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
 }
 
 /// Build an input region from the opaque pixels of the visible frame and install
-/// it, so transparent pixels pass clicks through to whatever is below.
-/// Silhouettes wider than [`MAX_INPUT_RECTS`] fall back to their bounding box.
+/// it, so transparent pixels pass clicks through to whatever is below. Very
+/// detailed silhouettes are sampled on a coarser grid, then fall back to their
+/// bounding box.
 fn apply_opaque_region(state: &mut OverlayState) {
-    let mut rects = state.animation.alpha_rects(
+    // Coarsen the sampling grid while the silhouette needs too many rectangles;
+    // this keeps its shape instead of collapsing straight to a bounding box.
+    let mut step = 1u32;
+    let mut rects = state.animation.alpha_rects_step(
         state.frame_index,
         state.surface_size,
         state.orientation,
         ALPHA_HIT_THRESHOLD,
+        step,
     );
+    while rects.len() > MAX_INPUT_RECTS && step < 32 {
+        step *= 2;
+        rects = state.animation.alpha_rects_step(
+            state.frame_index,
+            state.surface_size,
+            state.orientation,
+            ALPHA_HIT_THRESHOLD,
+            step,
+        );
+    }
     if rects.len() > MAX_INPUT_RECTS
         && let Some(bounds) = anima_engine_rs::anim::bounds_rect(&rects)
     {
@@ -646,6 +669,8 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
         return;
     }
     state.scale_percent = percent;
+    state.visual_dirty = true;
+    state.region_dirty = true;
     if state.hidden {
         eprintln!("[overlay] scale {percent}% (hidden)");
     } else {
@@ -668,6 +693,8 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
         return;
     }
     state.hidden = hidden;
+    state.visual_dirty = true;
+    state.region_dirty = true;
     let (width, height) = if hidden { (1, 1) } else { scaled_size(state) };
     state.layer_surface.set_size(width, height);
     state.surface.commit();
@@ -1092,6 +1119,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         outputs,
         active_output: None,
         last_output_size: None,
+        region_dirty: false,
+        visual_dirty: true,
     };
     event_queue.roundtrip(&mut state)?;
     // Configures the input region for the restored mode (Opaque builds the
@@ -1357,6 +1386,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut index = 0usize;
     let mut next_change = Instant::now();
     let mut uploaded_layer0 = 0usize;
+    let mut presented: u64 = 0;
+    let mut last_presented: Option<usize> = None;
+    let mut last_hide = false;
+    let mut region_index: Option<usize> = None;
 
     while !state.closed {
         // Snapshot before dispatch: every Motion in this batch shares one base.
@@ -1430,57 +1463,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             0
         };
-        queue.write_buffer(
-            &uniform,
-            0,
-            bytemuck::bytes_of(&FrameCtl {
-                layer,
-                _pad: [0; 3],
-                uv_mat,
-                uv_off,
-                _pad2: [0.0; 2],
-            }),
-        );
-
         // Hidden (1x1 keep-alive) or hover-hide: draw nothing.
         let hide_now = state.hidden || (state.hover_hide && state.pointer_over);
 
-        match wgpu_surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                let view = frame.texture.create_view(&TextureViewDescriptor::default());
-                let mut encoder =
-                    device.create_command_encoder(&CommandEncoderDescriptor::default());
-                {
-                    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                        label: Some("anima-pass"),
-                        color_attachments: &[Some(RenderPassColorAttachment {
-                            view: &view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: Operations {
-                                load: LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                store: StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    pass.set_pipeline(&pipeline);
-                    pass.set_bind_group(0, &bind_group, &[]);
-                    if !hide_now {
-                        pass.draw(0..3, 0..1);
+        // Skip presenting when the visible content did not change (a static
+        // image) or while hidden; the compositor keeps the last frame.
+        let present_now = !state.hidden
+            && (state.visual_dirty || last_presented != Some(index) || hide_now != last_hide);
+        if present_now {
+            queue.write_buffer(
+                &uniform,
+                0,
+                bytemuck::bytes_of(&FrameCtl {
+                    layer,
+                    _pad: [0; 3],
+                    uv_mat,
+                    uv_off,
+                    _pad2: [0.0; 2],
+                }),
+            );
+
+            match wgpu_surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                    let view = frame.texture.create_view(&TextureViewDescriptor::default());
+                    let mut encoder =
+                        device.create_command_encoder(&CommandEncoderDescriptor::default());
+                    {
+                        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                            label: Some("anima-pass"),
+                            color_attachments: &[Some(RenderPassColorAttachment {
+                                view: &view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: Operations {
+                                    load: LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                    store: StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        pass.set_pipeline(&pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        if !hide_now {
+                            pass.draw(0..3, 0..1);
+                        }
                     }
+                    queue.submit(std::iter::once(encoder.finish()));
+                    frame.present();
                 }
-                queue.submit(std::iter::once(encoder.finish()));
-                frame.present();
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    wgpu_surface.configure(&device, &config);
+                }
+                _ => {}
             }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                wgpu_surface.configure(&device, &config);
-            }
-            _ => {}
+
+            last_presented = Some(index);
+            last_hide = hide_now;
+            state.visual_dirty = false;
         }
 
         // The frame just presented stays up for its own delay; hit-testing
@@ -1490,9 +1533,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if state.pointer_inside {
             state.pointer_over = state.opaque_at(state.pointer_pos.0, state.pointer_pos.1);
         }
-        if state.input_mode == InputMode::Opaque {
+        // Input-region updates are throttled by frame count (not by wall-clock
+        // delay); a size change forces one immediately, and a static image is
+        // only scanned once.
+        if state.input_mode == InputMode::Opaque
+            && (state.region_dirty
+                || (region_index != Some(index) && presented.is_multiple_of(REGION_UPDATE_FRAMES)))
+        {
             apply_opaque_region(&mut state);
+            state.region_dirty = false;
+            region_index = Some(index);
         }
+        presented = presented.wrapping_add(1);
         index = (index + 1) % frame_count;
     }
 
