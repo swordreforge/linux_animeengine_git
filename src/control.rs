@@ -43,6 +43,37 @@ fn default_scale_percent() -> u32 {
     MAX_SCALE_PERCENT
 }
 
+/// Default input-region sampling policy (`off`, `auto`, or a fixed grid).
+pub const DEFAULT_REGION_STEP: &str = "off";
+/// Default soft rectangle budget for `auto`.
+pub const DEFAULT_REGION_SOFT_RECTS: usize = 768;
+/// Default hard rectangle cap.
+pub const DEFAULT_REGION_MAX_RECTS: usize = 4096;
+
+fn default_region_step() -> String {
+    DEFAULT_REGION_STEP.to_string()
+}
+
+fn default_region_soft() -> usize {
+    DEFAULT_REGION_SOFT_RECTS
+}
+
+fn default_region_max() -> usize {
+    DEFAULT_REGION_MAX_RECTS
+}
+
+/// Normalize a region-step string to `off`, `auto`, or `1..=32`.
+pub fn normalize_region_step(value: &str) -> String {
+    match value {
+        "auto" => "auto".to_string(),
+        "off" => "off".to_string(),
+        other => other
+            .parse::<u32>()
+            .map(|step| step.clamp(1, 32).to_string())
+            .unwrap_or_else(|_| "off".to_string()),
+    }
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -79,6 +110,15 @@ pub struct ControlState {
     /// Whether the overlay is hidden (kept alive as a 1x1 surface).
     #[serde(default)]
     pub hidden: bool,
+    /// Input-region sampling policy: `off`, `auto`, or a fixed grid `1..=32`.
+    #[serde(default = "default_region_step")]
+    pub region_step: String,
+    /// Soft rectangle budget for `auto`.
+    #[serde(default = "default_region_soft")]
+    pub region_soft_rects: usize,
+    /// Hard rectangle cap.
+    #[serde(default = "default_region_max")]
+    pub region_max_rects: usize,
     /// One-shot: put the window back at its start position and native size.
     #[serde(default)]
     pub reset: bool,
@@ -97,6 +137,9 @@ impl Default for ControlState {
             scale_percent: MAX_SCALE_PERCENT,
             locked: false,
             hidden: false,
+            region_step: default_region_step(),
+            region_soft_rects: DEFAULT_REGION_SOFT_RECTS,
+            region_max_rects: DEFAULT_REGION_MAX_RECTS,
             reset: false,
             quit: false,
             generation: 0,
@@ -213,6 +256,28 @@ impl ControlState {
         self.set_hidden(hidden)
     }
 
+    /// Set the input-region sampling policy (`off`, `auto`, or `1..=32`).
+    #[must_use]
+    pub fn set_region_step(mut self, step: &str) -> Self {
+        self.region_step = normalize_region_step(step);
+        self.touched()
+    }
+
+    /// Set the `auto` soft budget (clamped, kept at or below the hard cap).
+    #[must_use]
+    pub fn set_region_soft_rects(mut self, soft: usize) -> Self {
+        self.region_soft_rects = soft.clamp(16, 65_536).min(self.region_max_rects);
+        self.touched()
+    }
+
+    /// Set the hard rectangle cap (clamped; the soft budget follows it down).
+    #[must_use]
+    pub fn set_region_max_rects(mut self, max: usize) -> Self {
+        self.region_max_rects = max.clamp(16, 1_000_000);
+        self.region_soft_rects = self.region_soft_rects.min(self.region_max_rects);
+        self.touched()
+    }
+
     /// Toggle between per-pixel input (`Opaque`) and full click-through.
     #[must_use]
     pub fn toggle_click_through(self) -> Self {
@@ -293,6 +358,9 @@ mod tests {
             scale_percent: 50,
             locked: true,
             hidden: true,
+            region_step: "auto".to_string(),
+            region_soft_rects: 512,
+            region_max_rects: 2048,
             reset: false,
             quit: false,
             generation: 7,
@@ -310,6 +378,28 @@ mod tests {
             serde_json::from_str::<InputMode>("\"opaque\"").unwrap(),
             InputMode::Opaque
         );
+    }
+
+    #[test]
+    fn region_tuning_is_normalized_and_clamped() {
+        let state = ControlState::fresh();
+        assert_eq!(state.region_step, "off");
+        assert_eq!(state.region_soft_rects, 768);
+        assert_eq!(state.region_max_rects, 4096);
+
+        assert_eq!(state.clone().set_region_step("auto").region_step, "auto");
+        assert_eq!(state.clone().set_region_step("4").region_step, "4");
+        assert_eq!(state.clone().set_region_step("99").region_step, "32");
+        assert_eq!(state.clone().set_region_step("junk").region_step, "off");
+
+        assert_eq!(state.clone().set_region_soft_rects(0).region_soft_rects, 16);
+        assert_eq!(
+            state.clone().set_region_soft_rects(5000).region_soft_rects,
+            4096
+        );
+        let capped = state.clone().set_region_max_rects(100);
+        assert_eq!(capped.region_max_rects, 100);
+        assert_eq!(capped.region_soft_rects, 100);
     }
 
     #[test]

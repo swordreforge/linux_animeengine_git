@@ -104,9 +104,12 @@ Interaction and control:
   bounds the display size (small overlays stay pixel-accurate); a number 1–32
   forces that grid; default `off`. The soft budget and hard cap themselves are
   configurable via `ANIMA_REGION_SOFT_RECTS` (default 768) and
-  `ANIMA_REGION_MAX_RECTS` (default 4096).
-- **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
-  (100/75/50/25%), "Reset position and interaction", "Quit overlay"
+  `ANIMA_REGION_MAX_RECTS` (default 4096). All three can also be changed at
+  runtime with `anima-overlay-ctl region step|soft|max` or the tray's "Region"
+  menu; the environment only seeds the startup values.
+- **tray** (`ksni`): `StatusNotifierItem` menu with "Input", "Size"
+  (100/75/50/25%) and "Region" submenus, "Visible"/"Lock position" checkmarks,
+  "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
   `mode <full|opaque|pass-through>`, `scale <percent|up|down>`, `reset`, `quit`,
   `status` — for compositor keybindings (niri has no `GlobalShortcuts` portal
@@ -196,6 +199,10 @@ Interaction and control:
   `ANIMA_REGION_STEP=auto ANIMA_REGION_SOFT_RECTS=900 ANIMA_REGION_MAX_RECTS=100`
   → the soft budget is clamped to the cap (100) and the region coarsens to 50
   rects at step 16. The effective values are logged at startup.
+- Runtime tuning: `ctl region step auto` logged `region limits: step auto, soft
+  768, max 4096`; `region max 300` made the soft budget follow (300); `region
+  soft 100` then rebuilt to 235 rects at step 4 (auto is capped at 1 by the 206 px
+  display, the hard cap took it to 4). `ctl status` reports the step/soft/max.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -336,5 +343,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
   geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
   → 1x1 keep-alive hide/show → multi-instance → in-screen clamping →
-  frame-count region throttling/coarsening (+ optional auto step and configurable
-  rectangle budgets).
+  frame-count region throttling/coarsening (+ optional auto step and configurable,
+  runtime-tunable rectangle budgets).

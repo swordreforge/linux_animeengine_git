@@ -541,15 +541,22 @@ enum RegionStep {
 }
 
 impl RegionStep {
-    fn from_env() -> Self {
-        match std::env::var("ANIMA_REGION_STEP").ok().as_deref() {
-            Some("auto") => Self::Auto,
-            Some("off") | None => Self::Off,
-            Some(value) => value
+    fn parse(value: &str) -> Self {
+        match value {
+            "auto" => Self::Auto,
+            other => other
                 .parse::<u32>()
                 .map(|step| Self::Fixed(step.clamp(1, 32)))
                 .unwrap_or(Self::Off),
         }
+    }
+
+    fn from_env() -> Self {
+        std::env::var("ANIMA_REGION_STEP")
+            .ok()
+            .as_deref()
+            .map(Self::parse)
+            .unwrap_or(Self::Off)
     }
 
     fn label(self) -> String {
@@ -563,7 +570,7 @@ impl RegionStep {
 
 /// Region tuning, all overridable from the environment:
 /// `ANIMA_REGION_STEP`, `ANIMA_REGION_SOFT_RECTS`, `ANIMA_REGION_MAX_RECTS`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RegionTuning {
     step: RegionStep,
     soft_rects: usize,
@@ -590,6 +597,14 @@ impl RegionTuning {
             step: RegionStep::from_env(),
             soft_rects,
             max_rects,
+        }
+    }
+
+    fn from_control(control: &ControlState) -> Self {
+        Self {
+            step: RegionStep::parse(&control.region_step),
+            soft_rects: control.region_soft_rects.min(control.region_max_rects),
+            max_rects: control.region_max_rects,
         }
     }
 
@@ -906,6 +921,18 @@ impl ksni::Tray for OverlayTray {
                 ..Default::default()
             })
         };
+        let region_item = |label: &str, value: &'static str| {
+            MenuItem::Checkmark(CheckmarkItem {
+                label: label.into(),
+                checked: state.region_step.as_str() == value,
+                activate: Box::new(move |tray: &mut Self| {
+                    write_control(&tray.control_path, move |state| {
+                        state.set_region_step(value)
+                    });
+                }),
+                ..Default::default()
+            })
+        };
         vec![
             MenuItem::SubMenu(SubMenu {
                 label: "Input".into(),
@@ -923,6 +950,16 @@ impl ksni::Tray for OverlayTray {
                     size_item("75%", 75),
                     size_item("50%", 50),
                     size_item("25%", 25),
+                ],
+                ..Default::default()
+            }),
+            MenuItem::SubMenu(SubMenu {
+                label: "Region".into(),
+                submenu: vec![
+                    region_item("Off (1px)", "off"),
+                    region_item("Auto", "auto"),
+                    region_item("Grid 2px", "2"),
+                    region_item("Grid 4px", "4"),
                 ],
                 ..Default::default()
             }),
@@ -1241,6 +1278,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     control.scale_percent = initial_scale;
     control.input_mode = initial_mode;
     control.locked = initial_locked;
+    control.region_step = region_tuning.step.label();
+    control.region_soft_rects = region_tuning.soft_rects;
+    control.region_max_rects = region_tuning.max_rects;
     if let Err(err) = control.save(&control_path) {
         eprintln!("[overlay] control file init failed: {err}");
     }
@@ -1535,6 +1575,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if control.hidden != state.hidden {
                     apply_hidden(&mut state, control.hidden);
+                }
+                let tuning = RegionTuning::from_control(&control);
+                if tuning != state.region_tuning {
+                    state.region_tuning = tuning;
+                    state.region_dirty = true;
+                    eprintln!(
+                        "[overlay] region limits: {}",
+                        state.region_tuning.describe()
+                    );
                 }
                 persist_geometry(&state);
                 if control.quit {

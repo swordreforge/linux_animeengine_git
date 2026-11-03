@@ -4,6 +4,8 @@
 //! anima-overlay-ctl toggle                          # opaque pixels <-> click-through
 //! anima-overlay-ctl mode <full|opaque|pass-through>
 //! anima-overlay-ctl scale <percent|up|down>         # 10-100%, never upscales
+//! anima-overlay-ctl region step <off|auto|1..32>      # input-region sampling
+//! anima-overlay-ctl region soft <rects> | region max <rects>
 //! anima-overlay-ctl lock | unlock                   # disable/enable dragging
 //! anima-overlay-ctl hide | show | toggle-hidden     # hide keeps the surface alive (1x1)
 //! anima-overlay-ctl reset                           # initial position + native size
@@ -69,6 +71,21 @@ fn main() -> ExitCode {
             }
             None => return usage("[--instance <path>] scale <percent|up|down>"),
         },
+        Some("region") => match words.next().as_deref() {
+            Some("step") => match words.next() {
+                Some(value) => apply_all(&paths, move |state| state.set_region_step(&value)),
+                None => return usage("[--instance <path>] region step <off|auto|1..32>"),
+            },
+            Some("soft") => match words.next().and_then(|value| value.parse::<usize>().ok()) {
+                Some(value) => apply_all(&paths, move |state| state.set_region_soft_rects(value)),
+                None => return usage("[--instance <path>] region soft <rects>"),
+            },
+            Some("max") => match words.next().and_then(|value| value.parse::<usize>().ok()) {
+                Some(value) => apply_all(&paths, move |state| state.set_region_max_rects(value)),
+                None => return usage("[--instance <path>] region max <rects>"),
+            },
+            _ => return usage("[--instance <path>] region <step|soft|max> <value>"),
+        },
         Some("status") | Some("--list") => {
             status(&paths);
             Ok(())
@@ -76,7 +93,7 @@ fn main() -> ExitCode {
         _ => {
             return usage(
                 "[--instance <path>|--all] <toggle|toggle-hidden|mode <m>|scale <s>|\
-                 lock|unlock|hide|show|reset|quit|status>",
+                 region <step|soft|max>|lock|unlock|hide|show|reset|quit|status>",
             );
         }
     };
@@ -112,7 +129,7 @@ fn target_paths(selector: Option<&str>) -> Vec<PathBuf> {
 
 fn apply_all(
     paths: &[PathBuf],
-    action: impl Fn(ControlState) -> ControlState + Copy,
+    action: impl Fn(ControlState) -> ControlState,
 ) -> Result<(), anima_engine_rs::Error> {
     for path in paths {
         action(ControlState::load(path)).save(path)?;
@@ -121,6 +138,10 @@ fn apply_all(
 }
 
 fn status(paths: &[PathBuf]) {
+    use std::io::Write as _;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     for path in paths {
         let state = ControlState::load(path);
         let mode = match state.input_mode {
@@ -132,12 +153,18 @@ fn status(paths: &[PathBuf]) {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("unknown");
-        println!("{name}");
-        println!("  mode:   {mode}");
-        println!("  scale:  {}%", state.scale_percent);
-        println!("  locked: {}  hidden: {}", state.locked, state.hidden);
-        println!("  gen:    {}", state.generation);
-        println!("  file:   {}", path.display());
+        // A closed pipe (e.g. `| head`) must not panic the CLI.
+        let _ = writeln!(out, "{name}");
+        let _ = writeln!(out, "  mode:   {mode}");
+        let _ = writeln!(out, "  scale:  {}%", state.scale_percent);
+        let _ = writeln!(out, "  locked: {}  hidden: {}", state.locked, state.hidden);
+        let _ = writeln!(
+            out,
+            "  region: step {}  soft {}  max {}",
+            state.region_step, state.region_soft_rects, state.region_max_rects
+        );
+        let _ = writeln!(out, "  gen:    {}", state.generation);
+        let _ = writeln!(out, "  file:   {}", path.display());
     }
 }
 

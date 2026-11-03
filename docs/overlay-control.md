@@ -23,8 +23,9 @@ read from that file at startup.
 
 The per-pixel input region is rebuilt at most every 3rd presented frame and only
 when the silhouette changes. Very detailed silhouettes are coarsened above a hard
-rectangle cap. All of this is tunable from the environment (the effective values
-are logged at startup as `region limits: ...`):
+rectangle cap. The environment seeds the startup values; they can be changed at
+runtime with `anima-overlay-ctl region ...` or the tray's "Region" menu. The
+effective values are logged as `region limits: ...`.
 
 | Variable | Default | Behaviour |
 |---|---|---|
@@ -68,6 +69,9 @@ anima-overlay-ctl unlock
 anima-overlay-ctl hide                # hide (surface stays alive at 1x1)
 anima-overlay-ctl show
 anima-overlay-ctl toggle-hidden
+anima-overlay-ctl region step auto   # off | auto | 1..32
+anima-overlay-ctl region soft 512    # auto's target (16..=65536)
+anima-overlay-ctl region max 2048    # hard cap (16..=1000000)
 anima-overlay-ctl reset              # initial position + native size + opaque input
 anima-overlay-ctl quit
 anima-overlay-ctl status
@@ -110,8 +114,8 @@ niri is fine with 1x1.
 
 The overlay registers a `StatusNotifierItem`. niri has no tray host by default —
 run one (e.g. `waybar` with the `tray` module) to see the icon. The menu has
-"Input" and "Size" submenus, "Visible" and "Lock position" checkmarks, plus
-"Reset position and interaction" and "Quit overlay".
+"Input", "Size" and "Region" submenus, "Visible" and "Lock position" checkmarks,
+plus "Reset position and interaction" and "Quit overlay".
 
 ## Portal global shortcuts
 
