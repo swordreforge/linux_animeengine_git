@@ -7,6 +7,7 @@
 
 pub mod anim;
 pub mod cache;
+pub mod control;
 pub mod error;
 pub mod i18n;
 pub mod input_map;

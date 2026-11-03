@@ -12,7 +12,7 @@ workshop-web = ["dep:reqwest"]
 # Enables runtime `libsteam_api` binding (`steam::flat`); no build-time SDK.
 steamworks = ["dep:libloading"]
 # Enables the `anima-overlay` binary (Wayland layer-shell + wgpu).
-overlay = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:pollster", "dep:bytemuck", "dep:wayland-client"]
+overlay = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:pollster", "dep:bytemuck", "dep:wayland-client", "dep:ksni", "dep:ashpd", "dep:futures-util", "dep:tokio"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -28,6 +28,10 @@ smithay-client-toolkit = { version = "0.20", default-features = false, features 
 pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 wayland-client = { version = "0.31", features = ["system", "dlopen"], optional = true }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "tokio"], optional = true }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"], optional = true }
 
 [[bin]]
 name = "anima-overlay"

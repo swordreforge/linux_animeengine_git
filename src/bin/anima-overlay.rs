@@ -10,6 +10,10 @@
 //! matching the Python renderer's `_pixel_opaque_at`). Dragging updates the
 //! layer-shell margins.
 //!
+//! A StatusNotifierItem tray and `xdg-desktop-portal` GlobalShortcuts control
+//! the overlay from outside (toggle click-through, reset, quit) by writing
+//! [`anima_engine_rs::control::ControlState`]; the render loop polls it.
+//!
 //! Usage:
 //! ```text
 //! cargo run --features overlay --bin anima-overlay -- [animation.gif|.apng|.webp]
@@ -26,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use anima_engine_rs::anim::{Animation, Frame};
 use anima_engine_rs::cache::FrameCache;
+use anima_engine_rs::control::ControlState;
 
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{
@@ -131,6 +136,9 @@ struct OverlayState {
     animation: Arc<Animation>,
     frame_index: usize,
     surface_size: (u32, u32),
+    /// Empty input region, used to make the whole surface click-through.
+    empty_region: wl_region::WlRegion,
+    click_through: bool,
 }
 
 impl OverlayState {
@@ -411,6 +419,163 @@ fn test_animation() -> Animation {
     }
 }
 
+/// Apply the click-through flag to the surface's input region.
+fn apply_click_through(state: &mut OverlayState, on: bool) {
+    if state.click_through == on {
+        return;
+    }
+    state.click_through = on;
+    if on {
+        state.surface.set_input_region(Some(&state.empty_region));
+    } else {
+        state.surface.set_input_region(None);
+    }
+    state.surface.commit();
+    eprintln!("[overlay] click-through {}", if on { "on" } else { "off" });
+}
+
+/// Read-modify-write helper for the control file.
+fn write_control(path: &Path, action: fn(ControlState) -> ControlState) {
+    let next = action(ControlState::load(path));
+    if let Err(err) = next.save(path) {
+        eprintln!("[overlay] control write failed: {err}");
+    }
+}
+
+/// `StatusNotifierItem` (DBus) tray: lets the user toggle click-through, reset
+/// the overlay or quit it by writing [`ControlState`].
+struct OverlayTray {
+    control_path: PathBuf,
+}
+
+impl ksni::Tray for OverlayTray {
+    // A left click opens the menu instead of doing anything else.
+    const MENU_ON_ACTIVATE: bool = true;
+
+    fn id(&self) -> String {
+        "anima-engine-overlay".into()
+    }
+
+    fn title(&self) -> String {
+        "AnimaEngine".into()
+    }
+
+    fn icon_name(&self) -> String {
+        "applications-multimedia".into()
+    }
+
+    fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
+        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+
+        let state = ControlState::load(&self.control_path);
+        vec![
+            MenuItem::Checkmark(CheckmarkItem {
+                label: "Click-through".into(),
+                checked: state.click_through,
+                activate: Box::new(|tray: &mut Self| {
+                    write_control(&tray.control_path, ControlState::toggle_click_through);
+                }),
+                ..Default::default()
+            }),
+            MenuItem::Separator,
+            MenuItem::Standard(StandardItem {
+                label: "Reset position and interaction".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    write_control(&tray.control_path, ControlState::request_reset);
+                }),
+                ..Default::default()
+            }),
+            MenuItem::Standard(StandardItem {
+                label: "Quit overlay".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    write_control(&tray.control_path, ControlState::request_quit);
+                }),
+                ..Default::default()
+            }),
+        ]
+    }
+}
+
+/// Start the tray in the background. On niri (no StatusNotifierWatcher by
+/// default) this logs and returns `None` unless a bar such as waybar hosts one.
+fn spawn_tray(control_path: PathBuf) -> Option<ksni::blocking::Handle<OverlayTray>> {
+    use ksni::blocking::TrayMethods;
+
+    let tray = OverlayTray { control_path };
+    match tray
+        .disable_dbus_name(false)
+        .assume_sni_available(true)
+        .spawn()
+    {
+        Ok(handle) => {
+            eprintln!("[overlay] tray registered (StatusNotifierItem)");
+            Some(handle)
+        }
+        Err(err) => {
+            eprintln!("[overlay] tray unavailable (no StatusNotifierWatcher?): {err}");
+            None
+        }
+    }
+}
+
+/// Register global shortcuts through `xdg-desktop-portal` in the background.
+/// This is the recovery path: once click-through is on, the surface itself can
+/// no longer be clicked.
+fn spawn_portal(control_path: PathBuf) {
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                eprintln!("[overlay] portal runtime failed: {err}");
+                return;
+            }
+        };
+        runtime.block_on(async move {
+            if let Err(err) = run_portal(control_path).await {
+                eprintln!("[overlay] global shortcuts unavailable: {err}");
+            }
+        });
+    });
+}
+
+async fn run_portal(control_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use ashpd::desktop::CreateSessionOptions;
+    use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
+    use futures_util::StreamExt;
+
+    let proxy = GlobalShortcuts::new().await?;
+    let session = proxy
+        .create_session(CreateSessionOptions::default())
+        .await?;
+    let shortcuts = [
+        NewShortcut::new("toggle-click-through", "Toggle overlay click-through")
+            .preferred_trigger("CTRL+SHIFT+t"),
+        NewShortcut::new("reset-overlay", "Reset overlay position and interaction")
+            .preferred_trigger("CTRL+SHIFT+r"),
+    ];
+    proxy
+        .bind_shortcuts(&session, &shortcuts, None, BindShortcutsOptions::default())
+        .await?;
+    eprintln!("[overlay] global shortcuts bound: Ctrl+Shift+T toggle, Ctrl+Shift+R reset");
+
+    let mut activated = proxy.receive_activated().await?;
+    while let Some(event) = activated.next().await {
+        match event.shortcut_id() {
+            "toggle-click-through" => {
+                write_control(&control_path, ControlState::toggle_click_through);
+            }
+            "reset-overlay" => write_control(&control_path, ControlState::request_reset),
+            other => eprintln!("[overlay] unknown shortcut activated: {other}"),
+        }
+    }
+
+    let _ = session.close().await;
+    Ok(())
+}
+
 fn frame_delay(frame: &Frame) -> Duration {
     let ms = if frame.delay_ms == 0 {
         33
@@ -453,10 +618,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
     layer_surface.set_margin(pos_y, 0, 0, pos_x);
-    // Receive input so we can drag on opaque pixels. For click-through, set an
-    // empty input region instead:
-    //   let empty = compositor.create_region(&qh, ());
-    //   surface.set_input_region(Some(&empty));
+    // Receive input so we can drag on opaque pixels. The empty region toggled
+    // by the tray / portal makes the whole surface click-through.
+    let empty_region = compositor.create_region(&qh, ());
     surface.set_input_region(None);
     surface.commit();
 
@@ -477,8 +641,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         animation: Arc::clone(&animation),
         frame_index: 0,
         surface_size: (width, height),
+        empty_region,
+        click_through: false,
     };
     event_queue.roundtrip(&mut state)?;
+
+    // --- control channel: tray + portal global shortcuts -------------------
+    let control_path = ControlState::path();
+    let mut control = ControlState::fresh();
+    if let Err(err) = control.save(&control_path) {
+        eprintln!("[overlay] control file init failed: {err}");
+    }
+    let mut control_mtime = std::fs::metadata(&control_path)
+        .and_then(|m| m.modified())
+        .ok();
+    let _tray = spawn_tray(control_path.clone());
+    spawn_portal(control_path.clone());
 
     // --- wgpu surface from the raw Wayland handles -------------------------
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -724,6 +902,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.surface_size = (config.width, config.height);
 
         event_queue.dispatch_pending(&mut state)?;
+
+        // Tray / portal commands arrive through the control file.
+        let mtime = std::fs::metadata(&control_path)
+            .and_then(|m| m.modified())
+            .ok();
+        if mtime != control_mtime {
+            control_mtime = mtime;
+            let next = ControlState::load(&control_path);
+            if next.generation != control.generation {
+                control = next;
+                apply_click_through(&mut state, control.click_through);
+                if control.reset {
+                    state.margin_left = pos_x;
+                    state.margin_top = pos_y;
+                    state.layer_surface.set_margin(pos_y, 0, 0, pos_x);
+                    state.surface.commit();
+                    eprintln!("[overlay] reset to initial position");
+                }
+                if control.quit {
+                    state.closed = true;
+                    continue;
+                }
+            }
+        }
 
         if let Some((w, h)) = state.configured
             && (w != config.width || h != config.height)

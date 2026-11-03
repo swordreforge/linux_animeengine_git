@@ -1,6 +1,6 @@
 # AnimaEngine Rust port — progress
 
-Status as of 2026-11-03, HEAD `faa4199`.
+Status as of 2026-11-03.
 
 A Rust rewrite of the AnimaEngine app, split into two goals:
 
@@ -24,7 +24,8 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | `pack` | `mdaa_io.py` / `models.py` | `.mdaa` (zip + `pack.json` + NPZ frames), minimal NPY parser |
 | `input_map` | `deteccionDeTeclas.py` / `funciones.py` | `configTeclas.json` bindings, activation modes, function catalog |
 | `cache` | `monoModule.py` | `FrameCache`: sha256 key, ZIP+PNG frames, LRU eviction |
-| `anim` | `nuevoMotor.py` | GIF/APNG/WebP decode → composited RGBA frames (via `image`) |
+| `anim` | `nuevoMotor.py` | GIF/APNG/WebP decode → composited RGBA frames (via `image`), plus `alpha_at` / `alpha_hit` |
+| `control` | — (new) | cross-process overlay control file (`overlay_control.json`): click-through / reset / quit + generation |
 | `error` | — | shared error type |
 
 ### Workshop
@@ -41,13 +42,29 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 `src/bin/anima-overlay.rs` — `smithay-client-toolkit` layer-shell surface on the
 **Overlay** layer + transparent wgpu surface.
 
-- explicit size/anchor/margin; `KeyboardInteractivity::None`; input enabled
-  (click-through toggle is a one-liner using an empty `wl_region`)
+- explicit size/anchor/margin; `KeyboardInteractivity::None`
 - wgpu surface from raw Wayland handles (system backend)
 - plays every frame honouring its `delay_ms`; presents only on change
 - `FrameCache`: cache hit on load, background cache write on miss (`Arc`-shared)
 - GPU frames: 2D array texture when they fit (≤256 MiB, layer limit), otherwise
   just-in-time per-frame upload (large workshop animations)
+
+Interaction and control:
+
+- **per-pixel alpha hit-test + drag**: `wl_seat`/`wl_pointer` bound; a left press
+  only starts a drag on an opaque pixel (`Animation::alpha_hit`, threshold 25,
+  surface-local → frame pixel mapping), and motion updates the layer-shell
+  margins (anchors are Top|Left, so margins grow with pointer movement)
+- **click-through**: an empty `wl_region` set as the input region makes the whole
+  surface pass clicks through (whole-surface toggle, like the original's
+  `WS_EX_TRANSPARENT`); restoring uses `set_input_region(None)`
+- **tray** (`ksni`): `StatusNotifierItem` menu with a "Click-through" checkmark,
+  "Reset position and interaction", and "Quit overlay"
+- **global shortcuts** (`ashpd`, `xdg-desktop-portal` GlobalShortcuts):
+  `Ctrl+Shift+T` toggle click-through, `Ctrl+Shift+R` reset
+- tray/portal do not touch the overlay directly: they write
+  `control::ControlState` (`<XDG data>/AnimaEngine/overlay_control.json`) and the
+  render loop applies the newest `generation`
 
 ### Docs / examples
 
@@ -58,7 +75,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 
 ## Verification
 
-- `cargo test`: **94** default, **97** with `workshop-web,steamworks`.
+- `cargo test`: **99** default, **102** with `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
@@ -67,23 +84,38 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
   - workshop `miku12.apng` (64 frames, 1500×1125, 412 MiB decoded) — 12.4 s
     first decode, then just-in-time upload playback
+- Control channel driven from the shell (same writes the tray/portal perform):
+  toggle → `[overlay] click-through on`, reset → `[overlay] reset to initial
+  position`, quit → process exits 0. Verified repeatable.
+- Tray registers on this machine (`tray registered (StatusNotifierItem)` —
+  a StatusNotifierWatcher is running).
+- Portal on this machine: `A portal frontend implementing
+  org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
+  backend does not implement it); the code path is in place where a backend does.
 
 ## TODO
 
 ### Overlay interaction / windowing
 
-- [ ] Per-pixel alpha hit-test (`Frame::alpha_mask`) — drag only on opaque pixels
-- [ ] Drag to move; persist position to `secondary_instances.json`
-- [ ] Right-click control menu (port `anima_overlay_controls`)
-- [ ] Click-through toggle (empty input region) + `Ctrl+Shift+R` recovery
+- [x] Per-pixel alpha hit-test (`Animation::alpha_hit`) — drag only on opaque pixels
+- [x] Drag to move
+- [ ] Persist position to `secondary_instances.json`
+- [x] Click-through toggle (empty input region)
+- [x] Tray (`ksni`) + portal GlobalShortcuts for toggle / reset / quit
+- [ ] Per-pixel transparent pass-through (input region from alpha spans; note the
+      surface then receives no pointer events over the excluded area)
+- [ ] Recover hotkeys on niri: either install a portal backend implementing
+      `GlobalShortcuts`, or ship a tiny `anima-overlay-ctl` CLI and bind it in
+      `niri`'s config (tray already works today)
+- [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
+      largely covered by the tray
 - [ ] Multi-instance: one process per animation (or multiple surfaces)
 - [ ] Multi-monitor: per-output layer surfaces
-- [ ] Global hotkeys via `xdg-desktop-portal` GlobalShortcuts
 - [ ] GNOME/Mutter fallback (no layer-shell → compositor rules / normal window)
 - [ ] HiDPI buffer scale + pin surface size across compositor reconfigures
-  (the live2d-rs configure-bounce pattern)
+      (the live2d-rs configure-bounce pattern)
 - [ ] Frame timing edge cases: GIF centisecond delays, APNG fractions,
-  per-path `fps` overrides from `anim_meta.json`
+      per-path `fps` overrides from `anim_meta.json`
 
 ### Steam / Workshop
 
@@ -113,6 +145,10 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 ## Known gaps / risks
 
 - No live Steamworks validation (missing `libsteam_api.so` on this machine).
+- Portal GlobalShortcuts depends on a portal backend that implements it (this
+  machine's does not); the tray is the working control path here.
+- The control file is read-modify-written by tray and portal without a lock, so a
+  rare concurrent toggle could lose an update.
 - Overlay is Wayland-only (layer-shell); X11/Windows not targeted yet.
 - Visual acceptance of the overlay is manual; no screenshots are produced by the
   smoke tests.
@@ -120,8 +156,9 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (94 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (97)
+cargo test                                        # pure logic (99 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (102)
+
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
 cargo run --example scan_workshop -- ~/.local/share/Steam/steamapps/workshop/content/3474900
@@ -134,4 +171,4 @@ cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
 
 - `docs/workshop-steamworks-re.md` — reverse engineering of the shipped build.
 - Commit history: pure core → workshop RE + scanner → Steam bridge → overlay
-  scaffold → multi-frame playback.
+  scaffold → multi-frame playback → alpha drag → tray + portal control.
