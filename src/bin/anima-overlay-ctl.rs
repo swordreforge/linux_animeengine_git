@@ -4,7 +4,8 @@
 //! ```text
 //! anima-overlay-ctl toggle                          # opaque pixels <-> click-through
 //! anima-overlay-ctl mode <full|opaque|pass-through>
-//! anima-overlay-ctl reset                           # initial position, opaque input
+//! anima-overlay-ctl scale <percent|up|down>         # 10-100%, never upscales
+//! anima-overlay-ctl reset                           # initial position + native size
 //! anima-overlay-ctl quit
 //! anima-overlay-ctl status
 //! ```
@@ -17,6 +18,14 @@ use std::process::ExitCode;
 
 use anima_engine_rs::control::{ControlState, InputMode};
 
+/// Percent step for `scale up` / `scale down`.
+const SCALE_STEP: i32 = 10;
+
+enum ScaleAction {
+    Set(u32),
+    Nudge(i32),
+}
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let path = ControlState::path();
@@ -27,20 +36,21 @@ fn main() -> ExitCode {
         Some("quit") => update(&path, ControlState::request_quit),
         Some("mode") => match args.next().as_deref().and_then(parse_mode) {
             Some(mode) => update(&path, move |state| state.set_input_mode(mode)),
-            None => {
-                eprintln!("usage: anima-overlay-ctl mode <full|opaque|pass-through>");
-                return ExitCode::FAILURE;
+            None => return usage("mode <full|opaque|pass-through>"),
+        },
+        Some("scale") => match args.next().as_deref().and_then(parse_scale) {
+            Some(ScaleAction::Set(percent)) => {
+                update(&path, move |state| state.set_scale_percent(percent))
             }
+            Some(ScaleAction::Nudge(delta)) => update(&path, move |state| state.nudge_scale(delta)),
+            None => return usage("scale <percent|up|down>"),
         },
         Some("status") => {
             status(&path);
             Ok(())
         }
         _ => {
-            eprintln!(
-                "usage: anima-overlay-ctl <toggle|mode <full|opaque|pass-through>|reset|quit|status>"
-            );
-            return ExitCode::FAILURE;
+            return usage("<toggle|mode <m>|scale <s>|reset|quit|status>");
         }
     };
 
@@ -51,6 +61,11 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn usage(args: &str) -> ExitCode {
+    eprintln!("usage: anima-overlay-ctl {args}");
+    ExitCode::FAILURE
 }
 
 fn update(
@@ -68,6 +83,7 @@ fn status(path: &Path) {
         InputMode::PassThrough => "pass-through",
     };
     println!("mode:       {mode}");
+    println!("scale:      {}%", state.scale_percent);
     println!("generation: {}", state.generation);
     println!("file:       {}", path.display());
 }
@@ -81,9 +97,17 @@ fn parse_mode(value: &str) -> Option<InputMode> {
     }
 }
 
+fn parse_scale(value: &str) -> Option<ScaleAction> {
+    match value {
+        "up" => Some(ScaleAction::Nudge(SCALE_STEP)),
+        "down" => Some(ScaleAction::Nudge(-SCALE_STEP)),
+        other => other.parse::<u32>().ok().map(ScaleAction::Set),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_mode;
+    use super::{ScaleAction, parse_mode, parse_scale};
     use anima_engine_rs::control::InputMode;
 
     #[test]
@@ -93,5 +117,14 @@ mod tests {
         assert_eq!(parse_mode("pixels"), Some(InputMode::Opaque));
         assert_eq!(parse_mode("pass-through"), Some(InputMode::PassThrough));
         assert_eq!(parse_mode("nope"), None);
+    }
+
+    #[test]
+    fn parses_scale_actions() {
+        assert!(matches!(parse_scale("up"), Some(ScaleAction::Nudge(10))));
+        assert!(matches!(parse_scale("down"), Some(ScaleAction::Nudge(-10))));
+        assert!(matches!(parse_scale("50"), Some(ScaleAction::Set(50))));
+        assert!(matches!(parse_scale("250"), Some(ScaleAction::Set(250))));
+        assert!(parse_scale("big").is_none());
     }
 }

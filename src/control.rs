@@ -2,9 +2,10 @@
 //!
 //! The overlay process is a bare, frameless, always-on-top surface, so once
 //! input is disabled the user cannot reach it with the mouse. The tray
-//! (StatusNotifierItem) and the portal global-shortcut handlers therefore talk
-//! to it through this small JSON file: writers bump `generation` and change
-//! fields, and the overlay applies the newest generation.
+//! (StatusNotifierItem), the portal global-shortcut handlers and the
+//! `anima-overlay-ctl` CLI therefore talk to it through this small JSON file:
+//! writers bump `generation` and change fields, and the overlay applies the
+//! newest generation.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +17,17 @@ use crate::paths;
 
 /// File name, inside [`paths::user_data_dir`].
 pub const CONTROL_FILE: &str = "overlay_control.json";
+
+/// Smallest accepted display size. Explicit downscales below this are refused.
+pub const MIN_SCALE_PERCENT: u32 = 10;
+
+/// 100% is the native frame size. The overlay only ever shrinks, so no
+/// upscaling (and no resampling) is needed.
+pub const MAX_SCALE_PERCENT: u32 = 100;
+
+fn default_scale_percent() -> u32 {
+    MAX_SCALE_PERCENT
+}
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -38,13 +50,16 @@ pub enum InputMode {
     PassThrough,
 }
 
-/// Desired overlay state, written by the tray/portal and read by the overlay.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// Desired overlay state, written by the tray/portal/CLI and read by the overlay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlState {
     /// Input handling for the surface.
     #[serde(default)]
     pub input_mode: InputMode,
-    /// One-shot: put the window back at its start position.
+    /// Display size as a percentage of the native frame size (10-100).
+    #[serde(default = "default_scale_percent")]
+    pub scale_percent: u32,
+    /// One-shot: put the window back at its start position and native size.
     #[serde(default)]
     pub reset: bool,
     /// One-shot: stop the overlay process.
@@ -53,6 +68,18 @@ pub struct ControlState {
     /// Marker bumped on every write; the overlay only applies newer ones.
     #[serde(default)]
     pub generation: u64,
+}
+
+impl Default for ControlState {
+    fn default() -> Self {
+        Self {
+            input_mode: InputMode::default(),
+            scale_percent: MAX_SCALE_PERCENT,
+            reset: false,
+            quit: false,
+            generation: 0,
+        }
+    }
 }
 
 impl ControlState {
@@ -79,14 +106,27 @@ impl ControlState {
         paths::atomic_write_json(path, self)
     }
 
-    /// Select an input mode and clear the one-shot flags.
+    /// Select an input mode.
     #[must_use]
     pub fn set_input_mode(mut self, mode: InputMode) -> Self {
         self.input_mode = mode;
-        self.reset = false;
-        self.quit = false;
-        self.bump();
-        self
+        self.touched()
+    }
+
+    /// Set the display size, clamped to `MIN..=MAX` percent.
+    #[must_use]
+    pub fn set_scale_percent(mut self, percent: u32) -> Self {
+        self.scale_percent = percent.clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+        self.touched()
+    }
+
+    /// Step the display size by `delta` percent, clamped.
+    #[must_use]
+    pub fn nudge_scale(self, delta: i32) -> Self {
+        let next = (i64::from(self.scale_percent) + i64::from(delta))
+            .clamp(i64::from(MIN_SCALE_PERCENT), i64::from(MAX_SCALE_PERCENT))
+            as u32;
+        self.set_scale_percent(next)
     }
 
     /// Toggle between per-pixel input (`Opaque`) and full click-through.
@@ -99,10 +139,12 @@ impl ControlState {
         self.set_input_mode(mode)
     }
 
-    /// Ask the overlay to restore its initial position and per-pixel input.
+    /// Ask the overlay to restore its initial position, native size and per-pixel
+    /// input.
     #[must_use]
     pub fn request_reset(mut self) -> Self {
         self.input_mode = InputMode::Opaque;
+        self.scale_percent = MAX_SCALE_PERCENT;
         self.reset = true;
         self.quit = false;
         self.bump();
@@ -114,6 +156,14 @@ impl ControlState {
     pub fn request_quit(mut self) -> Self {
         self.reset = false;
         self.quit = true;
+        self.bump();
+        self
+    }
+
+    /// Clear the one-shot flags and mark a new generation.
+    fn touched(mut self) -> Self {
+        self.reset = false;
+        self.quit = false;
         self.bump();
         self
     }
@@ -139,6 +189,7 @@ mod tests {
         let path = temp_path("missing");
         assert_eq!(ControlState::load(&path), ControlState::default());
         assert_eq!(ControlState::load(&path).input_mode, InputMode::Opaque);
+        assert_eq!(ControlState::load(&path).scale_percent, 100);
     }
 
     #[test]
@@ -154,6 +205,7 @@ mod tests {
         let path = temp_path("roundtrip");
         let state = ControlState {
             input_mode: InputMode::PassThrough,
+            scale_percent: 50,
             reset: false,
             quit: false,
             generation: 7,
@@ -171,6 +223,22 @@ mod tests {
             serde_json::from_str::<InputMode>("\"opaque\"").unwrap(),
             InputMode::Opaque
         );
+    }
+
+    #[test]
+    fn scale_is_clamped_and_nudged() {
+        let state = ControlState::fresh();
+        assert_eq!(state.scale_percent, 100);
+
+        assert_eq!(state.clone().set_scale_percent(0).scale_percent, 10);
+        assert_eq!(state.clone().set_scale_percent(250).scale_percent, 100);
+        assert_eq!(state.clone().set_scale_percent(50).scale_percent, 50);
+        assert_eq!(state.clone().nudge_scale(-40).scale_percent, 60);
+        assert_eq!(state.clone().nudge_scale(40).scale_percent, 100);
+
+        // reset restores the native size
+        let small = state.clone().set_scale_percent(25);
+        assert_eq!(small.request_reset().scale_percent, 100);
     }
 
     #[test]
@@ -198,5 +266,10 @@ mod tests {
         assert_eq!(full.input_mode, InputMode::Full);
         assert!(!full.reset);
         assert!(!full.quit);
+
+        // a scale change clears the one-shot flags too
+        let scaled = reset.clone().set_scale_percent(75);
+        assert_eq!(scaled.scale_percent, 75);
+        assert!(!scaled.reset);
     }
 }

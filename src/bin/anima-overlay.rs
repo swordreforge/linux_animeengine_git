@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use anima_engine_rs::anim::{Animation, Frame};
 use anima_engine_rs::cache::FrameCache;
-use anima_engine_rs::control::{ControlState, InputMode};
+use anima_engine_rs::control::{ControlState, InputMode, MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
 
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{
@@ -139,6 +139,9 @@ struct OverlayState {
     frame_margin_top: i32,
     animation: Arc<Animation>,
     frame_index: usize,
+    /// Native frame size; `scale_percent` is a percentage of it.
+    native_size: (u32, u32),
+    scale_percent: u32,
     surface_size: (u32, u32),
     compositor: wl_compositor::WlCompositor,
     qh: QueueHandle<OverlayState>,
@@ -493,6 +496,24 @@ fn apply_opaque_region(state: &mut OverlayState) {
     state.applied_rects = rects;
 }
 
+/// Resize the surface to `percent` of the native frame size. Only shrinking is
+/// allowed (clamped at 100%), so the GPU can sample the frame texture down and
+/// no resampling is ever required.
+fn apply_scale(state: &mut OverlayState, percent: u32) {
+    let percent = percent.clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    if state.scale_percent == percent {
+        return;
+    }
+    state.scale_percent = percent;
+    let (native_w, native_h) = state.native_size;
+    let width = (u64::from(native_w) * u64::from(percent) / 100).max(1) as u32;
+    let height = (u64::from(native_h) * u64::from(percent) / 100).max(1) as u32;
+    state.layer_surface.set_size(width, height);
+    state.surface.commit();
+    state.applied_rects.clear();
+    eprintln!("[overlay] scale {percent}% -> {width}x{height}");
+}
+
 /// Read-modify-write helper for the control file.
 fn write_control(path: &Path, action: impl FnOnce(ControlState) -> ControlState) {
     let next = action(ControlState::load(path));
@@ -542,6 +563,18 @@ impl ksni::Tray for OverlayTray {
                 ..Default::default()
             })
         };
+        let size_item = |label: &str, percent: u32| {
+            MenuItem::Checkmark(CheckmarkItem {
+                label: label.into(),
+                checked: state.scale_percent == percent,
+                activate: Box::new(move |tray: &mut Self| {
+                    write_control(&tray.control_path, move |state| {
+                        state.set_scale_percent(percent)
+                    });
+                }),
+                ..Default::default()
+            })
+        };
         vec![
             MenuItem::SubMenu(SubMenu {
                 label: "Input".into(),
@@ -549,6 +582,16 @@ impl ksni::Tray for OverlayTray {
                     mode_item("Full surface", InputMode::Full),
                     mode_item("Opaque pixels only", InputMode::Opaque),
                     mode_item("Click-through (all)", InputMode::PassThrough),
+                ],
+                ..Default::default()
+            }),
+            MenuItem::SubMenu(SubMenu {
+                label: "Size".into(),
+                submenu: vec![
+                    size_item("100% (native)", 100),
+                    size_item("75%", 75),
+                    size_item("50%", 50),
+                    size_item("25%", 25),
                 ],
                 ..Default::default()
             }),
@@ -715,6 +758,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frame_margin_top: pos_y,
         animation: Arc::clone(&animation),
         frame_index: 0,
+        native_size: (width, height),
+        scale_percent: MAX_SCALE_PERCENT,
         surface_size: (width, height),
         compositor: compositor.clone(),
         qh: qh.clone(),
@@ -873,7 +918,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dimension: Some(TextureViewDimension::D2Array),
         ..Default::default()
     });
-    let sampler = device.create_sampler(&SamplerDescriptor::default());
+    // Linear minification keeps downscaled frames (scale < 100%) from aliasing.
+    let sampler = device.create_sampler(&SamplerDescriptor {
+        min_filter: wgpu::FilterMode::Linear,
+        mag_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
     let uniform = device.create_buffer(&BufferDescriptor {
         label: Some("anima-frame-ctl"),
         size: std::mem::size_of::<FrameCtl>() as u64,
@@ -999,6 +1049,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("[overlay] reset to initial position");
                 }
                 apply_input_mode(&mut state, control.input_mode);
+                if control.scale_percent != state.scale_percent {
+                    apply_scale(&mut state, control.scale_percent);
+                }
                 if control.quit {
                     state.closed = true;
                     continue;

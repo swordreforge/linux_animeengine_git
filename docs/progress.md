@@ -25,7 +25,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | `input_map` | `deteccionDeTeclas.py` / `funciones.py` | `configTeclas.json` bindings, activation modes, function catalog |
 | `cache` | `monoModule.py` | `FrameCache`: sha256 key, ZIP+PNG frames, LRU eviction |
 | `anim` | `nuevoMotor.py` | GIF/APNG/WebP decode → composited RGBA frames (via `image`), plus `alpha_at` / `alpha_hit` |
-| `control` | — (new) | cross-process overlay control file (`overlay_control.json`): `InputMode` (full / opaque / pass-through) + reset / quit + generation |
+| `control` | — (new) | cross-process overlay control file (`overlay_control.json`): `InputMode` (full / opaque / pass-through), `scale_percent` (10–100), reset / quit + generation |
 | `error` | — | shared error type |
 
 ### Workshop
@@ -63,12 +63,15 @@ Interaction and control:
   - `Full` — `set_input_region(None)`: the whole surface is interactive
   - the region is rebuilt when the visible frame's silhouette changes; identical
     silhouettes skip the update, and >4096 rects fall back to the bounding box
-- **tray** (`ksni`): `StatusNotifierItem` menu with an "Input" submenu
-  (full / opaque / click-through), "Reset position and interaction", "Quit overlay"
+- **size** (`scale_percent`, capped at 100%): the surface is resized to
+  `native * percent / 100`, so it only ever shrinks and the GPU samples the
+  texture down (linear minification) — no resampling
+- **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
+  (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
-  `mode <full|opaque|pass-through>`, `reset`, `quit`, `status` — for compositor
-  keybindings (niri has no `GlobalShortcuts` portal backend); see
-  `docs/overlay-control.md`
+  `mode <full|opaque|pass-through>`, `scale <percent|up|down>`, `reset`, `quit`,
+  `status` — for compositor keybindings (niri has no `GlobalShortcuts` portal
+  backend); see `docs/overlay-control.md`
 - **global shortcuts** (`ashpd`, `xdg-desktop-portal` GlobalShortcuts):
   `Ctrl+Shift+T` toggle click-through, `Ctrl+Shift+R` reset
 - tray/portal do not touch the overlay directly: they write
@@ -86,7 +89,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **103** default (102 lib + 1 CLI), **106** with
+- `cargo test`: **105** default (103 lib + 2 CLI), **108** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -111,6 +114,9 @@ Interaction and control:
   mode, `toggle` → `input: click-through`, `mode full` → `input: full surface`,
   `mode opaque` → `input: opaque pixels (N rects)`, `reset` → `reset to initial
   position`, `quit` → exits 0; unknown subcommands exit 1 with usage.
+- Scaling verified on the 256² test animation: `scale 50` → `scale 50% ->
+  128x128`, `scale 200` clamps to `256x256`, `scale down` → `230x230`, `reset`
+  → `256x256`; an invalid `scale` argument exits 1.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -131,6 +137,10 @@ Interaction and control:
 - [x] Recover hotkeys on niri: `anima-overlay-ctl` CLI + compositor keybinds
       (documented in `docs/overlay-control.md`); the portal path stays for
       backends that implement `GlobalShortcuts`
+- [x] Size control (`scale_percent`): shrink-only, capped at the native size;
+      CLI `scale` + tray "Size" submenu
+- [ ] Persist `scale_percent` (and position) per instance in
+      `secondary_instances.json` — today they live in the transient control file
 - [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
       largely covered by the tray
 - [ ] Multi-instance: one process per animation (or multiple surfaces)
@@ -173,6 +183,8 @@ Interaction and control:
   machine's does not); the tray is the working control path here.
 - Per-pixel input sends one region rectangle per opaque span whenever the
   silhouette changes (thousands for detailed art); it is not throttled yet.
+- `scale_percent` and window position live in the transient control file, so
+  they reset when the overlay restarts (per-instance persistence is a TODO).
 - The control file is read-modify-written by tray and portal without a lock, so a
   rare concurrent toggle could lose an update.
 - Overlay is Wayland-only (layer-shell); X11/Windows not targeted yet.
@@ -182,8 +194,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (103 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (106)
+cargo test                                        # pure logic (105 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (108)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -193,6 +205,7 @@ cargo run --features overlay --bin anima-overlay  # generated test animation
 cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
 
 cargo build --release --bin anima-overlay-ctl     # CLI for compositor keybinds
+anima-overlay-ctl scale 50                         # shrink the overlay to 50%
 ```
 
 ## Reference
@@ -200,4 +213,4 @@ cargo build --release --bin anima-overlay-ctl     # CLI for compositor keybinds
 - `docs/workshop-steamworks-re.md` — reverse engineering of the shipped build.
 - Commit history: pure core → workshop RE + scanner → Steam bridge → overlay
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
-  per-pixel input region → CLI control (`anima-overlay-ctl`).
+  per-pixel input region → CLI control (`anima-overlay-ctl`) → size control.

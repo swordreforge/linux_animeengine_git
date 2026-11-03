@@ -13,6 +13,13 @@ see `control::ControlState`). Three front-ends write it: the SNI tray, the
 | `pass-through` | The whole surface is click-through |
 | `full` | The whole surface grabs clicks |
 
+## Size
+
+Display size is a percentage of the frame's native size, capped at **100%** —
+only shrinking is allowed, so the frame is never upscaled and never resampled:
+the GPU samples the texture down (linear minification). The per-pixel input
+region follows the scaled size automatically.
+
 ## CLI
 
 ```bash
@@ -23,7 +30,10 @@ cargo install --path . --bin anima-overlay-ctl
 anima-overlay-ctl toggle             # opaque pixels <-> click-through
 anima-overlay-ctl mode opaque
 anima-overlay-ctl mode pass-through
-anima-overlay-ctl reset              # initial position + opaque input
+anima-overlay-ctl scale 50           # shrink to 50% (never above 100%)
+anima-overlay-ctl scale up            # +10%
+anima-overlay-ctl scale down          # -10%
+anima-overlay-ctl reset              # initial position + native size + opaque input
 anima-overlay-ctl quit
 anima-overlay-ctl status
 ```
@@ -37,6 +47,8 @@ niri has no portal backend implementing `GlobalShortcuts`, so bind the CLI in
 Mod+Shift+T { spawn "anima-overlay-ctl" "toggle"; }
 Mod+Shift+R { spawn "anima-overlay-ctl" "reset"; }
 Mod+Shift+Q { spawn "anima-overlay-ctl" "quit"; }
+Mod+Shift+equal { spawn "anima-overlay-ctl" "scale" "up"; }
+Mod+Shift+minus { spawn "anima-overlay-ctl" "scale" "down"; }
 ```
 
 ## Tray
