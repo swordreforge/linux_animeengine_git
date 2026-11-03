@@ -16,6 +16,8 @@ pub enum Error {
     Parse(String),
     #[error("http error: {0}")]
     Http(String),
+    #[error("steam error: {0}")]
+    Steam(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

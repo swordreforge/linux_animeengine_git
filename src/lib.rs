@@ -16,6 +16,7 @@ pub mod paths;
 pub mod prefs;
 pub mod settings;
 pub mod state;
+pub mod steam;
 pub mod vdf;
 pub mod workshop;
 pub mod workshop_web;
