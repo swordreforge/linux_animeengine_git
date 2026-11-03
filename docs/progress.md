@@ -180,10 +180,9 @@ Interaction and control:
       `rotation`/`flip_h`/`flip_v`
 - [x] Show/hide via the 1x1 keep-alive (surface stays mapped, so the tray and CLI
       keep working while hidden)
-- [ ] `hover_hide` fidelity: it has to track the cursor *while* the overlay is
-      hidden, which needs a global pointer on Wayland (a 1x1 surface cannot see
-      the cursor elsewhere), so today the input region stays installed and clicks
-      are still captured while hidden
+- [ ] `hover_hide` fidelity — deferred: it needs a global pointer *while* hidden,
+      and none is available on this niri setup (see "Known gaps"); today the input
+      region stays installed, so clicks are still captured while it is hidden
 - [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
       largely covered by the tray
 - [ ] Multi-instance: one process per animation (or multiple surfaces)
@@ -235,6 +234,22 @@ Interaction and control:
   the Python's fixed 15 fps timer.
 - Hiding uses a 1x1 surface. A few compositors dislike tiny surfaces (live2d-rs
   falls back to 50x50 or `set_minimized` on GNOME/KDE); niri is fine with 1x1.
+- Global pointer (for a faithful `hover_hide`) is not available on this niri
+  setup. Checked:
+  - XWayland `XQueryPointer` returns a **frozen** last-known position — niri's
+    xwayland-satellite only forwards the pointer to X while it is over an X
+    surface, so `DISPLAY=:0` is not a live cursor source (verified: 20 s poll,
+    one position, stale button/modifier mask).
+  - evdev (`/dev/input/event*`) is `root:input 660` and the user is not in the
+    `input` group.
+  - only `gtk.portal` is installed, which does not implement
+    `org.freedesktop.portal.InputCapture` (and that portal is for input *capture*,
+    not cursor tracking).
+  - a full-screen bottom (Background) surface, as a wallpaper uses, only sees the
+    pointer where no other surface is above — it cannot see it over the overlay.
+  So `hover_hide` stays best-effort: it draws nothing while the cursor is on a
+  solid pixel and keeps the silhouette input region so `Leave` restores it;
+  clicks on the character are still captured while it is hidden.
 - The control file is read-modify-written by tray and portal without a lock, so a
   rare concurrent toggle could lose an update.
 - Overlay is Wayland-only (layer-shell); X11/Windows not targeted yet.
