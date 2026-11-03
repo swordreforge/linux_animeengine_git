@@ -107,6 +107,15 @@ Interaction and control:
   `ANIMA_REGION_MAX_RECTS` (default 4096). All three can also be changed at
   runtime with `anima-overlay-ctl region step|soft|max` or the tray's "Region"
   menu; the environment only seeds the startup values.
+- **right-click menu**: a column of geometric icon buttons drawn **inside the
+  surface** with wgpu (no font, no xdg_popup), placed near the click and clamped
+  inside the surface. Items: cycle input mode (dots show the current mode),
+  scale −, scale +, lock, reset, quit. Right-click opens/closes, left-click picks
+  an item, and clicking elsewhere or leaving the surface dismisses. While open the
+  input region covers the whole surface (the panel can sit over transparent
+  pixels) and hover-hide is suspended; closing restores the per-pixel region.
+  It is only reachable where the surface receives input — opaque pixels in
+  `Opaque`, anywhere in `Full`; in `PassThrough`/hidden use the tray or ctl.
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input", "Size"
   (100/75/50/25%) and "Region" submenus, "Visible"/"Lock position" checkmarks,
   "Reset position and interaction", "Quit overlay"
@@ -203,6 +212,10 @@ Interaction and control:
   768, max 4096`; `region max 300` made the soft budget follow (300); `region
   soft 100` then rebuilt to 235 rects at step 4 (auto is capped at 1 by the 206 px
   display, the hard cap took it to 4). `ctl status` reports the step/soft/max.
+- Right-click menu: the unit test covers the clamped layout and hit-testing (first
+  row → cycle input, last row → quit, misses outside); the smoke run initialises
+  the wgpu menu pipeline and shader cleanly. Actual clicking is manual (no input
+  synthesis available here).
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -235,8 +248,8 @@ Interaction and control:
 - [ ] `hover_hide` fidelity — deferred: it needs a global pointer *while* hidden,
       and none is available on this niri setup (see "Known gaps"); today the input
       region stays installed, so clicks are still captured while it is hidden
-- [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
-      largely covered by the tray
+- [x] Right-click menu drawn in-surface with wgpu (input mode / size / lock /
+      reset / quit); icons only, no font or popup
 - [x] Multi-instance: one process per animation, per-instance control file and
       tray item, broadcast CLI/portal with `--instance` targeting
 - [ ] Multi-monitor: per-output layer surfaces
@@ -344,4 +357,4 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
   → 1x1 keep-alive hide/show → multi-instance → in-screen clamping →
   frame-count region throttling/coarsening (+ optional auto step and configurable,
-  runtime-tunable rectangle budgets).
+  runtime-tunable rectangle budgets) → in-surface right-click menu.

@@ -76,6 +76,9 @@ const DEFAULT_POS: (i32, i32) = (100, 100);
 /// Linux evdev `BTN_LEFT`.
 const BTN_LEFT: u32 = 0x110;
 
+/// Linux evdev `BTN_RIGHT`.
+const BTN_RIGHT: u32 = 0x111;
+
 const SHADER: &str = r#"
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -132,6 +135,440 @@ struct FrameCtl {
     uv_mat: [f32; 4],
     uv_off: [f32; 2],
     _pad2: [f32; 2],
+}
+
+/// A menu vertex: NDC position + premultiplied RGBA.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MenuVertex {
+    pos: [f32; 2],
+    color: [f32; 4],
+}
+
+const MENU_SHADER: &str = r#"
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(@location(0) pos: vec2<f32>, @location(1) color: vec4<f32>) -> VsOut {
+    var out: VsOut;
+    out.pos = vec4<f32>(pos, 0.0, 1.0);
+    out.color = color;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#;
+
+/// In-surface context menu, drawn with wgpu near the click.
+///
+/// Like live2d-rs's toolbar this is a column of geometric icons (no font, no
+/// texture, no xdg_popup): right-click opens it, left-click picks an item, and
+/// clicking elsewhere or leaving the surface closes it.
+mod menu {
+    use super::{InputMode, MenuVertex};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Action {
+        CycleInput,
+        ScaleDown,
+        ScaleUp,
+        ToggleLock,
+        Reset,
+        Quit,
+    }
+
+    const ITEMS: [Action; 6] = [
+        Action::CycleInput,
+        Action::ScaleDown,
+        Action::ScaleUp,
+        Action::ToggleLock,
+        Action::Reset,
+        Action::Quit,
+    ];
+
+    #[derive(Clone, Copy, Debug)]
+    struct Rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    }
+
+    impl Rect {
+        fn contains(&self, x: f32, y: f32) -> bool {
+            x >= self.x && x <= self.x + self.w && y >= self.y && y <= self.y + self.h
+        }
+    }
+
+    fn empty_rect() -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        }
+    }
+
+    pub struct Menu {
+        pub open: bool,
+        pub hover: Option<usize>,
+        panel: Rect,
+        buttons: [Rect; 6],
+    }
+
+    impl Menu {
+        pub fn new() -> Self {
+            Self {
+                open: false,
+                hover: None,
+                panel: empty_rect(),
+                buttons: [empty_rect(); 6],
+            }
+        }
+
+        /// Open near the click, clamped inside the surface.
+        pub fn open_at(&mut self, surface: (u32, u32), x: f64, y: f64) {
+            let sw = surface.0 as f32;
+            let sh = surface.1 as f32;
+            let pad = 3.0;
+            let bw = 48.0_f32.min((sw - 2.0 * pad).max(16.0));
+            let bh = ((sh - 2.0 * pad) / 6.0).clamp(10.0, 32.0);
+            let total = bh * 6.0;
+            let ox = (x as f32 + 8.0).clamp(pad, (sw - bw - pad).max(pad));
+            let oy = (y as f32 + 8.0).clamp(pad, (sh - total - pad).max(pad));
+            self.panel = Rect {
+                x: ox - pad,
+                y: oy - pad,
+                w: bw + 2.0 * pad,
+                h: total + 2.0 * pad,
+            };
+            for (i, slot) in self.buttons.iter_mut().enumerate() {
+                *slot = Rect {
+                    x: ox,
+                    y: oy + i as f32 * bh,
+                    w: bw,
+                    h: bh,
+                };
+            }
+            self.open = true;
+            self.hover = None;
+        }
+
+        pub fn close(&mut self) {
+            self.open = false;
+            self.hover = None;
+        }
+
+        pub fn hit(&self, x: f64, y: f64) -> Option<Action> {
+            if !self.open {
+                return None;
+            }
+            let (x, y) = (x as f32, y as f32);
+            self.buttons
+                .iter()
+                .position(|b| b.contains(x, y))
+                .map(|i| ITEMS[i])
+        }
+
+        /// Update the hovered row; returns whether it changed.
+        pub fn update_hover(&mut self, x: f64, y: f64) -> bool {
+            if !self.open {
+                return false;
+            }
+            let (x, y) = (x as f32, y as f32);
+            let hover = self.buttons.iter().position(|b| b.contains(x, y));
+            if hover != self.hover {
+                self.hover = hover;
+                true
+            } else {
+                false
+            }
+        }
+
+        /// Triangle list for the menu (premultiplied colours, NDC).
+        pub fn vertices(&self, surface: (u32, u32), mode: InputMode) -> Vec<MenuVertex> {
+            let mut out = Vec::with_capacity(768);
+            if !self.open {
+                return out;
+            }
+            let frame = (surface.0 as f32, surface.1 as f32);
+            let white = [1.0, 1.0, 1.0, 0.9];
+
+            push_rect(&mut out, frame, self.panel, [0.08, 0.08, 0.10, 0.82]);
+            for (i, b) in self.buttons.iter().enumerate() {
+                let bg = if self.hover == Some(i) {
+                    [0.95, 0.95, 1.0, 0.28]
+                } else {
+                    [0.9, 0.9, 0.95, 0.10]
+                };
+                push_rect(&mut out, frame, *b, bg);
+            }
+
+            for (i, b) in self.buttons.iter().enumerate() {
+                let cx = b.x + b.w / 2.0;
+                let cy = b.y + b.h / 2.0;
+                let r = (b.h * 0.22).max(3.0);
+                match ITEMS[i] {
+                    Action::CycleInput => {
+                        let n = match mode {
+                            InputMode::Opaque => 1,
+                            InputMode::Full => 2,
+                            InputMode::PassThrough => 3,
+                        };
+                        // Outline square = the surface, dots = the current mode.
+                        let s = r * 1.35;
+                        let t = 1.2;
+                        for edge in [
+                            Rect {
+                                x: cx - s,
+                                y: cy - s,
+                                w: s * 2.0,
+                                h: t,
+                            },
+                            Rect {
+                                x: cx - s,
+                                y: cy + s - t,
+                                w: s * 2.0,
+                                h: t,
+                            },
+                            Rect {
+                                x: cx - s,
+                                y: cy - s,
+                                w: t,
+                                h: s * 2.0,
+                            },
+                            Rect {
+                                x: cx + s - t,
+                                y: cy - s,
+                                w: t,
+                                h: s * 2.0,
+                            },
+                        ] {
+                            push_rect(&mut out, frame, edge, white);
+                        }
+                        let dot = (r * 0.28).max(1.5);
+                        let spacing = dot * 2.6;
+                        let start = cx - spacing * (n as f32 - 1.0) / 2.0;
+                        for k in 0..n {
+                            push_rect(
+                                &mut out,
+                                frame,
+                                Rect {
+                                    x: start + k as f32 * spacing - dot,
+                                    y: cy - dot,
+                                    w: dot * 2.0,
+                                    h: dot * 2.0,
+                                },
+                                white,
+                            );
+                        }
+                    }
+                    Action::ScaleDown => {
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - r,
+                                y: cy - 1.0,
+                                w: r * 2.0,
+                                h: 2.0,
+                            },
+                            white,
+                        );
+                    }
+                    Action::ScaleUp => {
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - r,
+                                y: cy - 1.0,
+                                w: r * 2.0,
+                                h: 2.0,
+                            },
+                            white,
+                        );
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - 1.0,
+                                y: cy - r,
+                                w: 2.0,
+                                h: r * 2.0,
+                            },
+                            white,
+                        );
+                    }
+                    Action::ToggleLock => {
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - r * 0.8,
+                                y: cy - r * 0.1,
+                                w: r * 1.6,
+                                h: r * 1.2,
+                            },
+                            white,
+                        );
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - r * 0.5,
+                                y: cy - r * 1.1,
+                                w: 2.0,
+                                h: r,
+                            },
+                            white,
+                        );
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx + r * 0.5 - 2.0,
+                                y: cy - r * 1.1,
+                                w: 2.0,
+                                h: r,
+                            },
+                            white,
+                        );
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - r * 0.5,
+                                y: cy - r * 1.1,
+                                w: r,
+                                h: 2.0,
+                            },
+                            white,
+                        );
+                    }
+                    Action::Reset => {
+                        let s = r * 1.1;
+                        let t = 1.6;
+                        for edge in [
+                            Rect {
+                                x: cx - s,
+                                y: cy - s,
+                                w: s * 2.0,
+                                h: t,
+                            },
+                            Rect {
+                                x: cx - s,
+                                y: cy + s - t,
+                                w: s * 2.0,
+                                h: t,
+                            },
+                            Rect {
+                                x: cx - s,
+                                y: cy - s,
+                                w: t,
+                                h: s * 2.0,
+                            },
+                            Rect {
+                                x: cx + s - t,
+                                y: cy - s,
+                                w: t,
+                                h: s * 2.0,
+                            },
+                        ] {
+                            push_rect(&mut out, frame, edge, white);
+                        }
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - 1.5,
+                                y: cy - 1.5,
+                                w: 3.0,
+                                h: 3.0,
+                            },
+                            white,
+                        );
+                    }
+                    Action::Quit => {
+                        let s = r * 0.9;
+                        for (x1, y1, x2, y2) in [(-s, -s, s, s), (s, -s, -s, s)] {
+                            push_diagonal(&mut out, frame, cx, cy, x1, y1, x2, y2, 1.6, white);
+                        }
+                    }
+                }
+            }
+            out
+        }
+    }
+
+    fn ndc(frame: (f32, f32), x: f32, y: f32) -> [f32; 2] {
+        [x / frame.0 * 2.0 - 1.0, 1.0 - y / frame.1 * 2.0]
+    }
+
+    fn push_rect(out: &mut Vec<MenuVertex>, frame: (f32, f32), r: Rect, color: [f32; 4]) {
+        let c = [
+            color[0] * color[3],
+            color[1] * color[3],
+            color[2] * color[3],
+            color[3],
+        ];
+        let p = [
+            ndc(frame, r.x, r.y),
+            ndc(frame, r.x + r.w, r.y),
+            ndc(frame, r.x + r.w, r.y + r.h),
+            ndc(frame, r.x, r.y + r.h),
+        ];
+        for i in [0usize, 1, 2, 0, 2, 3] {
+            out.push(MenuVertex {
+                pos: p[i],
+                color: c,
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_diagonal(
+        out: &mut Vec<MenuVertex>,
+        frame: (f32, f32),
+        cx: f32,
+        cy: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        half_width: f32,
+        color: [f32; 4],
+    ) {
+        let c = [
+            color[0] * color[3],
+            color[1] * color[3],
+            color[2] * color[3],
+            color[3],
+        ];
+        let (dx, dy) = (x2 - x1, y2 - y1);
+        let len = (dx * dx + dy * dy).sqrt().max(0.001);
+        let (nx, ny) = (-dy / len * half_width, dx / len * half_width);
+        let (ax, ay) = (cx + x1, cy + y1);
+        let (bx, by) = (cx + x2, cy + y2);
+        let p = [
+            ndc(frame, ax + nx, ay + ny),
+            ndc(frame, bx + nx, by + ny),
+            ndc(frame, bx - nx, by - ny),
+            ndc(frame, ax - nx, ay - ny),
+        ];
+        for i in [0usize, 1, 2, 0, 2, 3] {
+            out.push(MenuVertex {
+                pos: p[i],
+                color: c,
+            });
+        }
+    }
 }
 
 struct OverlayState {
@@ -195,6 +632,10 @@ struct OverlayState {
     region_tuning: RegionTuning,
     /// Sampling step used for the installed region.
     applied_step: u32,
+    /// In-surface context menu.
+    menu: menu::Menu,
+    /// This instance's control file (the menu writes actions there).
+    control_path: PathBuf,
 }
 
 impl OutputHandler for OverlayState {
@@ -337,6 +778,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                 state.dragging = false;
                 state.pointer_inside = false;
                 state.pointer_over = false;
+                close_menu(state);
             }
             wl_pointer::Event::Motion {
                 surface_x,
@@ -345,6 +787,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
             } => {
                 state.pointer_pos = (surface_x, surface_y);
                 state.pointer_over = state.opaque_at(surface_x, surface_y);
+                if state.menu.update_hover(surface_x, surface_y) {
+                    state.visual_dirty = true;
+                }
                 if !state.dragging {
                     return;
                 }
@@ -367,11 +812,25 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                 state: button_state,
                 ..
             } => {
-                if button != BTN_LEFT {
-                    return;
-                }
                 match button_state {
                     WEnum::Value(wl_pointer::ButtonState::Pressed) => {
+                        if button == BTN_RIGHT {
+                            if state.menu.open {
+                                close_menu(state);
+                            } else if state.opaque_at(state.pointer_pos.0, state.pointer_pos.1) {
+                                open_menu(state, state.pointer_pos);
+                            }
+                            return;
+                        }
+                        if state.menu.open {
+                            if let Some(action) =
+                                state.menu.hit(state.pointer_pos.0, state.pointer_pos.1)
+                            {
+                                menu_action(state, action);
+                            }
+                            close_menu(state);
+                            return;
+                        }
                         // A locked instance ignores presses; otherwise only drag
                         // when the press lands on a solid pixel.
                         if !state.locked
@@ -386,6 +845,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                         }
                     }
                     WEnum::Value(wl_pointer::ButtonState::Released) => {
+                        if button != BTN_LEFT {
+                            return;
+                        }
                         if state.dragging {
                             eprintln!(
                                 "[overlay] drag end; margins ({}, {})",
@@ -626,6 +1088,52 @@ fn env_usize(name: &str, default: usize, min: usize, max: usize) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .map(|value| value.clamp(min, max))
         .unwrap_or(default)
+}
+
+/// Open the in-surface menu at the pointer. While it is open the input region
+/// covers the whole surface so the panel receives clicks even over transparent
+/// animation pixels; closing restores the per-pixel region.
+fn open_menu(state: &mut OverlayState, at: (f64, f64)) {
+    state.menu.open_at(state.surface_size, at.0, at.1);
+    state.surface.set_input_region(None);
+    state.surface.commit();
+    state.visual_dirty = true;
+    eprintln!("[overlay] menu open at ({:.0}, {:.0})", at.0, at.1);
+}
+
+fn close_menu(state: &mut OverlayState) {
+    if !state.menu.open {
+        return;
+    }
+    state.menu.close();
+    state.applied_rects.clear();
+    state.region_dirty = true;
+    state.visual_dirty = true;
+    eprintln!("[overlay] menu closed");
+}
+
+fn menu_action(state: &mut OverlayState, action: menu::Action) {
+    let path = state.control_path.clone();
+    let current = ControlState::load(&path);
+    let next = match action {
+        menu::Action::CycleInput => {
+            let mode = match state.input_mode {
+                InputMode::Opaque => InputMode::Full,
+                InputMode::Full => InputMode::PassThrough,
+                InputMode::PassThrough => InputMode::Opaque,
+            };
+            current.set_input_mode(mode)
+        }
+        menu::Action::ScaleDown => current.nudge_scale(-10),
+        menu::Action::ScaleUp => current.nudge_scale(10),
+        menu::Action::ToggleLock => current.toggle_locked(),
+        menu::Action::Reset => current.request_reset(),
+        menu::Action::Quit => current.request_quit(),
+    };
+    if let Err(err) = next.save(&path) {
+        eprintln!("[overlay] menu action failed: {err}");
+    }
+    eprintln!("[overlay] menu action: {action:?}");
 }
 
 /// Apply an input mode to the surface.
@@ -1157,6 +1665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "test pattern".to_string());
     let state_path = SecondaryState::user_path();
+    let control_path = ControlState::path_for(instance_key.as_deref());
     let region_tuning = RegionTuning::from_env();
     eprintln!("[overlay] region limits: {}", region_tuning.describe());
     let persisted = instance_key
@@ -1264,6 +1773,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         visual_dirty: true,
         region_tuning,
         applied_step: 1,
+        menu: menu::Menu::new(),
+        control_path: control_path.clone(),
     };
     event_queue.roundtrip(&mut state)?;
     // Configures the input region for the restored mode (Opaque builds the
@@ -1271,7 +1782,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_input_mode(&mut state, initial_mode);
 
     // --- control channel: tray + portal global shortcuts -------------------
-    let control_path = ControlState::path_for(state.instance_key.as_deref());
     let mut control = ControlState::fresh();
     // Seed the runtime channel with the persisted display size so a CLI
     // read-modify-write cannot silently reset it.
@@ -1527,6 +2037,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache: None,
     });
 
+    // --- context-menu pipeline (solid quads, no textures) ------------------
+    let menu_shader = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("anima-menu-shader"),
+        source: ShaderSource::Wgsl(MENU_SHADER.into()),
+    });
+    let menu_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("anima-menu-pl"),
+        bind_group_layouts: &[],
+        immediate_size: 0,
+    });
+    let menu_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: Some("anima-menu-pipeline"),
+        layout: Some(&menu_pipeline_layout),
+        vertex: VertexState {
+            module: &menu_shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<MenuVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 8,
+                        shader_location: 1,
+                    },
+                ],
+            }],
+        },
+        primitive: PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: MultisampleState::default(),
+        fragment: Some(FragmentState {
+            module: &menu_shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(ColorTargetState {
+                format,
+                blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let menu_vbo = device.create_buffer(&BufferDescriptor {
+        label: Some("anima-menu-verts"),
+        size: 256 * 1024,
+        usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
     // --- playback loop -----------------------------------------------------
     let (uv_mat, uv_off) = uv_transform(state.orientation);
     let mut index = 0usize;
@@ -1618,8 +2185,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             0
         };
-        // Hidden (1x1 keep-alive) or hover-hide: draw nothing.
-        let hide_now = state.hidden || (state.hover_hide && state.pointer_over);
+        let menu_verts = state.menu.vertices(state.surface_size, state.input_mode);
+        if !menu_verts.is_empty() {
+            queue.write_buffer(&menu_vbo, 0, bytemuck::cast_slice(&menu_verts));
+        }
+
+        // Hidden (1x1 keep-alive) or hover-hide: draw nothing. The menu is always
+        // drawn while open, even if hover-hide would otherwise blank the surface.
+        let hide_now =
+            !state.menu.open && (state.hidden || (state.hover_hide && state.pointer_over));
 
         // Skip presenting when the visible content did not change (a static
         // image) or while hidden; the compositor keeps the last frame.
@@ -1666,6 +2240,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if !hide_now {
                             pass.draw(0..3, 0..1);
                         }
+                        if !menu_verts.is_empty() {
+                            pass.set_pipeline(&menu_pipeline);
+                            pass.set_vertex_buffer(0, menu_vbo.slice(..));
+                            pass.draw(0..menu_verts.len() as u32, 0..1);
+                        }
                     }
                     queue.submit(std::iter::once(encoder.finish()));
                     frame.present();
@@ -1691,7 +2270,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Input-region updates are throttled by frame count (not by wall-clock
         // delay); a size change forces one immediately, and a static image is
         // only scanned once.
-        if state.input_mode == InputMode::Opaque
+        if !state.menu.open
+            && state.input_mode == InputMode::Opaque
             && (state.region_dirty
                 || (region_index != Some(index) && presented.is_multiple_of(REGION_UPDATE_FRAMES)))
         {
@@ -1728,5 +2308,23 @@ mod tests {
 
         // a surface larger than the output is pinned at the origin
         assert_eq!(clamp_position(50, 50, (2000, 1200), output), (0, 0));
+    }
+
+    #[test]
+    fn menu_layout_is_clamped_and_hit_testable() {
+        use crate::menu::{Action, Menu};
+
+        let mut menu = Menu::new();
+        assert_eq!(menu.hit(10.0, 10.0), None);
+
+        menu.open_at((300, 200), 295.0, 195.0);
+        assert!(menu.open);
+        // The panel is clamped inside the surface; first and last rows are usable.
+        assert_eq!(menu.hit(250.0, 10.0), Some(Action::CycleInput));
+        assert_eq!(menu.hit(250.0, 180.0), Some(Action::Quit));
+        assert_eq!(menu.hit(-1.0, 10.0), None);
+
+        menu.close();
+        assert_eq!(menu.hit(250.0, 10.0), None);
     }
 }

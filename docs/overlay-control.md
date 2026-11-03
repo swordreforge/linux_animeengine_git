@@ -110,6 +110,16 @@ scaled size. This is the live2d-rs pattern; a few compositors dislike tiny
 surfaces (live2d-rs falls back to 50x50 / `set_minimized` on GNOME/KDE), but
 niri is fine with 1x1.
 
+## Right-click menu
+
+Right-clicking a solid pixel opens a small icon column *inside* the overlay
+surface (drawn with wgpu, no popup). Items, top to bottom: cycle input mode (the
+dots show the current mode), scale down, scale up, lock/unlock, reset, quit.
+Left-click picks an item; clicking elsewhere, right-clicking again, or leaving the
+surface dismisses it. While it is open the input region covers the whole surface
+(so the panel receives clicks over transparent pixels), and it is unreachable in
+`pass-through`/hidden — use the tray or `anima-overlay-ctl` there.
+
 ## Tray
 
 The overlay registers a `StatusNotifierItem`. niri has no tray host by default —
