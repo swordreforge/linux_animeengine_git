@@ -1,5 +1,4 @@
-//! `anima-overlay-ctl` — control a running `anima-overlay` from the command
-//! line, e.g. from compositor keybindings.
+//! `anima-overlay-ctl` — control running `anima-overlay` instances.
 //!
 //! ```text
 //! anima-overlay-ctl toggle                          # opaque pixels <-> click-through
@@ -9,13 +8,14 @@
 //! anima-overlay-ctl hide | show | toggle-hidden     # hide keeps the surface alive (1x1)
 //! anima-overlay-ctl reset                           # initial position + native size
 //! anima-overlay-ctl quit
-//! anima-overlay-ctl status
+//! anima-overlay-ctl status                          # per-instance state (alias: --list)
 //! ```
 //!
-//! It only writes the shared control file (`control::ControlState`); the overlay
-//! polls it, so the tool works whether or not the overlay is currently running.
+//! By default a command applies to **every** running instance (each polls its own
+//! control file); `--instance <animation path>` targets one. The tool only writes
+//! control files, so it works whether or not the overlays are running.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anima_engine_rs::control::{ControlState, InputMode};
@@ -29,36 +29,54 @@ enum ScaleAction {
 }
 
 fn main() -> ExitCode {
+    let mut selector: Option<String> = None;
+    let mut words: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
-    let path = ControlState::path();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--instance" | "-i" => match args.next() {
+                Some(path) => selector = Some(path),
+                None => return usage("[--instance <animation path>] <command>"),
+            },
+            "--all" => selector = None,
+            _ => words.push(arg),
+        }
+    }
 
-    let outcome = match args.next().as_deref() {
-        Some("toggle") => update(&path, ControlState::toggle_click_through),
-        Some("reset") => update(&path, ControlState::request_reset),
-        Some("quit") => update(&path, ControlState::request_quit),
-        Some("mode") => match args.next().as_deref().and_then(parse_mode) {
-            Some(mode) => update(&path, move |state| state.set_input_mode(mode)),
-            None => return usage("mode <full|opaque|pass-through>"),
+    let mut words = words.into_iter();
+    let command = words.next();
+    let paths = target_paths(selector.as_deref());
+
+    let outcome = match command.as_deref() {
+        Some("toggle") => apply_all(&paths, ControlState::toggle_click_through),
+        Some("toggle-hidden") => apply_all(&paths, ControlState::toggle_hidden),
+        Some("reset") => apply_all(&paths, ControlState::request_reset),
+        Some("quit") => apply_all(&paths, ControlState::request_quit),
+        Some("lock") => apply_all(&paths, |state| state.set_locked(true)),
+        Some("unlock") => apply_all(&paths, |state| state.set_locked(false)),
+        Some("hide") => apply_all(&paths, |state| state.set_hidden(true)),
+        Some("show") => apply_all(&paths, |state| state.set_hidden(false)),
+        Some("mode") => match words.next().as_deref().and_then(parse_mode) {
+            Some(mode) => apply_all(&paths, move |state| state.set_input_mode(mode)),
+            None => return usage("[--instance <path>] mode <full|opaque|pass-through>"),
         },
-        Some("scale") => match args.next().as_deref().and_then(parse_scale) {
+        Some("scale") => match words.next().as_deref().and_then(parse_scale) {
             Some(ScaleAction::Set(percent)) => {
-                update(&path, move |state| state.set_scale_percent(percent))
+                apply_all(&paths, move |state| state.set_scale_percent(percent))
             }
-            Some(ScaleAction::Nudge(delta)) => update(&path, move |state| state.nudge_scale(delta)),
-            None => return usage("scale <percent|up|down>"),
+            Some(ScaleAction::Nudge(delta)) => {
+                apply_all(&paths, move |state| state.nudge_scale(delta))
+            }
+            None => return usage("[--instance <path>] scale <percent|up|down>"),
         },
-        Some("lock") => update(&path, |state| state.set_locked(true)),
-        Some("unlock") => update(&path, |state| state.set_locked(false)),
-        Some("hide") => update(&path, |state| state.set_hidden(true)),
-        Some("show") => update(&path, |state| state.set_hidden(false)),
-        Some("toggle-hidden") => update(&path, ControlState::toggle_hidden),
-        Some("status") => {
-            status(&path);
+        Some("status") | Some("--list") => {
+            status(&paths);
             Ok(())
         }
         _ => {
             return usage(
-                "<toggle|toggle-hidden|mode <m>|scale <s>|lock|unlock|hide|show|reset|quit|status>",
+                "[--instance <path>|--all] <toggle|toggle-hidden|mode <m>|scale <s>|\
+                 lock|unlock|hide|show|reset|quit|status>",
             );
         }
     };
@@ -77,26 +95,50 @@ fn usage(args: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn update(
-    path: &Path,
-    action: impl FnOnce(ControlState) -> ControlState,
-) -> Result<(), anima_engine_rs::Error> {
-    action(ControlState::load(path)).save(path)
+/// Control files a command applies to: one instance, or every instance (with a
+/// fallback to the key-less file when none exist yet).
+fn target_paths(selector: Option<&str>) -> Vec<PathBuf> {
+    if let Some(path) = selector {
+        let key = anima_engine_rs::paths::canonical_path(path);
+        return vec![ControlState::path_for(Some(&key))];
+    }
+    let instances = ControlState::instances();
+    if instances.is_empty() {
+        vec![ControlState::path()]
+    } else {
+        instances
+    }
 }
 
-fn status(path: &Path) {
-    let state = ControlState::load(path);
-    let mode = match state.input_mode {
-        InputMode::Full => "full",
-        InputMode::Opaque => "opaque",
-        InputMode::PassThrough => "pass-through",
-    };
-    println!("mode:       {mode}");
-    println!("scale:      {}%", state.scale_percent);
-    println!("locked:     {}", state.locked);
-    println!("hidden:     {}", state.hidden);
-    println!("generation: {}", state.generation);
-    println!("file:       {}", path.display());
+fn apply_all(
+    paths: &[PathBuf],
+    action: impl Fn(ControlState) -> ControlState + Copy,
+) -> Result<(), anima_engine_rs::Error> {
+    for path in paths {
+        action(ControlState::load(path)).save(path)?;
+    }
+    Ok(())
+}
+
+fn status(paths: &[PathBuf]) {
+    for path in paths {
+        let state = ControlState::load(path);
+        let mode = match state.input_mode {
+            InputMode::Full => "full",
+            InputMode::Opaque => "opaque",
+            InputMode::PassThrough => "pass-through",
+        };
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("unknown");
+        println!("{name}");
+        println!("  mode:   {mode}");
+        println!("  scale:  {}%", state.scale_percent);
+        println!("  locked: {}  hidden: {}", state.locked, state.hidden);
+        println!("  gen:    {}", state.generation);
+        println!("  file:   {}", path.display());
+    }
 }
 
 fn parse_mode(value: &str) -> Option<InputMode> {
@@ -118,8 +160,8 @@ fn parse_scale(value: &str) -> Option<ScaleAction> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ScaleAction, parse_mode, parse_scale};
-    use anima_engine_rs::control::InputMode;
+    use super::{ScaleAction, parse_mode, parse_scale, target_paths};
+    use anima_engine_rs::control::{InputMode, instance_slug};
 
     #[test]
     fn parses_input_modes() {
@@ -137,5 +179,12 @@ mod tests {
         assert!(matches!(parse_scale("50"), Some(ScaleAction::Set(50))));
         assert!(matches!(parse_scale("250"), Some(ScaleAction::Set(250))));
         assert!(parse_scale("big").is_none());
+    }
+
+    #[test]
+    fn selector_targets_one_instance() {
+        let paths = target_paths(Some("/gifs/a.apng"));
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with(format!("{}.json", instance_slug("/gifs/a.apng"))));
     }
 }

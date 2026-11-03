@@ -1,9 +1,10 @@
 # Controlling the overlay
 
 `anima-overlay` is a bare, frameless, always-on-top surface, so it is driven from
-outside through a small JSON file (`<XDG data>/AnimaEngine/overlay_control.json`,
-see `control::ControlState`). Three front-ends write it: the SNI tray, the
-`xdg-desktop-portal` global shortcuts, and the `anima-overlay-ctl` CLI.
+outside through small JSON files (`<XDG data>/AnimaEngine/overlay_control/*.json`,
+one per instance, see `control::ControlState`). Three front-ends write them: the
+SNI tray, the `xdg-desktop-portal` global shortcuts, and the
+`anima-overlay-ctl` CLI.
 
 ## Input modes
 
@@ -17,6 +18,17 @@ Position and size persist to `secondary_instances.json` (keyed by the animation'
 canonical path), together with `click_through` and `locked`. Other instance
 fields (`fps`, `rotation`, `flip_h`/`flip_v`, `always_on_top`, `hover_hide`) are
 read from that file at startup.
+
+## Multiple instances
+
+Run one `anima-overlay <path>` process per animation. Each instance gets its own
+control file (`overlay_control/<slug>.json`, slug = SHA-256 of the canonical
+animation path) and its own tray item (title = file name).
+
+`anima-overlay-ctl` applies to **all** running instances by default; pass
+`--instance <animation path>` to target one. `status` prints one block per
+instance. The tray menu acts only on its own instance, and the portal shortcut
+handler broadcasts (each instance registers per-instance shortcut ids).
 
 ## Size
 

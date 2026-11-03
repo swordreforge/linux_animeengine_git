@@ -82,6 +82,13 @@ Interaction and control:
   stays alive (the pattern Wayland needs; an unmapped surface cannot come back);
   showing restores the scaled size. Tray "Visible", `anima-overlay-ctl
   hide|show|toggle-hidden`, `Mod+Alt+H`
+- **multi-instance**: one process per animation. Each gets its own control file
+  (`<XDG data>/AnimaEngine/overlay_control/<slug>.json`, slug = SHA-256 of the
+  canonical path) and its own tray item (`anima-engine-overlay-<slug>`, title =
+  file name). `anima-overlay-ctl` broadcasts to every instance by default and
+  takes `--instance <animation path>` to target one; the portal shortcut handler
+  also broadcasts (shortcut ids are per-instance). `secondary_instances.json`
+  already holds one entry per path.
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
   (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
@@ -151,6 +158,11 @@ Interaction and control:
   hidden* the overlay still applied `scale 75% (hidden)`, `input: full surface`
   and `show` → `shown`, then quit cleanly — the 1x1 surface keeps the event loop
   and control channel alive, matching the live2d-rs approach.
+- Multi-instance: two overlays (two images) created two per-instance control
+  files and `status` listed both; a broadcast `toggle` logged
+  `input: click-through` in **both** logs, while `--instance <p1> mode full` only
+  affected the first and `--instance <p2> scale 50` only the second; a broadcast
+  `quit` exited both with rc 0, and both trays registered.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -185,7 +197,8 @@ Interaction and control:
       region stays installed, so clicks are still captured while it is hidden
 - [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
       largely covered by the tray
-- [ ] Multi-instance: one process per animation (or multiple surfaces)
+- [x] Multi-instance: one process per animation, per-instance control file and
+      tray item, broadcast CLI/portal with `--instance` targeting
 - [ ] Multi-monitor: per-output layer surfaces
 - [ ] GNOME/Mutter fallback (no layer-shell → compositor rules / normal window)
 - [ ] HiDPI buffer scale + pin surface size across compositor reconfigures
@@ -273,6 +286,12 @@ cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
 
 cargo build --release --bin anima-overlay-ctl     # CLI for compositor keybinds
 anima-overlay-ctl scale 50                         # shrink the overlay to 50%
+
+# multi-instance: one process per animation
+cargo run --features overlay --bin anima-overlay -- /path/a.apng &
+cargo run --features overlay --bin anima-overlay -- /path/b.apng &
+anima-overlay-ctl status                           # one block per instance
+anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
 ```
 
 ## Reference
@@ -282,4 +301,4 @@ anima-overlay-ctl scale 50                         # shrink the overlay to 50%
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
   per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
   geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
-  → 1x1 keep-alive hide/show.
+  → 1x1 keep-alive hide/show → multi-instance.

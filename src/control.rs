@@ -11,12 +11,26 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::Result;
 use crate::paths;
 
-/// File name, inside [`paths::user_data_dir`].
-pub const CONTROL_FILE: &str = "overlay_control.json";
+/// Directory (inside [`paths::user_data_dir`]) holding one control file per
+/// overlay instance.
+pub const CONTROL_DIR: &str = "overlay_control";
+
+/// Stable, filesystem-safe slug for an instance key: 16 hex chars of its SHA-256.
+pub fn instance_slug(key: &str) -> String {
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(key.as_bytes());
+    let mut out = String::with_capacity(16);
+    for byte in &digest[..8] {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
 
 /// Smallest accepted display size. Explicit downscales below this are refused.
 pub const MIN_SCALE_PERCENT: u32 = 10;
@@ -91,9 +105,43 @@ impl Default for ControlState {
 }
 
 impl ControlState {
-    /// Default location: `<XDG data>/AnimaEngine/overlay_control.json`.
+    /// Control file for one instance (`key` = the animation's canonical path),
+    /// or the key-less `default.json` used by the generated test pattern.
+    pub fn path_for(key: Option<&str>) -> PathBuf {
+        let dir = paths::user_data_dir().join(CONTROL_DIR);
+        match key {
+            Some(key) => dir.join(format!("{}.json", instance_slug(key))),
+            None => dir.join("default.json"),
+        }
+    }
+
+    /// Key-less control file (test pattern, and the fallback when no instance
+    /// files exist yet).
     pub fn path() -> PathBuf {
-        paths::user_data_dir().join(CONTROL_FILE)
+        Self::path_for(None)
+    }
+
+    /// Existing per-instance control files, sorted for stable output.
+    pub fn instances() -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(paths::user_data_dir().join(CONTROL_DIR)) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().is_some_and(|ext| ext == "json")
+                    && path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| {
+                            stem == "default"
+                                || (stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
+                        })
+            })
+            .collect();
+        paths.sort();
+        paths
     }
 
     /// Fresh state with a current generation, used at overlay startup so stale
@@ -278,6 +326,23 @@ mod tests {
         // reset restores the native size
         let small = state.clone().set_scale_percent(25);
         assert_eq!(small.request_reset().scale_percent, 100);
+    }
+
+    #[test]
+    fn instance_paths_are_distinct_and_stable() {
+        let slug = instance_slug("/gifs/a.apng");
+        assert_eq!(slug.len(), 16);
+        assert!(slug.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(slug, instance_slug("/gifs/a.apng"));
+
+        let a = ControlState::path_for(Some("/gifs/a.apng"));
+        let b = ControlState::path_for(Some("/gifs/b.apng"));
+        let default = ControlState::path_for(None);
+        assert_ne!(a, b);
+        assert_ne!(a, default);
+        assert!(a.ends_with(format!("{slug}.json")));
+        assert!(default.ends_with("default.json"));
+        assert_eq!(ControlState::path(), default);
     }
 
     #[test]

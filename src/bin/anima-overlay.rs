@@ -639,6 +639,8 @@ fn write_mode(path: &Path, mode: InputMode) {
 /// the overlay or quit it by writing [`ControlState`].
 struct OverlayTray {
     control_path: PathBuf,
+    id: String,
+    title: String,
 }
 
 impl ksni::Tray for OverlayTray {
@@ -646,11 +648,11 @@ impl ksni::Tray for OverlayTray {
     const MENU_ON_ACTIVATE: bool = true;
 
     fn id(&self) -> String {
-        "anima-engine-overlay".into()
+        self.id.clone()
     }
 
     fn title(&self) -> String {
-        "AnimaEngine".into()
+        self.title.clone()
     }
 
     fn icon_name(&self) -> String {
@@ -738,12 +740,34 @@ impl ksni::Tray for OverlayTray {
     }
 }
 
-/// Start the tray in the background. On niri (no StatusNotifierWatcher by
-/// default) this logs and returns `None` unless a bar such as waybar hosts one.
-fn spawn_tray(control_path: PathBuf) -> Option<ksni::blocking::Handle<OverlayTray>> {
+/// Apply `action` to every running instance's control file, so one keypress can
+/// drive all overlays (the tray, in contrast, targets only its own instance).
+fn broadcast_control(action: impl Fn(ControlState) -> ControlState + Copy) {
+    let paths = ControlState::instances();
+    if paths.is_empty() {
+        write_control(&ControlState::path(), action);
+        return;
+    }
+    for path in paths {
+        write_control(&path, action);
+    }
+}
+
+/// Start the tray in the background with a per-instance id/title. On niri (no
+/// StatusNotifierWatcher by default) this logs and returns `None` unless a bar
+/// such as waybar hosts one.
+fn spawn_tray(
+    control_path: PathBuf,
+    slug: String,
+    label: String,
+) -> Option<ksni::blocking::Handle<OverlayTray>> {
     use ksni::blocking::TrayMethods;
 
-    let tray = OverlayTray { control_path };
+    let tray = OverlayTray {
+        control_path,
+        id: format!("anima-engine-overlay-{slug}"),
+        title: format!("AnimaEngine — {label}"),
+    };
     match tray
         .disable_dbus_name(false)
         .assume_sni_available(true)
@@ -763,7 +787,7 @@ fn spawn_tray(control_path: PathBuf) -> Option<ksni::blocking::Handle<OverlayTra
 /// Register global shortcuts through `xdg-desktop-portal` in the background.
 /// This is the recovery path: once click-through is on, the surface itself can
 /// no longer be clicked.
-fn spawn_portal(control_path: PathBuf) {
+fn spawn_portal(slug: String) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -776,26 +800,29 @@ fn spawn_portal(control_path: PathBuf) {
             }
         };
         runtime.block_on(async move {
-            if let Err(err) = run_portal(control_path).await {
+            if let Err(err) = run_portal(slug).await {
                 eprintln!("[overlay] global shortcuts unavailable: {err}");
             }
         });
     });
 }
 
-async fn run_portal(control_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_portal(slug: String) -> Result<(), Box<dyn std::error::Error>> {
     use ashpd::desktop::CreateSessionOptions;
     use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
     use futures_util::StreamExt;
+
+    let toggle_id = format!("toggle-click-through-{slug}");
+    let reset_id = format!("reset-overlay-{slug}");
 
     let proxy = GlobalShortcuts::new().await?;
     let session = proxy
         .create_session(CreateSessionOptions::default())
         .await?;
     let shortcuts = [
-        NewShortcut::new("toggle-click-through", "Toggle overlay click-through")
+        NewShortcut::new(toggle_id.clone(), "Toggle overlay click-through")
             .preferred_trigger("CTRL+SHIFT+t"),
-        NewShortcut::new("reset-overlay", "Reset overlay position and interaction")
+        NewShortcut::new(reset_id.clone(), "Reset overlay position and interaction")
             .preferred_trigger("CTRL+SHIFT+r"),
     ];
     proxy
@@ -805,12 +832,13 @@ async fn run_portal(control_path: PathBuf) -> Result<(), Box<dyn std::error::Err
 
     let mut activated = proxy.receive_activated().await?;
     while let Some(event) = activated.next().await {
-        match event.shortcut_id() {
-            "toggle-click-through" => {
-                write_control(&control_path, ControlState::toggle_click_through);
-            }
-            "reset-overlay" => write_control(&control_path, ControlState::request_reset),
-            other => eprintln!("[overlay] unknown shortcut activated: {other}"),
+        let id = event.shortcut_id();
+        if id == toggle_id {
+            broadcast_control(ControlState::toggle_click_through);
+        } else if id == reset_id {
+            broadcast_control(ControlState::request_reset);
+        } else {
+            eprintln!("[overlay] unknown shortcut activated: {id}");
         }
     }
 
@@ -860,6 +888,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance_key = path
         .as_deref()
         .map(|path| anima_engine_rs::paths::canonical_path(&path.to_string_lossy()));
+    // Identity for the per-instance control file and tray item.
+    let slug = instance_key.as_deref().map_or_else(
+        || "default".to_string(),
+        anima_engine_rs::control::instance_slug,
+    );
+    let label = path
+        .as_deref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "test pattern".to_string());
     let state_path = SecondaryState::user_path();
     let persisted = instance_key
         .as_deref()
@@ -965,7 +1003,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_input_mode(&mut state, initial_mode);
 
     // --- control channel: tray + portal global shortcuts -------------------
-    let control_path = ControlState::path();
+    let control_path = ControlState::path_for(state.instance_key.as_deref());
     let mut control = ControlState::fresh();
     // Seed the runtime channel with the persisted display size so a CLI
     // read-modify-write cannot silently reset it.
@@ -978,8 +1016,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut control_mtime = std::fs::metadata(&control_path)
         .and_then(|m| m.modified())
         .ok();
-    let _tray = spawn_tray(control_path.clone());
-    spawn_portal(control_path.clone());
+    let _tray = spawn_tray(control_path.clone(), slug.clone(), label);
+    spawn_portal(slug);
 
     // --- wgpu surface from the raw Wayland handles -------------------------
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
