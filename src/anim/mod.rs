@@ -53,6 +53,47 @@ impl Animation {
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
+
+    /// Alpha (0-255) of a frame pixel; 0 when out of range.
+    pub fn alpha_at(&self, frame: usize, x: u32, y: u32) -> u8 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        let Some(frame) = self.frames.get(frame) else {
+            return 0;
+        };
+        let index = (y as usize * self.width as usize + x as usize) * 4 + 3;
+        frame.rgba.get(index).copied().unwrap_or(0)
+    }
+
+    /// Hit-test a point in surface-local coordinates, where the frame is
+    /// stretched to `surface` size. Used for drag-on-solid-pixel.
+    pub fn alpha_hit(
+        &self,
+        frame: usize,
+        surface: (u32, u32),
+        sx: f64,
+        sy: f64,
+        threshold: u8,
+    ) -> bool {
+        let (sw, sh) = surface;
+        if sw == 0 || sh == 0 || self.width == 0 || self.height == 0 {
+            return false;
+        }
+        if !sx.is_finite() || !sy.is_finite() {
+            return false;
+        }
+        let fx = (sx * f64::from(self.width) / f64::from(sw)).floor();
+        let fy = (sy * f64::from(self.height) / f64::from(sh)).floor();
+        if fx < 0.0 || fy < 0.0 {
+            return false;
+        }
+        let (fx, fy) = (fx as u32, fy as u32);
+        if fx >= self.width || fy >= self.height {
+            return false;
+        }
+        self.alpha_at(frame, fx, fy) >= threshold
+    }
 }
 
 /// A decoder that turns a file into a composited [`Animation`].
@@ -505,5 +546,34 @@ mod tests {
     fn rejects_unknown_content() {
         let err = decode_bytes(b"not an image at all", "junk.bin").unwrap_err();
         assert!(matches!(err, Error::Decode(_)));
+    }
+
+    #[test]
+    fn alpha_hit_maps_surface_to_frame() {
+        let anim = Animation {
+            width: 2,
+            height: 1,
+            frames: vec![Frame {
+                rgba: vec![255, 0, 0, 255, 0, 255, 0, 0],
+                delay_ms: 0,
+            }],
+        };
+
+        // surface == frame size
+        assert!(anim.alpha_hit(0, (2, 1), 0.5, 0.5, 25));
+        assert!(!anim.alpha_hit(0, (2, 1), 1.5, 0.5, 25));
+
+        // surface stretched 2x: x in [2, 4) maps to frame column 1 (alpha 0)
+        assert!(anim.alpha_hit(0, (4, 2), 0.5, 0.5, 25));
+        assert!(!anim.alpha_hit(0, (4, 2), 3.0, 0.5, 25));
+
+        // degenerate / invalid inputs
+        assert!(!anim.alpha_hit(0, (2, 1), -0.1, 0.0, 25));
+        assert!(!anim.alpha_hit(0, (2, 1), f64::NAN, 0.0, 25));
+        assert!(!anim.alpha_hit(0, (0, 0), 0.0, 0.0, 25));
+        assert!(!anim.alpha_hit(1, (2, 1), 0.5, 0.5, 25));
+
+        assert_eq!(anim.alpha_at(0, 0, 0), 255);
+        assert_eq!(anim.alpha_at(0, 5, 5), 0);
     }
 }

@@ -5,6 +5,11 @@
 //! `delay_ms`, using [`FrameCache`] so a file is only decoded once and then
 //! loaded from the cache on later runs.
 //!
+//! Interaction: the left mouse button only starts a drag when it lands on an
+//! **opaque** pixel of the frame currently on screen (per-pixel alpha hit-test,
+//! matching the Python renderer's `_pixel_opaque_at`). Dragging updates the
+//! layer-shell margins.
+//!
 //! Usage:
 //! ```text
 //! cargo run --features overlay --bin anima-overlay -- [animation.gif|.apng|.webp]
@@ -24,10 +29,10 @@ use anima_engine_rs::cache::FrameCache;
 
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{
-    wl_compositor, wl_region, wl_registry, wl_surface,
+    wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_surface,
 };
 use smithay_client_toolkit::reexports::client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
 };
 use smithay_client_toolkit::reexports::protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1, zwlr_layer_surface_v1,
@@ -50,6 +55,12 @@ use wgpu::{
 /// GPU budget for a fully pre-uploaded frame array. Larger animations fall back
 /// to uploading the current frame just in time.
 const ARRAY_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// Alpha value (0-255) at or above which a pixel counts as "solid" for drag.
+const ALPHA_HIT_THRESHOLD: u8 = 25;
+
+/// Linux evdev `BTN_LEFT`.
+const BTN_LEFT: u32 = 0x110;
 
 const SHADER: &str = r#"
 struct VsOut {
@@ -106,6 +117,34 @@ struct OverlayState {
     closed: bool,
     surface: wl_surface::WlSurface,
     layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    /// Kept alive so the seat stays bound.
+    _seat: wl_seat::WlSeat,
+    /// Kept alive so pointer events keep arriving.
+    _pointer: Option<wl_pointer::WlPointer>,
+    pointer_pos: (f64, f64),
+    dragging: bool,
+    drag_start: (f64, f64),
+    margin_left: i32,
+    margin_top: i32,
+    frame_margin_left: i32,
+    frame_margin_top: i32,
+    animation: Arc<Animation>,
+    frame_index: usize,
+    surface_size: (u32, u32),
+}
+
+impl OverlayState {
+    /// True when the surface-local point hits an opaque pixel of the frame
+    /// currently on screen. The frame is stretched to the surface.
+    fn opaque_at(&self, sx: f64, sy: f64) -> bool {
+        self.animation.alpha_hit(
+            self.frame_index,
+            self.surface_size,
+            sx,
+            sy,
+            ALPHA_HIT_THRESHOLD,
+        )
+    }
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for OverlayState {
@@ -153,6 +192,105 @@ impl Dispatch<wl_region::WlRegion, ()> for OverlayState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for OverlayState {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities { capabilities } = event
+            && let WEnum::Value(capabilities) = capabilities
+            && capabilities.contains(wl_seat::Capability::Pointer)
+        {
+            state._pointer = Some(seat.get_pointer(qh, ()));
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_pos = (surface_x, surface_y);
+            }
+            wl_pointer::Event::Leave { .. } => {
+                state.dragging = false;
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_pos = (surface_x, surface_y);
+                if !state.dragging {
+                    return;
+                }
+                // Margins are relative to the frame-start snapshot, so every
+                // Motion in this dispatch batch shares one stable base.
+                let dx = surface_x - state.drag_start.0;
+                let dy = surface_y - state.drag_start.1;
+                // Anchor is Top|Left, so window origin == left/top margin:
+                // moving the pointer right/down must *increase* the margin.
+                let new_left = (f64::from(state.frame_margin_left) + dx).round() as i32;
+                let new_top = (f64::from(state.frame_margin_top) + dy).round() as i32;
+                state.margin_left = new_left.max(0);
+                state.margin_top = new_top.max(0);
+                state
+                    .layer_surface
+                    .set_margin(state.margin_top, 0, 0, state.margin_left);
+                state.surface.commit();
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: button_state,
+                ..
+            } => {
+                if button != BTN_LEFT {
+                    return;
+                }
+                match button_state {
+                    WEnum::Value(wl_pointer::ButtonState::Pressed) => {
+                        // Only drag when the press lands on a solid pixel.
+                        if state.opaque_at(state.pointer_pos.0, state.pointer_pos.1) {
+                            state.dragging = true;
+                            state.drag_start = state.pointer_pos;
+                            eprintln!(
+                                "[overlay] drag start at ({:.0}, {:.0})",
+                                state.pointer_pos.0, state.pointer_pos.1
+                            );
+                        }
+                    }
+                    WEnum::Value(wl_pointer::ButtonState::Released) => {
+                        if state.dragging {
+                            eprintln!(
+                                "[overlay] drag end; margins ({}, {})",
+                                state.margin_left, state.margin_top
+                            );
+                        }
+                        state.dragging = false;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -299,6 +437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=4, ())?;
     let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ())?;
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=9, ())?;
 
     let surface = compositor.create_surface(&qh, ());
     let layer_surface = layer_shell.get_layer_surface(
@@ -314,7 +453,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
     layer_surface.set_margin(pos_y, 0, 0, pos_x);
-    // Receive input (dragging/menu later). For click-through, set an empty region:
+    // Receive input so we can drag on opaque pixels. For click-through, set an
+    // empty input region instead:
     //   let empty = compositor.create_region(&qh, ());
     //   surface.set_input_region(Some(&empty));
     surface.set_input_region(None);
@@ -325,6 +465,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         closed: false,
         surface,
         layer_surface,
+        _seat: seat,
+        _pointer: None,
+        pointer_pos: (0.0, 0.0),
+        dragging: false,
+        drag_start: (0.0, 0.0),
+        margin_left: pos_x,
+        margin_top: pos_y,
+        frame_margin_left: pos_x,
+        frame_margin_top: pos_y,
+        animation: Arc::clone(&animation),
+        frame_index: 0,
+        surface_size: (width, height),
     };
     event_queue.roundtrip(&mut state)?;
 
@@ -566,6 +718,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut uploaded_layer0 = 0usize;
 
     while !state.closed {
+        // Snapshot before dispatch: every Motion in this batch shares one base.
+        state.frame_margin_left = state.margin_left;
+        state.frame_margin_top = state.margin_top;
+        state.surface_size = (config.width, config.height);
+
         event_queue.dispatch_pending(&mut state)?;
 
         if let Some((w, h)) = state.configured
@@ -636,8 +793,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
 
-        // The frame just presented stays up for its own delay.
+        // The frame just presented stays up for its own delay; hit-testing
+        // must use the frame that is actually visible.
         next_change = now + frame_delay(&animation.frames[index]);
+        state.frame_index = index;
         index = (index + 1) % frame_count;
     }
 
