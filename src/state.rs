@@ -4,12 +4,12 @@
 //! entry per running animation so positions and interaction toggles survive
 //! restarts.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-use crate::paths::atomic_write_json;
+use crate::paths::{self, atomic_write_json};
 
 fn default_true() -> bool {
     true
@@ -22,6 +22,9 @@ fn default_fps() -> u32 {
 fn default_scale() -> u32 {
     100
 }
+
+/// File name inside [`paths::user_data_dir`].
+pub const STATE_FILE: &str = "secondary_instances.json";
 
 /// A single animation instance persisted between runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +110,45 @@ impl SecondaryState {
         atomic_write_json(path, self)
     }
 
+    /// Default location: `<XDG data>/AnimaEngine/secondary_instances.json`,
+    /// overridable with `ANIMAENGINE_STATE_FILE`.
+    pub fn user_path() -> PathBuf {
+        if let Some(path) = std::env::var_os("ANIMAENGINE_STATE_FILE") {
+            return PathBuf::from(path);
+        }
+        paths::user_data_dir().join(STATE_FILE)
+    }
+
+    /// Find an instance by id, falling back to its stored path.
+    pub fn find_by_key(&self, key: &str) -> Option<&Instance> {
+        self.instances
+            .iter()
+            .find(|i| i.id == key || (!i.path.is_empty() && i.path == key))
+    }
+
+    /// Insert or update the geometry (position + display scale) of `key`,
+    /// preserving every other field. Returns whether the document changed.
+    pub fn upsert_geometry(&mut self, key: &str, x: i32, y: i32, scale_percent: u32) -> bool {
+        if let Some(instance) = self
+            .instances
+            .iter_mut()
+            .find(|i| i.id == key || (!i.path.is_empty() && i.path == key))
+        {
+            if instance.x == x && instance.y == y && instance.scale_percent == scale_percent {
+                return false;
+            }
+            instance.x = x;
+            instance.y = y;
+            instance.scale_percent = scale_percent;
+            return true;
+        }
+
+        let mut instance = Instance::new(key, key, x, y);
+        instance.scale_percent = scale_percent;
+        self.instances.push(instance);
+        true
+    }
+
     pub fn find(&self, id: &str) -> Option<&Instance> {
         self.instances.iter().find(|i| i.id == id)
     }
@@ -177,5 +219,40 @@ mod tests {
         assert_eq!(inst.x, 659);
         assert_eq!(inst.fps, 15);
         assert!(inst.always_on_top);
+    }
+
+    #[test]
+    fn upsert_geometry_creates_and_preserves() {
+        let mut state = SecondaryState::default();
+        assert!(state.upsert_geometry("/gifs/a.apng", 10, 20, 80));
+        let inst = state.find_by_key("/gifs/a.apng").unwrap();
+        assert_eq!((inst.x, inst.y, inst.scale_percent), (10, 20, 80));
+        assert_eq!(inst.path, "/gifs/a.apng");
+
+        // identical geometry is a no-op
+        assert!(!state.upsert_geometry("/gifs/a.apng", 10, 20, 80));
+
+        // other fields survive a geometry update
+        state.instances[0].always_on_top = false;
+        state.instances[0].fps = 30;
+        assert!(state.upsert_geometry("/gifs/a.apng", 5, 6, 50));
+        let inst = state.find_by_key("/gifs/a.apng").unwrap();
+        assert_eq!((inst.x, inst.y, inst.scale_percent), (5, 6, 50));
+        assert!(!inst.always_on_top);
+        assert_eq!(inst.fps, 30);
+        assert_eq!(state.instances.len(), 1);
+
+        // matches by path when the id differs
+        state.instances[0].id = "generated-id".into();
+        assert!(state.upsert_geometry("/gifs/a.apng", 7, 8, 25));
+        assert_eq!(state.instances.len(), 1);
+        assert_eq!(state.find_by_key("/gifs/a.apng").unwrap().scale_percent, 25);
+    }
+
+    #[test]
+    fn user_path_falls_back_to_state_file() {
+        if std::env::var_os("ANIMAENGINE_STATE_FILE").is_none() {
+            assert!(SecondaryState::user_path().ends_with(STATE_FILE));
+        }
     }
 }

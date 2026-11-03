@@ -16,7 +16,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | Module | Python source | What it does |
 |---|---|---|
 | `paths` | `anima_foundation.py` | XDG user dirs, atomic JSON write, canonical/dedupe paths |
-| `state` | `monoModule.py` | `secondary_instances.json` model (load/save/upsert/remove) |
+| `state` | `monoModule.py` | `secondary_instances.json` model (load/save/upsert/remove) + geometry persistence keyed by animation path |
 | `prefs` | `anima_overlay_prefs.py` | overlay menu style / warnings / hotkey, cross-process visibility flag |
 | `settings` | scattered `*.json` | `settings.json`, `anim_meta`, `window_position`, `user`, `audioGifRegistro`, `last_selected`, `config` flags |
 | `i18n` | `anima_i18n_static.py` | 31-locale catalog, language normalization/detection, `tr()` |
@@ -66,6 +66,11 @@ Interaction and control:
 - **size** (`scale_percent`, capped at 100%): the surface is resized to
   `native * percent / 100`, so it only ever shrinks and the GPU samples the
   texture down (linear minification) — no resampling
+- **geometry persistence**: position + display size are written back to
+  `secondary_instances.json` (keyed by the canonical animation path; file is
+  `<XDG data>/AnimaEngine/secondary_instances.json`, overridable with
+  `ANIMAENGINE_STATE_FILE`) on drag release, size change, reset and exit, and
+  restored on startup
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
   (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
@@ -89,7 +94,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **105** default (103 lib + 2 CLI), **108** with
+- `cargo test`: **107** default (105 lib + 2 CLI), **110** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -117,6 +122,11 @@ Interaction and control:
 - Scaling verified on the 256² test animation: `scale 50` → `scale 50% ->
   128x128`, `scale 200` clamps to `256x256`, `scale down` → `230x230`, `reset`
   → `256x256`; an invalid `scale` argument exits 1.
+- Geometry persistence round-trip (isolated `ANIMAENGINE_STATE_FILE`): a fresh
+  run wrote an instance keyed by the image's canonical path (`x`/`y` 100,
+  `scale_percent` 50); a second run logged `restored geometry: (100, 100) at
+  50%`; after editing `x`/`y` to 300/250 a third run logged
+  `restored geometry: (300, 250) at 50%`.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -139,8 +149,10 @@ Interaction and control:
       backends that implement `GlobalShortcuts`
 - [x] Size control (`scale_percent`): shrink-only, capped at the native size;
       CLI `scale` + tray "Size" submenu
-- [ ] Persist `scale_percent` (and position) per instance in
-      `secondary_instances.json` — today they live in the transient control file
+- [x] Persist position + `scale_percent` per instance in
+      `secondary_instances.json` (keyed by the canonical animation path)
+- [ ] Persist the remaining `Instance` fields (`click_through` / input mode,
+      `fps`, `rotation`, `flip_h/v`, `locked`)
 - [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
       largely covered by the tray
 - [ ] Multi-instance: one process per animation (or multiple surfaces)
@@ -183,8 +195,10 @@ Interaction and control:
   machine's does not); the tray is the working control path here.
 - Per-pixel input sends one region rectangle per opaque span whenever the
   silhouette changes (thousands for detailed art); it is not throttled yet.
-- `scale_percent` and window position live in the transient control file, so
-  they reset when the overlay restarts (per-instance persistence is a TODO).
+- `secondary_instances.json` is read-modify-written per update without a lock, so
+  two overlays saving at once can lose an update (as in the Python original).
+- The instance key is the canonical animation path, so moving/renaming a file
+  starts a fresh instance entry.
 - The control file is read-modify-written by tray and portal without a lock, so a
   rare concurrent toggle could lose an update.
 - Overlay is Wayland-only (layer-shell); X11/Windows not targeted yet.
@@ -194,8 +208,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (105 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (108)
+cargo test                                        # pure logic (107 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (110)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -203,6 +217,8 @@ cargo run --example scan_workshop -- ~/.local/share/Steam/steamapps/workshop/con
 
 cargo run --features overlay --bin anima-overlay  # generated test animation
 cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
+# position/scale persist to <XDG data>/AnimaEngine/secondary_instances.json;
+# point ANIMAENGINE_STATE_FILE elsewhere to isolate or inspect it
 
 cargo build --release --bin anima-overlay-ctl     # CLI for compositor keybinds
 anima-overlay-ctl scale 50                         # shrink the overlay to 50%
@@ -213,4 +229,5 @@ anima-overlay-ctl scale 50                         # shrink the overlay to 50%
 - `docs/workshop-steamworks-re.md` — reverse engineering of the shipped build.
 - Commit history: pure core → workshop RE + scanner → Steam bridge → overlay
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
-  per-pixel input region → CLI control (`anima-overlay-ctl`) → size control.
+  per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
+  geometry persistence.

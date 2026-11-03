@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use anima_engine_rs::anim::{Animation, Frame};
 use anima_engine_rs::cache::FrameCache;
 use anima_engine_rs::control::{ControlState, InputMode, MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
+use anima_engine_rs::state::SecondaryState;
 
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
 use smithay_client_toolkit::reexports::client::protocol::{
@@ -67,6 +68,9 @@ const ARRAY_BUDGET: u64 = 256 * 1024 * 1024;
 
 /// Alpha value (0-255) at or above which a pixel counts as "solid" for drag.
 const ALPHA_HIT_THRESHOLD: u8 = 25;
+
+/// Fallback window position when an instance has no saved geometry.
+const DEFAULT_POS: (i32, i32) = (100, 100);
 
 /// Linux evdev `BTN_LEFT`.
 const BTN_LEFT: u32 = 0x110;
@@ -152,6 +156,10 @@ struct OverlayState {
     region: Option<wl_region::WlRegion>,
     /// Rectangles backing `region`, so redundant updates are skipped.
     applied_rects: Vec<(i32, i32, i32, i32)>,
+    /// Canonical animation path; the key used to persist instance geometry.
+    instance_key: Option<String>,
+    /// `secondary_instances.json` location.
+    state_path: PathBuf,
 }
 
 impl OverlayState {
@@ -304,6 +312,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                                 "[overlay] drag end; margins ({}, {})",
                                 state.margin_left, state.margin_top
                             );
+                            persist_geometry(state);
                         }
                         state.dragging = false;
                     }
@@ -512,6 +521,25 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
     state.surface.commit();
     state.applied_rects.clear();
     eprintln!("[overlay] scale {percent}% -> {width}x{height}");
+    persist_geometry(state);
+}
+
+/// Persist position + display size for this instance, preserving other
+/// instances and fields in `secondary_instances.json`.
+fn persist_geometry(state: &OverlayState) {
+    let Some(key) = state.instance_key.as_deref() else {
+        return;
+    };
+    let mut document = SecondaryState::load(&state.state_path);
+    if document.upsert_geometry(
+        key,
+        state.margin_left,
+        state.margin_top,
+        state.scale_percent,
+    ) && let Err(err) = document.save(&state.state_path)
+    {
+        eprintln!("[overlay] could not save instance state: {err}");
+    }
 }
 
 /// Read-modify-write helper for the control file.
@@ -711,7 +739,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("animation has no frames".into());
     }
     let (width, height) = (animation.width.max(1), animation.height.max(1));
-    let (pos_x, pos_y) = (100i32, 100i32);
+
+    // Instance identity for persistence: the canonical animation path. The
+    // generated test pattern has no path, so it is never persisted.
+    let instance_key = path
+        .as_deref()
+        .map(|path| anima_engine_rs::paths::canonical_path(&path.to_string_lossy()));
+    let state_path = SecondaryState::user_path();
+    let persisted = instance_key
+        .as_deref()
+        .and_then(|key| SecondaryState::load(&state_path).find_by_key(key).cloned());
+    let (pos_x, pos_y) = persisted.as_ref().map_or(DEFAULT_POS, |instance| {
+        (instance.x.max(0), instance.y.max(0))
+    });
+    let initial_scale = persisted
+        .as_ref()
+        .map_or(MAX_SCALE_PERCENT, |instance| instance.scale_percent)
+        .clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    if persisted.is_some() {
+        eprintln!("[overlay] restored geometry: ({pos_x}, {pos_y}) at {initial_scale}%");
+    }
 
     let conn = Connection::connect_to_env()?;
     let mut event_queue: EventQueue<OverlayState> = conn.new_event_queue();
@@ -731,7 +778,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &qh,
         (),
     );
-    layer_surface.set_size(width, height);
+    let scaled = |value: u32| (u64::from(value) * u64::from(initial_scale) / 100).max(1) as u32;
+    layer_surface.set_size(scaled(width), scaled(height));
     layer_surface
         .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
@@ -759,20 +807,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         animation: Arc::clone(&animation),
         frame_index: 0,
         native_size: (width, height),
-        scale_percent: MAX_SCALE_PERCENT,
-        surface_size: (width, height),
+        scale_percent: initial_scale,
+        surface_size: (scaled(width), scaled(height)),
         compositor: compositor.clone(),
         qh: qh.clone(),
         empty_region,
         input_mode: InputMode::Opaque,
         region: None,
         applied_rects: Vec::new(),
+        instance_key,
+        state_path,
     };
     event_queue.roundtrip(&mut state)?;
 
     // --- control channel: tray + portal global shortcuts -------------------
     let control_path = ControlState::path();
     let mut control = ControlState::fresh();
+    // Seed the runtime channel with the persisted display size so a CLI
+    // read-modify-write cannot silently reset it.
+    control.scale_percent = initial_scale;
     if let Err(err) = control.save(&control_path) {
         eprintln!("[overlay] control file init failed: {err}");
     }
@@ -1047,6 +1100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     state.layer_surface.set_margin(pos_y, 0, 0, pos_x);
                     state.surface.commit();
                     eprintln!("[overlay] reset to initial position");
+                    persist_geometry(&state);
                 }
                 apply_input_mode(&mut state, control.input_mode);
                 if control.scale_percent != state.scale_percent {
@@ -1137,6 +1191,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         index = (index + 1) % frame_count;
     }
+
+    // Safety net: keep the last geometry even if we exit mid-interaction.
+    persist_geometry(&state);
 
     Ok(())
 }
