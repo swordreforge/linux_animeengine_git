@@ -5,6 +5,7 @@
 //! anima-overlay-ctl toggle                          # opaque pixels <-> click-through
 //! anima-overlay-ctl mode <full|opaque|pass-through>
 //! anima-overlay-ctl scale <percent|up|down>         # 10-100%, never upscales
+//! anima-overlay-ctl lock | unlock                   # disable/enable dragging
 //! anima-overlay-ctl reset                           # initial position + native size
 //! anima-overlay-ctl quit
 //! anima-overlay-ctl status
@@ -45,12 +46,14 @@ fn main() -> ExitCode {
             Some(ScaleAction::Nudge(delta)) => update(&path, move |state| state.nudge_scale(delta)),
             None => return usage("scale <percent|up|down>"),
         },
+        Some("lock") => update(&path, |state| state.set_locked(true)),
+        Some("unlock") => update(&path, |state| state.set_locked(false)),
         Some("status") => {
             status(&path);
             Ok(())
         }
         _ => {
-            return usage("<toggle|mode <m>|scale <s>|reset|quit|status>");
+            return usage("<toggle|mode <m>|scale <s>|lock|unlock|reset|quit|status>");
         }
     };
 
@@ -84,6 +87,7 @@ fn status(path: &Path) {
     };
     println!("mode:       {mode}");
     println!("scale:      {}%", state.scale_percent);
+    println!("locked:     {}", state.locked);
     println!("generation: {}", state.generation);
     println!("file:       {}", path.display());
 }

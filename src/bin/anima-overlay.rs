@@ -160,6 +160,16 @@ struct OverlayState {
     instance_key: Option<String>,
     /// `secondary_instances.json` location.
     state_path: PathBuf,
+    /// Playback override in frames per second; 0 follows the frame delays.
+    fps: u32,
+    /// Dragging disabled.
+    locked: bool,
+    /// Hide the surface while the pointer is over an opaque pixel.
+    hover_hide: bool,
+    /// Whether the pointer is currently over the surface.
+    pointer_inside: bool,
+    /// Whether the pointer is currently over an opaque pixel.
+    pointer_over: bool,
 }
 
 impl OverlayState {
@@ -258,9 +268,13 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                 ..
             } => {
                 state.pointer_pos = (surface_x, surface_y);
+                state.pointer_inside = true;
+                state.pointer_over = state.opaque_at(surface_x, surface_y);
             }
             wl_pointer::Event::Leave { .. } => {
                 state.dragging = false;
+                state.pointer_inside = false;
+                state.pointer_over = false;
             }
             wl_pointer::Event::Motion {
                 surface_x,
@@ -268,6 +282,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                 ..
             } => {
                 state.pointer_pos = (surface_x, surface_y);
+                state.pointer_over = state.opaque_at(surface_x, surface_y);
                 if !state.dragging {
                     return;
                 }
@@ -296,8 +311,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                 }
                 match button_state {
                     WEnum::Value(wl_pointer::ButtonState::Pressed) => {
-                        // Only drag when the press lands on a solid pixel.
-                        if state.opaque_at(state.pointer_pos.0, state.pointer_pos.1) {
+                        // A locked instance ignores presses; otherwise only drag
+                        // when the press lands on a solid pixel.
+                        if !state.locked
+                            && state.opaque_at(state.pointer_pos.0, state.pointer_pos.1)
+                        {
                             state.dragging = true;
                             state.drag_start = state.pointer_pos;
                             eprintln!(
@@ -524,20 +542,33 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
     persist_geometry(state);
 }
 
-/// Persist position + display size for this instance, preserving other
-/// instances and fields in `secondary_instances.json`.
+/// Persist position, display size, click-through, lock and hover-hide for this
+/// instance, preserving other instances and fields in `secondary_instances.json`.
 fn persist_geometry(state: &OverlayState) {
     let Some(key) = state.instance_key.as_deref() else {
         return;
     };
+    let click_through = state.input_mode == InputMode::PassThrough;
     let mut document = SecondaryState::load(&state.state_path);
-    if document.upsert_geometry(
-        key,
-        state.margin_left,
-        state.margin_top,
-        state.scale_percent,
-    ) && let Err(err) = document.save(&state.state_path)
-    {
+    let changed = {
+        let instance = document.entry(key);
+        let changed = instance.x != state.margin_left
+            || instance.y != state.margin_top
+            || instance.scale_percent != state.scale_percent
+            || instance.click_through != click_through
+            || instance.locked != state.locked
+            || instance.hover_hide != state.hover_hide;
+        if changed {
+            instance.x = state.margin_left;
+            instance.y = state.margin_top;
+            instance.scale_percent = state.scale_percent;
+            instance.click_through = click_through;
+            instance.locked = state.locked;
+            instance.hover_hide = state.hover_hide;
+        }
+        changed
+    };
+    if changed && let Err(err) = document.save(&state.state_path) {
         eprintln!("[overlay] could not save instance state: {err}");
     }
 }
@@ -621,6 +652,14 @@ impl ksni::Tray for OverlayTray {
                     size_item("50%", 50),
                     size_item("25%", 25),
                 ],
+                ..Default::default()
+            }),
+            MenuItem::Checkmark(CheckmarkItem {
+                label: "Lock position".into(),
+                checked: state.locked,
+                activate: Box::new(|tray: &mut Self| {
+                    write_control(&tray.control_path, ControlState::toggle_locked);
+                }),
                 ..Default::default()
             }),
             MenuItem::Separator,
@@ -722,7 +761,10 @@ async fn run_portal(control_path: PathBuf) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-fn frame_delay(frame: &Frame) -> Duration {
+fn frame_delay(frame: &Frame, fps: u32) -> Duration {
+    if fps > 0 {
+        return Duration::from_millis(u64::from(1000 / fps.max(1)));
+    }
     let ms = if frame.delay_ms == 0 {
         33
     } else {
@@ -756,8 +798,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .map_or(MAX_SCALE_PERCENT, |instance| instance.scale_percent)
         .clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    let always_on_top = persisted.as_ref().is_none_or(|i| i.always_on_top);
+    let initial_mode = if persisted.as_ref().is_some_and(|i| i.click_through) {
+        InputMode::PassThrough
+    } else {
+        InputMode::Opaque
+    };
+    let initial_locked = persisted.as_ref().is_some_and(|i| i.locked);
+    let initial_hover_hide = persisted.as_ref().is_some_and(|i| i.hover_hide);
+    let fps = persisted.as_ref().map_or(0, |instance| instance.fps);
     if persisted.is_some() {
-        eprintln!("[overlay] restored geometry: ({pos_x}, {pos_y}) at {initial_scale}%");
+        eprintln!(
+            "[overlay] restored instance: ({pos_x}, {pos_y}) at {initial_scale}%, \
+             mode {initial_mode:?}, locked {initial_locked}, hover_hide {initial_hover_hide}, fps {fps}"
+        );
     }
 
     let conn = Connection::connect_to_env()?;
@@ -770,14 +824,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=9, ())?;
 
     let surface = compositor.create_surface(&qh, ());
-    let layer_surface = layer_shell.get_layer_surface(
-        &surface,
-        None,
-        zwlr_layer_shell_v1::Layer::Overlay,
-        "anima-overlay".to_string(),
-        &qh,
-        (),
-    );
+    let layer = if always_on_top {
+        zwlr_layer_shell_v1::Layer::Overlay
+    } else {
+        zwlr_layer_shell_v1::Layer::Bottom
+    };
+    let layer_surface =
+        layer_shell.get_layer_surface(&surface, None, layer, "anima-overlay".to_string(), &qh, ());
     let scaled = |value: u32| (u64::from(value) * u64::from(initial_scale) / 100).max(1) as u32;
     layer_surface.set_size(scaled(width), scaled(height));
     layer_surface
@@ -812,13 +865,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compositor: compositor.clone(),
         qh: qh.clone(),
         empty_region,
-        input_mode: InputMode::Opaque,
+        input_mode: InputMode::Full,
         region: None,
         applied_rects: Vec::new(),
         instance_key,
         state_path,
+        fps,
+        locked: initial_locked,
+        hover_hide: initial_hover_hide,
+        pointer_inside: false,
+        pointer_over: false,
     };
     event_queue.roundtrip(&mut state)?;
+    // Configures the input region for the restored mode (Opaque builds the
+    // per-pixel region; PassThrough installs the empty one).
+    apply_input_mode(&mut state, initial_mode);
 
     // --- control channel: tray + portal global shortcuts -------------------
     let control_path = ControlState::path();
@@ -826,6 +887,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Seed the runtime channel with the persisted display size so a CLI
     // read-modify-write cannot silently reset it.
     control.scale_percent = initial_scale;
+    control.input_mode = initial_mode;
+    control.locked = initial_locked;
     if let Err(err) = control.save(&control_path) {
         eprintln!("[overlay] control file init failed: {err}");
     }
@@ -1099,13 +1162,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     state.margin_top = pos_y;
                     state.layer_surface.set_margin(pos_y, 0, 0, pos_x);
                     state.surface.commit();
+                    // Reset restores the naive interaction state, like the
+                    // Python `_reset_interactions`.
+                    state.hover_hide = false;
                     eprintln!("[overlay] reset to initial position");
-                    persist_geometry(&state);
                 }
                 apply_input_mode(&mut state, control.input_mode);
                 if control.scale_percent != state.scale_percent {
                     apply_scale(&mut state, control.scale_percent);
                 }
+                if control.locked != state.locked {
+                    state.locked = control.locked;
+                    eprintln!("[overlay] locked {}", state.locked);
+                }
+                persist_geometry(&state);
                 if control.quit {
                     state.closed = true;
                     continue;
@@ -1146,6 +1216,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         );
 
+        // Hover-hide renders nothing while the cursor sits on a solid pixel.
+        let hide_now = state.hover_hide && state.pointer_over;
+
         match wgpu_surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -1171,7 +1244,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                     pass.set_pipeline(&pipeline);
                     pass.set_bind_group(0, &bind_group, &[]);
-                    pass.draw(0..3, 0..1);
+                    if !hide_now {
+                        pass.draw(0..3, 0..1);
+                    }
                 }
                 queue.submit(std::iter::once(encoder.finish()));
                 frame.present();
@@ -1184,8 +1259,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // The frame just presented stays up for its own delay; hit-testing
         // must use the frame that is actually visible.
-        next_change = now + frame_delay(&animation.frames[index]);
+        next_change = now + frame_delay(&animation.frames[index], state.fps);
         state.frame_index = index;
+        if state.pointer_inside {
+            state.pointer_over = state.opaque_at(state.pointer_pos.0, state.pointer_pos.1);
+        }
         if state.input_mode == InputMode::Opaque {
             apply_opaque_region(&mut state);
         }

@@ -15,8 +15,10 @@ fn default_true() -> bool {
     true
 }
 
+/// 0 means "follow the animation's own per-frame delays"; a positive value
+/// overrides the playback interval with `1000 / fps` milliseconds.
 fn default_fps() -> u32 {
-    15
+    0
 }
 
 fn default_scale() -> u32 {
@@ -126,27 +128,19 @@ impl SecondaryState {
             .find(|i| i.id == key || (!i.path.is_empty() && i.path == key))
     }
 
-    /// Insert or update the geometry (position + display scale) of `key`,
-    /// preserving every other field. Returns whether the document changed.
-    pub fn upsert_geometry(&mut self, key: &str, x: i32, y: i32, scale_percent: u32) -> bool {
-        if let Some(instance) = self
+    /// Get the instance for `key` (matched by `id`, then by stored `path`),
+    /// inserting a default one when absent. Callers patch the fields they own.
+    pub fn entry(&mut self, key: &str) -> &mut Instance {
+        if let Some(index) = self
             .instances
-            .iter_mut()
-            .find(|i| i.id == key || (!i.path.is_empty() && i.path == key))
+            .iter()
+            .position(|i| i.id == key || (!i.path.is_empty() && i.path == key))
         {
-            if instance.x == x && instance.y == y && instance.scale_percent == scale_percent {
-                return false;
-            }
-            instance.x = x;
-            instance.y = y;
-            instance.scale_percent = scale_percent;
-            return true;
+            return &mut self.instances[index];
         }
-
-        let mut instance = Instance::new(key, key, x, y);
-        instance.scale_percent = scale_percent;
-        self.instances.push(instance);
-        true
+        let index = self.instances.len();
+        self.instances.push(Instance::new(key, key, 0, 0));
+        &mut self.instances[index]
     }
 
     pub fn find(&self, id: &str) -> Option<&Instance> {
@@ -222,31 +216,33 @@ mod tests {
     }
 
     #[test]
-    fn upsert_geometry_creates_and_preserves() {
+    fn entry_inserts_and_preserves_fields() {
         let mut state = SecondaryState::default();
-        assert!(state.upsert_geometry("/gifs/a.apng", 10, 20, 80));
-        let inst = state.find_by_key("/gifs/a.apng").unwrap();
-        assert_eq!((inst.x, inst.y, inst.scale_percent), (10, 20, 80));
-        assert_eq!(inst.path, "/gifs/a.apng");
+        {
+            let instance = state.entry("/gifs/a.apng");
+            assert_eq!(instance.path, "/gifs/a.apng");
+            instance.x = 10;
+            instance.y = 20;
+            instance.scale_percent = 80;
+        }
+        let instance = state.find_by_key("/gifs/a.apng").unwrap();
+        assert_eq!(
+            (instance.x, instance.y, instance.scale_percent),
+            (10, 20, 80)
+        );
 
-        // identical geometry is a no-op
-        assert!(!state.upsert_geometry("/gifs/a.apng", 10, 20, 80));
-
-        // other fields survive a geometry update
+        // the second call returns the same entry, keeping untouched fields
         state.instances[0].always_on_top = false;
-        state.instances[0].fps = 30;
-        assert!(state.upsert_geometry("/gifs/a.apng", 5, 6, 50));
-        let inst = state.find_by_key("/gifs/a.apng").unwrap();
-        assert_eq!((inst.x, inst.y, inst.scale_percent), (5, 6, 50));
-        assert!(!inst.always_on_top);
-        assert_eq!(inst.fps, 30);
+        state.entry("/gifs/a.apng").x = 5;
         assert_eq!(state.instances.len(), 1);
+        let instance = state.find_by_key("/gifs/a.apng").unwrap();
+        assert_eq!(instance.x, 5);
+        assert!(!instance.always_on_top);
 
-        // matches by path when the id differs
+        // matched by path when the id differs
         state.instances[0].id = "generated-id".into();
-        assert!(state.upsert_geometry("/gifs/a.apng", 7, 8, 25));
+        assert_eq!(state.entry("/gifs/a.apng").x, 5);
         assert_eq!(state.instances.len(), 1);
-        assert_eq!(state.find_by_key("/gifs/a.apng").unwrap().scale_percent, 25);
     }
 
     #[test]

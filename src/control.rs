@@ -59,6 +59,9 @@ pub struct ControlState {
     /// Display size as a percentage of the native frame size (10-100).
     #[serde(default = "default_scale_percent")]
     pub scale_percent: u32,
+    /// Whether dragging the overlay is disabled.
+    #[serde(default)]
+    pub locked: bool,
     /// One-shot: put the window back at its start position and native size.
     #[serde(default)]
     pub reset: bool,
@@ -75,6 +78,7 @@ impl Default for ControlState {
         Self {
             input_mode: InputMode::default(),
             scale_percent: MAX_SCALE_PERCENT,
+            locked: false,
             reset: false,
             quit: false,
             generation: 0,
@@ -129,6 +133,20 @@ impl ControlState {
         self.set_scale_percent(next)
     }
 
+    /// Enable or disable dragging.
+    #[must_use]
+    pub fn set_locked(mut self, locked: bool) -> Self {
+        self.locked = locked;
+        self.touched()
+    }
+
+    /// Flip the drag lock.
+    #[must_use]
+    pub fn toggle_locked(self) -> Self {
+        let locked = !self.locked;
+        self.set_locked(locked)
+    }
+
     /// Toggle between per-pixel input (`Opaque`) and full click-through.
     #[must_use]
     pub fn toggle_click_through(self) -> Self {
@@ -145,6 +163,7 @@ impl ControlState {
     pub fn request_reset(mut self) -> Self {
         self.input_mode = InputMode::Opaque;
         self.scale_percent = MAX_SCALE_PERCENT;
+        self.locked = false;
         self.reset = true;
         self.quit = false;
         self.bump();
@@ -206,6 +225,7 @@ mod tests {
         let state = ControlState {
             input_mode: InputMode::PassThrough,
             scale_percent: 50,
+            locked: true,
             reset: false,
             quit: false,
             generation: 7,
@@ -271,5 +291,11 @@ mod tests {
         let scaled = reset.clone().set_scale_percent(75);
         assert_eq!(scaled.scale_percent, 75);
         assert!(!scaled.reset);
+
+        // the drag lock round-trips and reset clears it
+        let locked = start.clone().toggle_locked();
+        assert!(locked.locked);
+        assert!(locked.generation > start.generation);
+        assert!(!locked.request_reset().locked);
     }
 }
