@@ -40,16 +40,26 @@ anima-overlay-ctl status
 
 ## niri keybindings
 
-niri has no portal backend implementing `GlobalShortcuts`, so bind the CLI in
-`config.kdl` (use the absolute path if the binary is not on `PATH`):
+niri has no portal backend implementing `GlobalShortcuts`, so bind the CLI. Put
+the binds in your own file (e.g. `~/.config/niri/__custom__.kdl`, which niri
+includes last, so your binds win) and use an **absolute path** — niri resolves
+`spawn` against its own `PATH`, which usually does not include `~/.local/bin`.
+niri watches the config and hot-reloads on save.
 
 ```kdl
-Mod+Shift+T { spawn "anima-overlay-ctl" "toggle"; }
-Mod+Shift+R { spawn "anima-overlay-ctl" "reset"; }
-Mod+Shift+Q { spawn "anima-overlay-ctl" "quit"; }
-Mod+Shift+equal { spawn "anima-overlay-ctl" "scale" "up"; }
-Mod+Shift+minus { spawn "anima-overlay-ctl" "scale" "down"; }
+binds {
+    Mod+Alt+O       { spawn "/home/you/.local/bin/anima-overlay-ctl" "toggle"; }
+    Mod+Alt+Equal   { spawn "/home/you/.local/bin/anima-overlay-ctl" "scale" "up"; }
+    Mod+Alt+Minus   { spawn "/home/you/.local/bin/anima-overlay-ctl" "scale" "down"; }
+    Mod+Alt+R       { spawn "/home/you/.local/bin/anima-overlay-ctl" "reset"; }
+    Mod+Alt+Shift+Q { spawn "/home/you/.local/bin/anima-overlay-ctl" "quit"; }
+}
 ```
+
+The `Mod+Alt` tier is chosen deliberately: a typical niri keymap already binds
+`Mod+Shift+T` / `R` / `Q` and `Mod+Shift+Equal` (floating/tiling toggle, config
+reload, compositor quit, reset-window-height). niri can only override a bind, not
+unbind it, so reusing those would silently break those functions.
 
 ## Tray
 
