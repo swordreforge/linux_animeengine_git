@@ -191,8 +191,8 @@ struct OverlayState {
     region_dirty: bool,
     /// Visible content changed: present a frame.
     visual_dirty: bool,
-    /// Optional region coarsening policy.
-    region_step: RegionStep,
+    /// Optional region coarsening policy and rectangle budgets.
+    region_tuning: RegionTuning,
     /// Sampling step used for the installed region.
     applied_step: u32,
 }
@@ -520,16 +520,16 @@ fn test_animation() -> Animation {
     }
 }
 
-/// Rectangle budget for the per-pixel input region. Beyond this the sampling
-/// grid is coarsened (2x2, 4x4, ...) before falling back to a bounding box.
-const MAX_INPUT_RECTS: usize = 4096;
+/// Default hard rectangle cap: beyond this the sampling grid is coarsened
+/// (2x2, 4x4, ...) and only then falls back to a bounding box.
+const DEFAULT_REGION_MAX_RECTS: usize = 4096;
 
 /// Recompute the input region every N presented frames. Frame-count based on
 /// purpose: a wall-clock timer would make the hit area lag by a variable amount.
 const REGION_UPDATE_FRAMES: u64 = 3;
 
-/// Soft rectangle budget for [`RegionStep::Auto`]: coarsen until the list fits.
-const REGION_SOFT_RECTS: usize = 768;
+/// Default soft rectangle budget for [`RegionStep::Auto`].
+const DEFAULT_REGION_SOFT_RECTS: usize = 768;
 
 /// Optional coarsening policy for the input region, from `ANIMA_REGION_STEP`:
 /// `off` (default), `auto`, or a fixed `1..=32` pixel sampling grid.
@@ -559,6 +559,58 @@ impl RegionStep {
             Self::Fixed(step) => step.to_string(),
         }
     }
+}
+
+/// Region tuning, all overridable from the environment:
+/// `ANIMA_REGION_STEP`, `ANIMA_REGION_SOFT_RECTS`, `ANIMA_REGION_MAX_RECTS`.
+#[derive(Debug, Clone, Copy)]
+struct RegionTuning {
+    step: RegionStep,
+    soft_rects: usize,
+    max_rects: usize,
+}
+
+impl RegionTuning {
+    fn from_env() -> Self {
+        let requested_soft = env_usize(
+            "ANIMA_REGION_SOFT_RECTS",
+            DEFAULT_REGION_SOFT_RECTS,
+            16,
+            65_536,
+        );
+        let max_rects = env_usize(
+            "ANIMA_REGION_MAX_RECTS",
+            DEFAULT_REGION_MAX_RECTS,
+            16,
+            1_000_000,
+        );
+        // The soft budget can never exceed the hard cap.
+        let soft_rects = requested_soft.min(max_rects);
+        Self {
+            step: RegionStep::from_env(),
+            soft_rects,
+            max_rects,
+        }
+    }
+
+    fn describe(self) -> String {
+        format!(
+            "step {}, soft {} rects, max {} rects",
+            self.step.label(),
+            self.soft_rects,
+            self.max_rects
+        )
+    }
+}
+
+/// Parse an env var as `usize`, clamped; invalid or missing values fall back to
+/// `default`.
+fn env_usize(name: &str, default: usize, min: usize, max: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.clamp(min, max))
+        .unwrap_or(default)
 }
 
 /// Apply an input mode to the surface.
@@ -608,28 +660,28 @@ fn apply_opaque_region(state: &mut OverlayState) {
         )
     };
 
-    let mut step = match state.region_step {
+    let mut step = match state.region_tuning.step {
         RegionStep::Fixed(step) => step.max(1),
         RegionStep::Off | RegionStep::Auto => 1,
     };
     let mut rects = build(state, step);
 
-    if state.region_step == RegionStep::Auto {
+    if state.region_tuning.step == RegionStep::Auto {
         // Coarsen by powers of two until the soft budget is met, bounded by what
         // the display size can justify (keeps small overlays pixel-accurate).
         let max_step = (state.surface_size.0.min(state.surface_size.1) / 128).clamp(1, 8);
-        while rects.len() > REGION_SOFT_RECTS && step < max_step {
+        while rects.len() > state.region_tuning.soft_rects && step < max_step {
             step *= 2;
             rects = build(state, step);
         }
     }
 
     // Hard cap: keep coarsening, then fall back to the bounding box.
-    while rects.len() > MAX_INPUT_RECTS && step < 32 {
+    while rects.len() > state.region_tuning.max_rects && step < 32 {
         step *= 2;
         rects = build(state, step);
     }
-    if rects.len() > MAX_INPUT_RECTS
+    if rects.len() > state.region_tuning.max_rects
         && let Some(bounds) = anima_engine_rs::anim::bounds_rect(&rects)
     {
         rects = vec![bounds];
@@ -1068,8 +1120,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "test pattern".to_string());
     let state_path = SecondaryState::user_path();
-    let region_step = RegionStep::from_env();
-    eprintln!("[overlay] region step: {}", region_step.label());
+    let region_tuning = RegionTuning::from_env();
+    eprintln!("[overlay] region limits: {}", region_tuning.describe());
     let persisted = instance_key
         .as_deref()
         .and_then(|key| SecondaryState::load(&state_path).find_by_key(key).cloned());
@@ -1173,7 +1225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         last_output_size: None,
         region_dirty: false,
         visual_dirty: true,
-        region_step,
+        region_tuning,
         applied_step: 1,
     };
     event_queue.roundtrip(&mut state)?;

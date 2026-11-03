@@ -23,13 +23,14 @@ read from that file at startup.
 
 The per-pixel input region is rebuilt at most every 3rd presented frame and only
 when the silhouette changes. Very detailed silhouettes are coarsened above a hard
-rectangle cap. Additionally, `ANIMA_REGION_STEP` can coarsen it earlier:
+rectangle cap. All of this is tunable from the environment (the effective values
+are logged at startup as `region limits: ...`):
 
-| Value | Behaviour |
-|---|---|
-| `off` (default) | 1px sampling; coarsen only above the hard cap |
-| `auto` | powers-of-two grid until the list fits 768 rects, bounded by display size |
-| `1`–`32` | force that sampling grid |
+| Variable | Default | Behaviour |
+|---|---|---|
+| `ANIMA_REGION_STEP` | `off` | `off`, `auto` (powers of two until the soft budget, bounded by display size), or a fixed `1`–`32` grid |
+| `ANIMA_REGION_SOFT_RECTS` | `768` | target for `auto`; clamped to `16..=65536` and never above the hard cap |
+| `ANIMA_REGION_MAX_RECTS` | `4096` | hard cap: coarsen, then bounding box; clamped to `16..=1000000` |
 
 ## Multiple instances
 
