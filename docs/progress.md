@@ -94,7 +94,10 @@ Interaction and control:
   whole surface stays inside the output — at startup, on every drag motion, on
   scale change, when showing from hidden, and after a configure. The output size
   comes from SCTK's `OutputState` (the output the surface last entered; the last
-  known size is kept when the surface leaves it mid-drag).
+  known size is kept when the surface leaves it mid-drag). The surface **size** is
+  pinned too: a configure with a different size (niri shrinks layer surfaces
+  pushed past an edge) is bounced back to the pinned size, and content that cannot
+  fit the output is scaled down with its aspect preserved.
 - **input-region updates**: generated in **surface space** (cost ∝ displayed area,
   and it shares the display→native mapping with the hit-test), recomputed at most
   every 3rd presented frame (a frame-count throttle, not a wall-clock timer), only
@@ -212,6 +215,9 @@ Interaction and control:
   `secondary_instances.json`; an on-screen (100, 100) seed was left untouched.
   `clamp_position` unit tests cover the bounds, negatives and a surface larger
   than the output.
+- Configure pinning (edge-squash fix): miku12 at 100% (1500×1125 on a 1920×1080
+  output) is fitted to 1440×1080 (same 4:3 aspect) and niri's offered 1500×1034
+  is bounced, so the frame is never stretched to another aspect.
 - Region tuning: a 593×412 silhouette produced **990 rects at both 100% and 50%**
   — the rectangle count follows edge complexity, not display scale — while the
   surface-space scan costs 4× less at 50% (∝ area). Updates are throttled to every

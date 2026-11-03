@@ -573,6 +573,9 @@ mod menu {
 
 struct OverlayState {
     configured: Option<(u32, u32)>,
+    /// Size we pin the layer surface to; differing configures are bounced back
+    /// so the frame is never stretched to another aspect ratio.
+    desired_size: (u32, u32),
     closed: bool,
     surface: wl_surface::WlSurface,
     layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
@@ -892,10 +895,31 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for OverlayState {
                 width,
                 height,
             } => {
-                if width > 0 && height > 0 {
-                    state.configured = Some((width, height));
-                }
                 state.layer_surface.ack_configure(serial);
+                // niri shrinks layer surfaces pushed past a screen edge; taking
+                // that size would stretch the frame. Shrink our pinned size only
+                // if it cannot fit the output (aspect preserved), then bounce.
+                if let Some((out_w, out_h)) = output_size(state)
+                    && (state.desired_size.0 > out_w || state.desired_size.1 > out_h)
+                {
+                    let scale = (f64::from(out_w) / f64::from(state.desired_size.0))
+                        .min(f64::from(out_h) / f64::from(state.desired_size.1));
+                    state.desired_size = (
+                        ((f64::from(state.desired_size.0) * scale).floor() as u32).max(1),
+                        ((f64::from(state.desired_size.1) * scale).floor() as u32).max(1),
+                    );
+                }
+                if width > 0 && height > 0 && (width, height) != state.desired_size {
+                    state
+                        .layer_surface
+                        .set_size(state.desired_size.0, state.desired_size.1);
+                    state.surface.commit();
+                    eprintln!(
+                        "[overlay] compositor offered {width}x{height}; pinning {}x{}",
+                        state.desired_size.0, state.desired_size.1
+                    );
+                }
+                state.configured = Some(state.desired_size);
             }
             zwlr_layer_surface_v1::Event::Closed => {
                 state.closed = true;
@@ -1250,7 +1274,7 @@ fn clamp_margin(state: &OverlayState, left: i32, top: i32) -> (i32, i32) {
     let Some(output) = output_size(state) else {
         return (left.max(0), top.max(0));
     };
-    clamp_position(left, top, scaled_size(state), output)
+    clamp_position(left, top, state.desired_size, output)
 }
 
 /// Keep the whole `surface` inside `output`; a surface larger than the output is
@@ -1300,6 +1324,7 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
         eprintln!("[overlay] scale {percent}% (hidden)");
     } else {
         let (width, height) = scaled_size(state);
+        state.desired_size = (width, height);
         state.layer_surface.set_size(width, height);
         state.surface.commit();
         state.applied_rects.clear();
@@ -1321,6 +1346,7 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
     state.visual_dirty = true;
     state.region_dirty = true;
     let (width, height) = if hidden { (1, 1) } else { scaled_size(state) };
+    state.desired_size = (width, height);
     state.layer_surface.set_size(width, height);
     state.surface.commit();
     state.applied_rects.clear();
@@ -1752,6 +1778,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         scale_percent: initial_scale,
         orientation,
         surface_size: (scaled(disp_w), scaled(disp_h)),
+        desired_size: (scaled(disp_w), scaled(disp_h)),
         compositor: compositor.clone(),
         qh: qh.clone(),
         empty_region,
