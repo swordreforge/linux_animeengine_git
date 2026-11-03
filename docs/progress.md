@@ -33,7 +33,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | Module | What it does |
 |---|---|
 | `vdf` | minimal Valve KeyValues parser |
-| `workshop` | `libraryfolders.vdf` / `appworkshop_*.acf` parsing, content-root discovery, item scanning, `sync`, `diff`, `LocalWorkshopSource` |
+| `workshop` | `libraryfolders.vdf` / `appworkshop_*.acf` parsing, content-root discovery, item scanning, `sync`, `diff`, `LocalWorkshopSource`; Linux Steam root/library discovery (`steam_roots`, `libraries_from_roots`, `discover_libraries`) |
 | `workshop_web` *(feature `workshop-web`)* | Steam Web API metadata: keyless `GetPublishedFileDetails` + `QueryFiles` (needs key), blocking client |
 | `steam` *(feature `steamworks`)* | `UgcTransport` + `SteamWorkshop` subscribe/download/poll flow; `FlatSteamApi` loads `libsteam_api` at runtime via `libloading` |
 
@@ -137,6 +137,8 @@ Interaction and control:
   keybindings, tray and portal shortcuts.
 - `examples/scan_workshop.rs` — scan a real workshop content dir and print what
   the app would see.
+- `anima-workshop` (bin, no extra features): `roots`, `libraries`, `list`,
+  `show <id>`; `web <id...>` with `--features workshop-web`.
 
 ## Verification
 
@@ -145,6 +147,10 @@ Interaction and control:
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
+- `anima-workshop`: `roots` / `libraries` found `~/.local/share/Steam`; `list`
+  reported item `3828587753` with 6 assets; `show` listed the 6 `.apng` files;
+  the keyless `web 3828587753` returned "hatsune miku and teto halloween trend",
+  581.4 MiB and its tags.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -268,7 +274,9 @@ Interaction and control:
 - [ ] Upload via SteamCMD (`workshop_build_item`) and/or the Steamworks worker,
   incl. legal-agreement handling
 - [ ] Browse UI using the three-tier fallback documented in the RE notes
-- [ ] Linux Steam library discovery from `~/.steam` roots
+- [x] Linux Steam library discovery from `~/.steam` roots
+      (`steam_roots` / `libraries_from_roots` / `discover_libraries`, used by
+      `anima-workshop`)
 
 ### Robustness / distribution
 
@@ -333,6 +341,9 @@ cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
 cargo run --example scan_workshop -- ~/.local/share/Steam/steamapps/workshop/content/3474900
 
+cargo run --bin anima-workshop -- list
+cargo run --bin anima-workshop --features workshop-web -- web 3828587753
+
 cargo run --features overlay --bin anima-overlay  # generated test animation
 cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
 # position/scale persist to <XDG data>/AnimaEngine/secondary_instances.json;
@@ -357,4 +368,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
   → 1x1 keep-alive hide/show → multi-instance → in-screen clamping →
   frame-count region throttling/coarsening (+ optional auto step and configurable,
-  runtime-tunable rectangle budgets) → in-surface right-click menu.
+  runtime-tunable rectangle budgets) → in-surface right-click menu →
+  Steam root/library discovery + `anima-workshop` CLI.

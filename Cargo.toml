@@ -42,6 +42,10 @@ required-features = ["overlay"]
 name = "anima-overlay-ctl"
 path = "src/bin/anima-overlay-ctl.rs"
 
+[[bin]]
+name = "anima-workshop"
+path = "src/bin/anima-workshop.rs"
+
 [dev-dependencies]
 tempfile = "3"
 gif = "0.13"

@@ -50,6 +50,67 @@ pub fn content_root(library: &Path) -> PathBuf {
         .join(APP_ID.to_string())
 }
 
+/// Candidate Steam roots on Linux: `STEAM_ROOT` first, then the common install
+/// locations. Only existing directories are returned, deduplicated canonically.
+pub fn steam_roots() -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(root) = std::env::var_os("STEAM_ROOT") {
+        candidates.push(PathBuf::from(root));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.extend([
+            home.join(".steam").join("steam"),
+            home.join(".steam").join("root"),
+            home.join(".steam").join("debian-installation"),
+            home.join(".local").join("share").join("Steam"),
+            home.join(".var/app/com.valvesoftware.Steam/data/Steam"),
+        ]);
+    }
+    dedupe_dirs(candidates)
+}
+
+/// Libraries described by each root's `steamapps/libraryfolders.vdf`, plus the
+/// roots themselves that exist on disk.
+pub fn libraries_from_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut libraries: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        push_dir(&mut libraries, root.clone());
+        let vdf_path = root.join("steamapps").join(LIBRARY_FOLDERS_FILE);
+        if let Ok(text) = std::fs::read_to_string(&vdf_path)
+            && let Ok(paths) = library_folders(&text)
+        {
+            for path in paths {
+                push_dir(&mut libraries, path);
+            }
+        }
+    }
+    libraries
+}
+
+/// All Steam libraries discoverable on this machine.
+pub fn discover_libraries() -> Vec<PathBuf> {
+    libraries_from_roots(&steam_roots())
+}
+
+fn push_dir(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !path.is_dir() {
+        return;
+    }
+    let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+    if !paths.contains(&canonical) {
+        paths.push(canonical);
+    }
+}
+
+fn dedupe_dirs(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for path in paths {
+        push_dir(&mut out, path);
+    }
+    out
+}
+
 /// Installed-state of one workshop item, from `appworkshop_<appid>.acf`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemState {
@@ -339,6 +400,36 @@ mod tests {
             root,
             PathBuf::from("/lib/steamapps/workshop/content/3474900")
         );
+    }
+
+    #[test]
+    fn discovers_libraries_from_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("steam");
+        let lib1 = dir.path().join("lib1");
+        let lib2 = dir.path().join("lib2");
+        for path in [&root, &lib1, &lib2] {
+            std::fs::create_dir_all(path.join("steamapps")).unwrap();
+        }
+        let vdf = format!(
+            "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\"{}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\"{}\"\n\t}}\n}}\n",
+            lib1.display(),
+            lib2.display()
+        );
+        std::fs::write(root.join("steamapps").join(LIBRARY_FOLDERS_FILE), vdf).unwrap();
+
+        let canonical = |path: &Path| std::fs::canonicalize(path).unwrap();
+        let libraries = libraries_from_roots(std::slice::from_ref(&root));
+        assert_eq!(libraries.len(), 3);
+        assert!(libraries.contains(&canonical(&root)));
+        assert!(libraries.contains(&canonical(&lib1)));
+        assert!(libraries.contains(&canonical(&lib2)));
+
+        // Missing roots and duplicate entries are ignored.
+        assert!(libraries_from_roots(&[dir.path().join("absent")]).is_empty());
+        let roots = [root.clone(), root];
+        let again = libraries_from_roots(&roots);
+        assert_eq!(again.len(), 3);
     }
 
     #[test]
