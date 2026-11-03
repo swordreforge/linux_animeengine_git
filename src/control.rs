@@ -112,6 +112,7 @@ impl ControlState {
     /// Ask the overlay to exit.
     #[must_use]
     pub fn request_quit(mut self) -> Self {
+        self.reset = false;
         self.quit = true;
         self.bump();
         self
@@ -190,6 +191,7 @@ mod tests {
 
         let quit = reset.clone().request_quit();
         assert!(quit.quit);
+        assert!(!quit.reset);
         assert!(quit.generation > reset.generation);
 
         let full = quit.clone().set_input_mode(InputMode::Full);

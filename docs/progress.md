@@ -65,6 +65,10 @@ Interaction and control:
     silhouettes skip the update, and >4096 rects fall back to the bounding box
 - **tray** (`ksni`): `StatusNotifierItem` menu with an "Input" submenu
   (full / opaque / click-through), "Reset position and interaction", "Quit overlay"
+- **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
+  `mode <full|opaque|pass-through>`, `reset`, `quit`, `status` — for compositor
+  keybindings (niri has no `GlobalShortcuts` portal backend); see
+  `docs/overlay-control.md`
 - **global shortcuts** (`ashpd`, `xdg-desktop-portal` GlobalShortcuts):
   `Ctrl+Shift+T` toggle click-through, `Ctrl+Shift+R` reset
 - tray/portal do not touch the overlay directly: they write
@@ -75,12 +79,15 @@ Interaction and control:
 
 - `docs/workshop-steamworks-re.md` — static RE of the shipped Windows build
   (flat API bridge, subscribe/download flow, three-tier browse fallback, upload).
+- `docs/overlay-control.md` — input modes, the `anima-overlay-ctl` CLI, niri
+  keybindings, tray and portal shortcuts.
 - `examples/scan_workshop.rs` — scan a real workshop content dir and print what
   the app would see.
 
 ## Verification
 
-- `cargo test`: **102** default, **105** with `workshop-web,steamworks`.
+- `cargo test`: **103** default (102 lib + 1 CLI), **106** with
+  `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
@@ -100,6 +107,10 @@ Interaction and control:
   `miku12.apng` (1500×1125) yields 3289 rects (under the 4096 cap).
 - A real drag against the running overlay moved the margins as expected
   (`drag start` → `drag end; margins …`), confirming alpha hit-testing in practice.
+- `anima-overlay-ctl` driven against a running overlay: `status` reports the
+  mode, `toggle` → `input: click-through`, `mode full` → `input: full surface`,
+  `mode opaque` → `input: opaque pixels (N rects)`, `reset` → `reset to initial
+  position`, `quit` → exits 0; unknown subcommands exit 1 with usage.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -117,9 +128,9 @@ Interaction and control:
 - [x] Tray (`ksni`, Input submenu) + portal GlobalShortcuts for mode / reset / quit
 - [ ] Throttle or coarsen the per-pixel region for very detailed silhouettes
       (>4096 rects currently collapse to a bounding box)
-- [ ] Recover hotkeys on niri: either install a portal backend implementing
-      `GlobalShortcuts`, or ship a tiny `anima-overlay-ctl` CLI and bind it in
-      `niri`'s config (tray already works today)
+- [x] Recover hotkeys on niri: `anima-overlay-ctl` CLI + compositor keybinds
+      (documented in `docs/overlay-control.md`); the portal path stays for
+      backends that implement `GlobalShortcuts`
 - [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
       largely covered by the tray
 - [ ] Multi-instance: one process per animation (or multiple surfaces)
@@ -171,8 +182,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (102 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (105)
+cargo test                                        # pure logic (103 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (106)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -180,6 +191,8 @@ cargo run --example scan_workshop -- ~/.local/share/Steam/steamapps/workshop/con
 
 cargo run --features overlay --bin anima-overlay  # generated test animation
 cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
+
+cargo build --release --bin anima-overlay-ctl     # CLI for compositor keybinds
 ```
 
 ## Reference
@@ -187,4 +200,4 @@ cargo run --features overlay --bin anima-overlay -- /path/to/animation.apng
 - `docs/workshop-steamworks-re.md` — reverse engineering of the shipped build.
 - Commit history: pure core → workshop RE + scanner → Steam bridge → overlay
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
-  per-pixel input region.
+  per-pixel input region → CLI control (`anima-overlay-ctl`).
