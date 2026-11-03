@@ -32,7 +32,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anima_engine_rs::anim::{Animation, Frame};
+use anima_engine_rs::anim::{Animation, Frame, Orientation};
 use anima_engine_rs::cache::FrameCache;
 use anima_engine_rs::control::{ControlState, InputMode, MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
 use anima_engine_rs::state::SecondaryState;
@@ -104,6 +104,9 @@ struct FrameCtl {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    uv_mat: vec4<f32>,
+    uv_off: vec2<f32>,
+    _pad3: vec2<f32>,
 };
 
 @group(0) @binding(0) var src: texture_2d_array<f32>;
@@ -112,7 +115,9 @@ struct FrameCtl {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(src, smp, in.uv, i32(ctl.layer));
+    // Display UV -> native UV, honouring rotation and mirrors.
+    let uv = ctl.uv_mat.xy * in.uv.x + ctl.uv_mat.zw * in.uv.y + ctl.uv_off;
+    let c = textureSample(src, smp, uv, i32(ctl.layer));
     // The surface uses premultiplied alpha; premultiply the straight RGBA frame.
     return vec4<f32>(c.rgb * c.a, c.a);
 }
@@ -123,6 +128,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 struct FrameCtl {
     layer: u32,
     _pad: [u32; 3],
+    uv_mat: [f32; 4],
+    uv_off: [f32; 2],
+    _pad2: [f32; 2],
 }
 
 struct OverlayState {
@@ -146,6 +154,7 @@ struct OverlayState {
     /// Native frame size; `scale_percent` is a percentage of it.
     native_size: (u32, u32),
     scale_percent: u32,
+    orientation: Orientation,
     surface_size: (u32, u32),
     compositor: wl_compositor::WlCompositor,
     qh: QueueHandle<OverlayState>,
@@ -179,6 +188,7 @@ impl OverlayState {
         self.animation.alpha_hit(
             self.frame_index,
             self.surface_size,
+            self.orientation,
             sx,
             sy,
             ALPHA_HIT_THRESHOLD,
@@ -498,10 +508,12 @@ fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
 /// it, so transparent pixels pass clicks through to whatever is below.
 /// Silhouettes wider than [`MAX_INPUT_RECTS`] fall back to their bounding box.
 fn apply_opaque_region(state: &mut OverlayState) {
-    let mut rects =
-        state
-            .animation
-            .alpha_rects(state.frame_index, state.surface_size, ALPHA_HIT_THRESHOLD);
+    let mut rects = state.animation.alpha_rects(
+        state.frame_index,
+        state.surface_size,
+        state.orientation,
+        ALPHA_HIT_THRESHOLD,
+    );
     if rects.len() > MAX_INPUT_RECTS
         && let Some(bounds) = anima_engine_rs::anim::bounds_rect(&rects)
     {
@@ -532,9 +544,9 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
         return;
     }
     state.scale_percent = percent;
-    let (native_w, native_h) = state.native_size;
-    let width = (u64::from(native_w) * u64::from(percent) / 100).max(1) as u32;
-    let height = (u64::from(native_h) * u64::from(percent) / 100).max(1) as u32;
+    let (disp_w, disp_h) = state.orientation.size(state.native_size);
+    let width = (u64::from(disp_w) * u64::from(percent) / 100).max(1) as u32;
+    let height = (u64::from(disp_h) * u64::from(percent) / 100).max(1) as u32;
     state.layer_surface.set_size(width, height);
     state.surface.commit();
     state.applied_rects.clear();
@@ -761,6 +773,22 @@ async fn run_portal(control_path: PathBuf) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// UV matrix + offset for [`FrameCtl`]: display UV -> native UV.
+fn uv_transform(orientation: Orientation) -> ([f32; 4], [f32; 2]) {
+    let origin = orientation.display_to_native(0.0, 0.0);
+    let du = orientation.display_to_native(1.0, 0.0);
+    let dv = orientation.display_to_native(0.0, 1.0);
+    (
+        [
+            (du.0 - origin.0) as f32,
+            (du.1 - origin.1) as f32,
+            (dv.0 - origin.0) as f32,
+            (dv.1 - origin.1) as f32,
+        ],
+        [origin.0 as f32, origin.1 as f32],
+    )
+}
+
 fn frame_delay(frame: &Frame, fps: u32) -> Duration {
     if fps > 0 {
         return Duration::from_millis(u64::from(1000 / fps.max(1)));
@@ -807,10 +835,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_locked = persisted.as_ref().is_some_and(|i| i.locked);
     let initial_hover_hide = persisted.as_ref().is_some_and(|i| i.hover_hide);
     let fps = persisted.as_ref().map_or(0, |instance| instance.fps);
+    let orientation = Orientation::from_degrees(
+        persisted.as_ref().map_or(0, |i| i.rotation),
+        persisted.as_ref().is_some_and(|i| i.flip_h),
+        persisted.as_ref().is_some_and(|i| i.flip_v),
+    );
+    let (disp_w, disp_h) = orientation.size((width, height));
     if persisted.is_some() {
         eprintln!(
             "[overlay] restored instance: ({pos_x}, {pos_y}) at {initial_scale}%, \
-             mode {initial_mode:?}, locked {initial_locked}, hover_hide {initial_hover_hide}, fps {fps}"
+             mode {initial_mode:?}, locked {initial_locked}, hover_hide {initial_hover_hide}, \
+             fps {fps}, quarters {}, flip_h {}, flip_v {}",
+            orientation.quarter_turns, orientation.flip_h, orientation.flip_v
         );
     }
 
@@ -832,7 +868,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layer_surface =
         layer_shell.get_layer_surface(&surface, None, layer, "anima-overlay".to_string(), &qh, ());
     let scaled = |value: u32| (u64::from(value) * u64::from(initial_scale) / 100).max(1) as u32;
-    layer_surface.set_size(scaled(width), scaled(height));
+    layer_surface.set_size(scaled(disp_w), scaled(disp_h));
     layer_surface
         .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
@@ -861,7 +897,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frame_index: 0,
         native_size: (width, height),
         scale_percent: initial_scale,
-        surface_size: (scaled(width), scaled(height)),
+        orientation,
+        surface_size: (scaled(disp_w), scaled(disp_h)),
         compositor: compositor.clone(),
         qh: qh.clone(),
         empty_region,
@@ -1136,6 +1173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // --- playback loop -----------------------------------------------------
+    let (uv_mat, uv_off) = uv_transform(state.orientation);
     let mut index = 0usize;
     let mut next_change = Instant::now();
     let mut uploaded_layer0 = 0usize;
@@ -1213,6 +1251,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bytemuck::bytes_of(&FrameCtl {
                 layer,
                 _pad: [0; 3],
+                uv_mat,
+                uv_off,
+                _pad2: [0.0; 2],
             }),
         );
 

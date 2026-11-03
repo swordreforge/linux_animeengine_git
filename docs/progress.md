@@ -24,7 +24,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | `pack` | `mdaa_io.py` / `models.py` | `.mdaa` (zip + `pack.json` + NPZ frames), minimal NPY parser |
 | `input_map` | `deteccionDeTeclas.py` / `funciones.py` | `configTeclas.json` bindings, activation modes, function catalog |
 | `cache` | `monoModule.py` | `FrameCache`: sha256 key, ZIP+PNG frames, LRU eviction |
-| `anim` | `nuevoMotor.py` | GIF/APNG/WebP decode → composited RGBA frames (via `image`), plus `alpha_at` / `alpha_hit` |
+| `anim` | `nuevoMotor.py` | GIF/APNG/WebP decode → composited RGBA frames (via `image`), plus `alpha_at` / `alpha_hit` / `alpha_rects` and `Orientation` (quarter turns + mirrors) |
 | `control` | — (new) | cross-process overlay control file (`overlay_control.json`): `InputMode` (full / opaque / pass-through), `scale_percent` (10–100), reset / quit + generation |
 | `error` | — | shared error type |
 
@@ -71,6 +71,12 @@ Interaction and control:
   `<XDG data>/AnimaEngine/secondary_instances.json`, overridable with
   `ANIMAENGINE_STATE_FILE`) on drag release, size change, reset and exit, and
   restored on startup
+- **instance fields**: `fps` (0 = each frame's `delay_ms`, >0 = `1000/fps` ms),
+  `locked` (drag disabled), `always_on_top` (Overlay vs Bottom layer at startup),
+  `hover_hide` (render nothing while the pointer is on a solid pixel),
+  `rotation`/`flip_h`/`flip_v` (shader UV transform, shared with the hit-test and
+  the per-pixel input region so all three agree); `click_through` and `locked`
+  are written back, the rest are read at startup
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
   (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
@@ -94,7 +100,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **107** default (105 lib + 2 CLI), **110** with
+- `cargo test`: **108** default (106 lib + 2 CLI), **111** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -127,6 +133,15 @@ Interaction and control:
   `scale_percent` 50); a second run logged `restored geometry: (100, 100) at
   50%`; after editing `x`/`y` to 300/250 a third run logged
   `restored geometry: (300, 250) at 50%`.
+- Instance fields restored and written back: a seeded record with
+  `click_through`, `locked`, `hover_hide`, `fps` and `always_on_top` logged
+  `mode PassThrough, locked true, hover_hide true, fps 10`; `ctl unlock` then
+  logged `locked false` and `ctl mode opaque` rewrote `click_through: false`,
+  leaving the untouched fields intact.
+- Rotation/mirrors: seeded `rotation` 90/180/270 (plus flips) restored as
+  quarters 1/2/3, each built its per-pixel region (990 rects) and quit cleanly;
+  `Orientation` unit tests cover the inverse mapping, the axis swap and rect
+  remapping.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -151,8 +166,12 @@ Interaction and control:
       CLI `scale` + tray "Size" submenu
 - [x] Persist position + `scale_percent` per instance in
       `secondary_instances.json` (keyed by the canonical animation path)
-- [ ] Persist the remaining `Instance` fields (`click_through` / input mode,
-      `fps`, `rotation`, `flip_h/v`, `locked`)
+- [x] Wire the remaining `Instance` fields: `click_through` (restored + written
+      back), `locked`, `fps`, `always_on_top`, `hover_hide`,
+      `rotation`/`flip_h`/`flip_v`
+- [ ] `hover_hide` fidelity: the Python hid the window and kept tracking the
+      global cursor; on Wayland we keep the input region installed so pointer
+      events arrive, so clicks are still captured while the overlay is hidden
 - [ ] Right-click control menu on the surface (port `anima_overlay_controls`);
       largely covered by the tray
 - [ ] Multi-instance: one process per animation (or multiple surfaces)
@@ -199,6 +218,9 @@ Interaction and control:
   two overlays saving at once can lose an update (as in the Python original).
 - The instance key is the canonical animation path, so moving/renaming a file
   starts a fresh instance entry.
+- `rotation` is honoured as quarter turns (rounded to the nearest 90°); other
+  angles are not supported. `fps` defaults to 0 (native frame delays) rather than
+  the Python's fixed 15 fps timer.
 - The control file is read-modify-written by tray and portal without a lock, so a
   rare concurrent toggle could lose an update.
 - Overlay is Wayland-only (layer-shell); X11/Windows not targeted yet.
@@ -208,8 +230,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (107 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (110)
+cargo test                                        # pure logic (108 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (111)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -230,4 +252,4 @@ anima-overlay-ctl scale 50                         # shrink the overlay to 50%
 - Commit history: pure core → workshop RE + scanner → Steam bridge → overlay
   scaffold → multi-frame playback → alpha drag → SNI tray + portal control →
   per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
-  geometry persistence.
+  geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation).

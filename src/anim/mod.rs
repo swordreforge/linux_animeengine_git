@@ -45,6 +45,81 @@ pub struct Animation {
     pub frames: Vec<Frame>,
 }
 
+/// How a frame is oriented on screen: quarter-turn rotation plus mirrors.
+///
+/// The displayed image is the native image rotated clockwise by
+/// `quarter_turns * 90°`, then mirrored in display space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Orientation {
+    /// Clockwise quarter turns (0..=3).
+    pub quarter_turns: u8,
+    pub flip_h: bool,
+    pub flip_v: bool,
+}
+
+impl Orientation {
+    /// Build from a rotation in degrees (rounded to the nearest quarter turn)
+    /// plus the mirror flags.
+    pub fn from_degrees(rotation_degrees: i32, flip_h: bool, flip_v: bool) -> Self {
+        let normalized = rotation_degrees.rem_euclid(360);
+        let quarter_turns = ((normalized + 45) / 90).rem_euclid(4) as u8;
+        Self {
+            quarter_turns,
+            flip_h,
+            flip_v,
+        }
+    }
+
+    /// Whether the displayed size swaps width and height.
+    pub fn swaps_axes(&self) -> bool {
+        self.quarter_turns % 2 == 1
+    }
+
+    /// Displayed size for a native size.
+    pub fn size(&self, native: (u32, u32)) -> (u32, u32) {
+        if self.swaps_axes() {
+            (native.1, native.0)
+        } else {
+            native
+        }
+    }
+
+    /// Native unit coordinates (origin top-left) -> display unit coordinates.
+    pub fn native_to_display(&self, u: f64, v: f64) -> (f64, f64) {
+        let (mut x, mut y) = match self.quarter_turns % 4 {
+            0 => (u, v),
+            1 => (1.0 - v, u),
+            2 => (1.0 - u, 1.0 - v),
+            _ => (v, 1.0 - u),
+        };
+        if self.flip_h {
+            x = 1.0 - x;
+        }
+        if self.flip_v {
+            y = 1.0 - y;
+        }
+        (x, y)
+    }
+
+    /// Display unit coordinates -> native unit coordinates (inverse of
+    /// [`Self::native_to_display`]).
+    pub fn display_to_native(&self, x: f64, y: f64) -> (f64, f64) {
+        let (mut x, mut y) = (x, y);
+        if self.flip_h {
+            x = 1.0 - x;
+        }
+        if self.flip_v {
+            y = 1.0 - y;
+        }
+        match self.quarter_turns % 4 {
+            0 => (x, y),
+            1 => (y, 1.0 - x),
+            2 => (1.0 - x, 1.0 - y),
+            _ => (1.0 - y, x),
+        }
+    }
+}
+
 impl Animation {
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -67,11 +142,13 @@ impl Animation {
     }
 
     /// Hit-test a point in surface-local coordinates, where the frame is
-    /// stretched to `surface` size. Used for drag-on-solid-pixel.
+    /// stretched to `surface` and oriented by `orientation`. Used for
+    /// drag-on-solid-pixel.
     pub fn alpha_hit(
         &self,
         frame: usize,
         surface: (u32, u32),
+        orientation: Orientation,
         sx: f64,
         sy: f64,
         threshold: u8,
@@ -83,26 +160,24 @@ impl Animation {
         if !sx.is_finite() || !sy.is_finite() {
             return false;
         }
-        let fx = (sx * f64::from(self.width) / f64::from(sw)).floor();
-        let fy = (sy * f64::from(self.height) / f64::from(sh)).floor();
-        if fx < 0.0 || fy < 0.0 {
+        let (nu, nv) = orientation.display_to_native(sx / f64::from(sw), sy / f64::from(sh));
+        let fx = (nu * f64::from(self.width)).floor();
+        let fy = (nv * f64::from(self.height)).floor();
+        if fx < 0.0 || fy < 0.0 || fx >= f64::from(self.width) || fy >= f64::from(self.height) {
             return false;
         }
-        let (fx, fy) = (fx as u32, fy as u32);
-        if fx >= self.width || fy >= self.height {
-            return false;
-        }
-        self.alpha_at(frame, fx, fy) >= threshold
+        self.alpha_at(frame, fx as u32, fy as u32) >= threshold
     }
 
     /// Rectangles `(x, y, w, h)` in surface-local coordinates covering the
     /// opaque pixels of `frame`, where each frame pixel is stretched to
-    /// `surface`. Wayland input regions are rectangle lists, so rows with
-    /// identical opaque runs are merged into taller rectangles.
+    /// `surface` and oriented by `orientation`. Wayland input regions are
+    /// rectangle lists, so rows with identical opaque runs are merged first.
     pub fn alpha_rects(
         &self,
         frame: usize,
         surface: (u32, u32),
+        orientation: Orientation,
         threshold: u8,
     ) -> Vec<(i32, i32, i32, i32)> {
         let (sw, sh) = surface;
@@ -113,7 +188,8 @@ impl Animation {
             return Vec::new();
         };
 
-        let mut rects = Vec::new();
+        // Opaque row bands in native frame coordinates, merged vertically.
+        let mut bands: Vec<(i32, i32, i32, i32)> = Vec::new();
         let mut band: Vec<(u32, u32)> = Vec::new();
         let mut band_start = 0u32;
         let mut band_height = 0u32;
@@ -127,28 +203,18 @@ impl Animation {
             } else if runs == band {
                 band_height += 1;
             } else {
-                emit_band(
-                    &band,
-                    band_start,
-                    band_height,
-                    surface,
-                    (self.width, self.height),
-                    &mut rects,
-                );
+                emit_band(&band, band_start, band_height, &mut bands);
                 band = runs;
                 band_start = y;
                 band_height = 1;
             }
         }
-        emit_band(
-            &band,
-            band_start,
-            band_height,
-            surface,
-            (self.width, self.height),
-            &mut rects,
-        );
-        rects
+        emit_band(&band, band_start, band_height, &mut bands);
+
+        bands
+            .into_iter()
+            .map(|rect| map_frame_rect(rect, (self.width, self.height), surface, orientation))
+            .collect()
     }
 }
 
@@ -178,28 +244,33 @@ fn row_runs(frame: &Frame, y: u32, width: u32, threshold: u8) -> Vec<(u32, u32)>
     runs
 }
 
-/// Scale a merged row band to surface coordinates and append its rectangles.
-fn emit_band(
-    runs: &[(u32, u32)],
-    y0: u32,
-    height: u32,
-    surface: (u32, u32),
-    frame: (u32, u32),
-    rects: &mut Vec<(i32, i32, i32, i32)>,
-) {
-    if runs.is_empty() {
-        return;
-    }
-    let (sw, sh) = surface;
-    let (fw, fh) = frame;
-    let sy = (u64::from(y0) * u64::from(sh) / u64::from(fh)) as i32;
-    let sy_end = (u64::from(y0 + height) * u64::from(sh) / u64::from(fh)) as i32;
-    let rect_height = (sy_end - sy).max(1);
+/// Append the rectangles of one merged frame row band, in native coordinates.
+fn emit_band(runs: &[(u32, u32)], y0: u32, height: u32, rects: &mut Vec<(i32, i32, i32, i32)>) {
     for &(x0, x1) in runs {
-        let sx = (u64::from(x0) * u64::from(sw) / u64::from(fw)) as i32;
-        let sx_end = (u64::from(x1) * u64::from(sw) / u64::from(fw)) as i32;
-        rects.push((sx, sy, (sx_end - sx).max(1), rect_height));
+        rects.push((x0 as i32, y0 as i32, (x1 - x0) as i32, height as i32));
     }
+}
+
+/// Map an axis-aligned native rectangle onto the surface, honouring the
+/// orientation; quarter turns and mirrors keep it axis-aligned.
+fn map_frame_rect(
+    rect: (i32, i32, i32, i32),
+    frame: (u32, u32),
+    surface: (u32, u32),
+    orientation: Orientation,
+) -> (i32, i32, i32, i32) {
+    let (fw, fh) = (f64::from(frame.0), f64::from(frame.1));
+    let (sw, sh) = (f64::from(surface.0), f64::from(surface.1));
+    let (x, y, w, h) = rect;
+    let (a, b) = (
+        orientation.native_to_display(x as f64 / fw, y as f64 / fh),
+        orientation.native_to_display((x + w) as f64 / fw, (y + h) as f64 / fh),
+    );
+    let x0 = (a.0.min(b.0) * sw).floor() as i32;
+    let y0 = (a.1.min(b.1) * sh).floor() as i32;
+    let x1 = (a.0.max(b.0) * sw).ceil() as i32;
+    let y1 = (a.1.max(b.1) * sh).ceil() as i32;
+    (x0, y0, (x1 - x0).max(1), (y1 - y0).max(1))
 }
 
 /// Smallest rectangle containing all `rects`.
@@ -679,19 +750,21 @@ mod tests {
             }],
         };
 
+        let id = Orientation::default();
+
         // surface == frame size
-        assert!(anim.alpha_hit(0, (2, 1), 0.5, 0.5, 25));
-        assert!(!anim.alpha_hit(0, (2, 1), 1.5, 0.5, 25));
+        assert!(anim.alpha_hit(0, (2, 1), id, 0.5, 0.5, 25));
+        assert!(!anim.alpha_hit(0, (2, 1), id, 1.5, 0.5, 25));
 
         // surface stretched 2x: x in [2, 4) maps to frame column 1 (alpha 0)
-        assert!(anim.alpha_hit(0, (4, 2), 0.5, 0.5, 25));
-        assert!(!anim.alpha_hit(0, (4, 2), 3.0, 0.5, 25));
+        assert!(anim.alpha_hit(0, (4, 2), id, 0.5, 0.5, 25));
+        assert!(!anim.alpha_hit(0, (4, 2), id, 3.0, 0.5, 25));
 
         // degenerate / invalid inputs
-        assert!(!anim.alpha_hit(0, (2, 1), -0.1, 0.0, 25));
-        assert!(!anim.alpha_hit(0, (2, 1), f64::NAN, 0.0, 25));
-        assert!(!anim.alpha_hit(0, (0, 0), 0.0, 0.0, 25));
-        assert!(!anim.alpha_hit(1, (2, 1), 0.5, 0.5, 25));
+        assert!(!anim.alpha_hit(0, (2, 1), id, -0.1, 0.0, 25));
+        assert!(!anim.alpha_hit(0, (2, 1), id, f64::NAN, 0.0, 25));
+        assert!(!anim.alpha_hit(0, (0, 0), id, 0.0, 0.0, 25));
+        assert!(!anim.alpha_hit(1, (2, 1), id, 0.5, 0.5, 25));
 
         assert_eq!(anim.alpha_at(0, 0, 0), 255);
         assert_eq!(anim.alpha_at(0, 5, 5), 0);
@@ -699,6 +772,8 @@ mod tests {
 
     #[test]
     fn alpha_rects_merges_and_scales() {
+        let id = Orientation::default();
+
         // solid 3x2 block → one rectangle
         let solid = Animation {
             width: 3,
@@ -708,7 +783,7 @@ mod tests {
                 delay_ms: 0,
             }],
         };
-        assert_eq!(solid.alpha_rects(0, (3, 2), 25), vec![(0, 0, 3, 2)]);
+        assert_eq!(solid.alpha_rects(0, (3, 2), id, 25), vec![(0, 0, 3, 2)]);
 
         // diagonal 2x2 → two single-pixel rectangles
         let diagonal = Animation {
@@ -720,7 +795,7 @@ mod tests {
             }],
         };
         assert_eq!(
-            diagonal.alpha_rects(0, (2, 2), 25),
+            diagonal.alpha_rects(0, (2, 2), id, 25),
             vec![(0, 0, 1, 1), (1, 1, 1, 1)]
         );
 
@@ -733,7 +808,7 @@ mod tests {
                 delay_ms: 0,
             }],
         };
-        assert!(empty.alpha_rects(0, (2, 2), 25).is_empty());
+        assert!(empty.alpha_rects(0, (2, 2), id, 25).is_empty());
 
         // surface stretched 2x
         let half = Animation {
@@ -744,7 +819,7 @@ mod tests {
                 delay_ms: 0,
             }],
         };
-        assert_eq!(half.alpha_rects(0, (4, 2), 25), vec![(0, 0, 2, 2)]);
+        assert_eq!(half.alpha_rects(0, (4, 2), id, 25), vec![(0, 0, 2, 2)]);
 
         // below threshold → transparent
         let faint = Animation {
@@ -755,7 +830,7 @@ mod tests {
                 delay_ms: 0,
             }],
         };
-        assert!(faint.alpha_rects(0, (1, 1), 25).is_empty());
+        assert!(faint.alpha_rects(0, (1, 1), id, 25).is_empty());
     }
 
     #[test]
@@ -764,6 +839,54 @@ mod tests {
         assert_eq!(
             bounds_rect(&[(2, 3, 1, 1), (0, 0, 2, 2)]),
             Some((0, 0, 3, 4))
+        );
+    }
+
+    #[test]
+    fn orientation_rotation_and_mirrors() {
+        let rot90 = Orientation::from_degrees(90, false, false);
+        assert!(rot90.swaps_axes());
+        assert_eq!(rot90.size((2, 3)), (3, 2));
+        assert_eq!(
+            Orientation::from_degrees(-90, false, false).quarter_turns,
+            3
+        );
+        assert_eq!(
+            Orientation::from_degrees(450, false, false).quarter_turns,
+            1
+        );
+        assert_eq!(Orientation::default().size((2, 3)), (2, 3));
+
+        // display_to_native is the inverse of native_to_display
+        for (u, v) in [(0.25, 0.75), (0.0, 0.0), (1.0, 1.0), (0.5, 0.5)] {
+            let (x, y) = rot90.native_to_display(u, v);
+            let (u2, v2) = rot90.display_to_native(x, y);
+            assert!((u - u2).abs() < 1e-9 && (v - v2).abs() < 1e-9);
+        }
+
+        // mirror only
+        let mirrored = Orientation::from_degrees(0, true, false);
+        assert!((mirrored.native_to_display(0.25, 0.5).0 - 0.75).abs() < 1e-9);
+
+        // 2x1 frame, only pixel (0,0) opaque
+        let anim = Animation {
+            width: 2,
+            height: 1,
+            frames: vec![Frame {
+                rgba: vec![255, 0, 0, 255, 0, 0, 0, 0],
+                delay_ms: 0,
+            }],
+        };
+
+        // 90° CW displays as 1x2 with the opaque pixel at the top
+        assert!(anim.alpha_hit(0, (1, 2), rot90, 0.5, 0.5, 25));
+        assert!(!anim.alpha_hit(0, (1, 2), rot90, 0.5, 1.5, 25));
+        assert_eq!(anim.alpha_rects(0, (1, 2), rot90, 25), vec![(0, 0, 1, 1)]);
+
+        // a horizontal mirror moves that pixel to the right column
+        assert_eq!(
+            anim.alpha_rects(0, (2, 1), Orientation::from_degrees(0, true, false), 25),
+            vec![(1, 0, 1, 1)]
         );
     }
 }

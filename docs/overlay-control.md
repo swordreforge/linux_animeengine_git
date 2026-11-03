@@ -13,6 +13,11 @@ see `control::ControlState`). Three front-ends write it: the SNI tray, the
 | `pass-through` | The whole surface is click-through |
 | `full` | The whole surface grabs clicks |
 
+Position and size persist to `secondary_instances.json` (keyed by the animation's
+canonical path), together with `click_through` and `locked`. Other instance
+fields (`fps`, `rotation`, `flip_h`/`flip_v`, `always_on_top`, `hover_hide`) are
+read from that file at startup.
+
 ## Size
 
 Display size is a percentage of the frame's native size, capped at **100%** —
@@ -33,6 +38,8 @@ anima-overlay-ctl mode pass-through
 anima-overlay-ctl scale 50           # shrink to 50% (never above 100%)
 anima-overlay-ctl scale up            # +10%
 anima-overlay-ctl scale down          # -10%
+anima-overlay-ctl lock                # disable dragging (persisted)
+anima-overlay-ctl unlock
 anima-overlay-ctl reset              # initial position + native size + opaque input
 anima-overlay-ctl quit
 anima-overlay-ctl status
