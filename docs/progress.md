@@ -36,6 +36,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | `workshop` | `libraryfolders.vdf` / `appworkshop_*.acf` parsing, content-root discovery, item scanning, `sync`, `diff`, `LocalWorkshopSource`; Linux Steam root/library discovery (`steam_roots`, `libraries_from_roots`, `discover_libraries`) |
 | `workshop_web` *(feature `workshop-web`)* | Steam Web API metadata: keyless `GetPublishedFileDetails` + `QueryFiles` (needs key), blocking client |
 | `steam` *(feature `steamworks`)* | `UgcTransport` + `SteamWorkshop` subscribe/download/poll flow; `FlatSteamApi` loads `libsteam_api` at runtime via `libloading` |
+| `steamcmd` | SteamCMD wrapper for `workshop_download_item` (no SDK); `STEAMCMD`, `STEAMCMD_DIR` |
 
 ### Overlay binary (`--features overlay`)
 
@@ -138,11 +139,12 @@ Interaction and control:
 - `examples/scan_workshop.rs` — scan a real workshop content dir and print what
   the app would see.
 - `anima-workshop` (bin, no extra features): `roots`, `libraries`, `list`,
-  `show <id>`; `web <id...>` with `--features workshop-web`.
+  `show <id>`, `download <id...>` (SteamCMD); `web <id...>` with
+  `--features workshop-web`.
 
 ## Verification
 
-- `cargo test`: **112** default (109 lib + 3 CLI), **115** with
+- `cargo test`: **114** default (111 lib + 3 CLI), **117** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -151,6 +153,10 @@ Interaction and control:
   reported item `3828587753` with 6 assets; `show` listed the 6 `.apng` files;
   the keyless `web 3828587753` returned "hatsune miku and teto halloween trend",
   581.4 MiB and its tags.
+- SteamCMD: not installed on this machine (the Steam client is), so `download`
+  reports a clear "steamcmd not found" and exits 1. The full path is covered by a
+  test that runs a fake `steamcmd` script through `STEAMCMD`/`STEAMCMD_DIR` and
+  locates the downloaded item directory.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -269,7 +275,8 @@ Interaction and control:
 
 - [ ] Provide a Linux `libsteam_api.so` and wire `SteamWorkshop` into the app
   (this install only ships Windows `steam_api64.dll`)
-- [ ] Subscribe / download / repair / unsubscribe actions in the UI
+- [ ] Subscribe / repair / unsubscribe actions in the UI (downloads already work
+      through `anima-workshop download` / SteamCMD)
 - [ ] `ItemInstalled` / `DownloadItemResult` callbacks → `sync` + `diff` hot reload
 - [ ] Upload via SteamCMD (`workshop_build_item`) and/or the Steamworks worker,
   incl. legal-agreement handling
@@ -334,14 +341,15 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (112 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (115)
+cargo test                                        # pure logic (114 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (117)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
 cargo run --example scan_workshop -- ~/.local/share/Steam/steamapps/workshop/content/3474900
 
 cargo run --bin anima-workshop -- list
+cargo run --bin anima-workshop -- download 3828587753   # needs steamcmd
 cargo run --bin anima-workshop --features workshop-web -- web 3828587753
 
 cargo run --features overlay --bin anima-overlay  # generated test animation
@@ -369,4 +377,4 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   → 1x1 keep-alive hide/show → multi-instance → in-screen clamping →
   frame-count region throttling/coarsening (+ optional auto step and configurable,
   runtime-tunable rectangle budgets) → in-surface right-click menu →
-  Steam root/library discovery + `anima-workshop` CLI.
+  Steam root/library discovery + `anima-workshop` CLI → SteamCMD download path.

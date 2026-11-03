@@ -5,6 +5,7 @@
 //! anima-workshop libraries          # all Steam libraries
 //! anima-workshop list               # installed items + asset counts
 //! anima-workshop show <id>          # one item's directory and assets
+//! anima-workshop download <id...>   # via SteamCMD (STEAMCMD, STEAMCMD_DIR)
 //! anima-workshop web <id...>        # metadata (needs --features workshop-web)
 //! ```
 
@@ -33,13 +34,16 @@ fn main() -> ExitCode {
             Some(id) => show(id),
             None => usage(),
         },
+        Some("download") => download(&args[1..]),
         Some("web") => web(&args[1..]),
         _ => usage(),
     }
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: anima-workshop <roots|libraries|list|show <id>|web <id...>>");
+    eprintln!(
+        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|web <id...>>"
+    );
     ExitCode::FAILURE
 }
 
@@ -93,6 +97,35 @@ fn show(id: u64) -> ExitCode {
     }
     eprintln!("item {id} is not installed in any discovered library");
     ExitCode::FAILURE
+}
+
+fn download(ids: &[String]) -> ExitCode {
+    let ids: Vec<u64> = ids.iter().filter_map(|id| id.parse().ok()).collect();
+    if ids.is_empty() {
+        return usage();
+    }
+    let Some(steamcmd) = anima_engine_rs::steamcmd::SteamCmd::detect() else {
+        eprintln!(
+            "steamcmd not found: install it or set STEAMCMD=/path/to/steamcmd \
+             (STEAMCMD_DIR selects the download root)"
+        );
+        return ExitCode::FAILURE;
+    };
+    let mut ok = true;
+    for id in ids {
+        match steamcmd.download(id) {
+            Ok(path) => println!("{}  {}", id, path.display()),
+            Err(err) => {
+                eprintln!("{id}: {err}");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(feature = "workshop-web")]
