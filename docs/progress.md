@@ -153,10 +153,13 @@ Interaction and control:
   reported item `3828587753` with 6 assets; `show` listed the 6 `.apng` files;
   the keyless `web 3828587753` returned "hatsune miku and teto halloween trend",
   581.4 MiB and its tags.
-- SteamCMD: not installed on this machine (the Steam client is), so `download`
-  reports a clear "steamcmd not found" and exits 1. The full path is covered by a
-  test that runs a fake `steamcmd` script through `STEAMCMD`/`STEAMCMD_DIR` and
-  locates the downloaded item directory.
+- SteamCMD: installed (distro wrapper `/usr/bin/steamcmd`, real install under
+  `/usr/lib/steamcmd`). `anima-workshop download 3828587753` really downloaded the
+  item (609,690,948 bytes / 582 MiB, 6 assets) to
+  `~/.local/share/AnimaEngine/steamcmd/steamapps/workshop/content/3474900/3828587753`
+  and exited 0. The default download root is the XDG data dir because the program
+  itself lives in a read-only system location; the missing-tool path and the
+  fake-script path are still tested.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit

@@ -28,10 +28,11 @@ impl SteamCmd {
             .map(PathBuf::from)
             .filter(|path| is_executable(path))
             .or_else(|| find_in_path("steamcmd"))?;
+        // Default to our own XDG data dir: steamcmd usually lives in a read-only
+        // system location (e.g. /usr/bin) and would fail to write there.
         let install_dir = std::env::var_os(STEAMCMD_DIR_ENV)
             .map(PathBuf::from)
-            .or_else(|| program.parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("."));
+            .unwrap_or_else(|| crate::paths::user_data_dir().join("steamcmd"));
         Some(Self {
             program,
             install_dir,
