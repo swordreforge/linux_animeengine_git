@@ -191,6 +191,10 @@ struct OverlayState {
     region_dirty: bool,
     /// Visible content changed: present a frame.
     visual_dirty: bool,
+    /// Optional region coarsening policy.
+    region_step: RegionStep,
+    /// Sampling step used for the installed region.
+    applied_step: u32,
 }
 
 impl OutputHandler for OverlayState {
@@ -524,6 +528,39 @@ const MAX_INPUT_RECTS: usize = 4096;
 /// purpose: a wall-clock timer would make the hit area lag by a variable amount.
 const REGION_UPDATE_FRAMES: u64 = 3;
 
+/// Soft rectangle budget for [`RegionStep::Auto`]: coarsen until the list fits.
+const REGION_SOFT_RECTS: usize = 768;
+
+/// Optional coarsening policy for the input region, from `ANIMA_REGION_STEP`:
+/// `off` (default), `auto`, or a fixed `1..=32` pixel sampling grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegionStep {
+    Off,
+    Auto,
+    Fixed(u32),
+}
+
+impl RegionStep {
+    fn from_env() -> Self {
+        match std::env::var("ANIMA_REGION_STEP").ok().as_deref() {
+            Some("auto") => Self::Auto,
+            Some("off") | None => Self::Off,
+            Some(value) => value
+                .parse::<u32>()
+                .map(|step| Self::Fixed(step.clamp(1, 32)))
+                .unwrap_or(Self::Off),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Off => "off".to_string(),
+            Self::Auto => "auto".to_string(),
+            Self::Fixed(step) => step.to_string(),
+        }
+    }
+}
+
 /// Apply an input mode to the surface.
 fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
     if state.input_mode == mode {
@@ -548,8 +585,9 @@ fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
         InputMode::Opaque => {
             apply_opaque_region(state);
             eprintln!(
-                "[overlay] input: opaque pixels ({} rects)",
-                state.applied_rects.len()
+                "[overlay] input: opaque pixels ({} rects, step {})",
+                state.applied_rects.len(),
+                state.applied_step
             );
         }
     }
@@ -560,25 +598,36 @@ fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
 /// detailed silhouettes are sampled on a coarser grid, then fall back to their
 /// bounding box.
 fn apply_opaque_region(state: &mut OverlayState) {
-    // Coarsen the sampling grid while the silhouette needs too many rectangles;
-    // this keeps its shape instead of collapsing straight to a bounding box.
-    let mut step = 1u32;
-    let mut rects = state.animation.alpha_rects_step(
-        state.frame_index,
-        state.surface_size,
-        state.orientation,
-        ALPHA_HIT_THRESHOLD,
-        step,
-    );
-    while rects.len() > MAX_INPUT_RECTS && step < 32 {
-        step *= 2;
-        rects = state.animation.alpha_rects_step(
+    let build = |state: &OverlayState, step: u32| {
+        state.animation.alpha_rects_step(
             state.frame_index,
             state.surface_size,
             state.orientation,
             ALPHA_HIT_THRESHOLD,
             step,
-        );
+        )
+    };
+
+    let mut step = match state.region_step {
+        RegionStep::Fixed(step) => step.max(1),
+        RegionStep::Off | RegionStep::Auto => 1,
+    };
+    let mut rects = build(state, step);
+
+    if state.region_step == RegionStep::Auto {
+        // Coarsen by powers of two until the soft budget is met, bounded by what
+        // the display size can justify (keeps small overlays pixel-accurate).
+        let max_step = (state.surface_size.0.min(state.surface_size.1) / 128).clamp(1, 8);
+        while rects.len() > REGION_SOFT_RECTS && step < max_step {
+            step *= 2;
+            rects = build(state, step);
+        }
+    }
+
+    // Hard cap: keep coarsening, then fall back to the bounding box.
+    while rects.len() > MAX_INPUT_RECTS && step < 32 {
+        step *= 2;
+        rects = build(state, step);
     }
     if rects.len() > MAX_INPUT_RECTS
         && let Some(bounds) = anima_engine_rs::anim::bounds_rect(&rects)
@@ -599,6 +648,7 @@ fn apply_opaque_region(state: &mut OverlayState) {
         previous.destroy();
     }
     state.applied_rects = rects;
+    state.applied_step = step;
 }
 
 /// Logical size of the output the surface is on: the last output it entered,
@@ -1018,6 +1068,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "test pattern".to_string());
     let state_path = SecondaryState::user_path();
+    let region_step = RegionStep::from_env();
+    eprintln!("[overlay] region step: {}", region_step.label());
     let persisted = instance_key
         .as_deref()
         .and_then(|key| SecondaryState::load(&state_path).find_by_key(key).cloned());
@@ -1121,6 +1173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         last_output_size: None,
         region_dirty: false,
         visual_dirty: true,
+        region_step,
+        applied_step: 1,
     };
     event_queue.roundtrip(&mut state)?;
     // Configures the input region for the restored mode (Opaque builds the

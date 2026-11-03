@@ -19,6 +19,18 @@ canonical path), together with `click_through` and `locked`. Other instance
 fields (`fps`, `rotation`, `flip_h`/`flip_v`, `always_on_top`, `hover_hide`) are
 read from that file at startup.
 
+## Input-region tuning (optional)
+
+The per-pixel input region is rebuilt at most every 3rd presented frame and only
+when the silhouette changes. Very detailed silhouettes are coarsened above a hard
+rectangle cap. Additionally, `ANIMA_REGION_STEP` can coarsen it earlier:
+
+| Value | Behaviour |
+|---|---|
+| `off` (default) | 1px sampling; coarsen only above the hard cap |
+| `auto` | powers-of-two grid until the list fits 768 rects, bounded by display size |
+| `1`–`32` | force that sampling grid |
+
 ## Multiple instances
 
 Run one `anima-overlay <path>` process per animation. Each instance gets its own

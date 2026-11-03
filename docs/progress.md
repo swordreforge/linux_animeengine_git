@@ -99,7 +99,10 @@ Interaction and control:
   every 3rd presented frame (a frame-count throttle, not a wall-clock timer), only
   once for a static image, and force-refreshed on size changes. Above
   `MAX_INPUT_RECTS` the sampling grid is coarsened (2x2, 4x4, ...) and only then
-  falls back to the bounding box.
+  falls back to the bounding box. Optional heuristic via `ANIMA_REGION_STEP`:
+  `auto` coarsens by powers of two until the list fits the 768-rect soft budget,
+  bounded by the display size (small overlays stay pixel-accurate); a number
+  1–32 forces that grid; default `off`.
 - **tray** (`ksni`): `StatusNotifierItem` menu with "Input" and "Size" submenus
   (100/75/50/25%), "Reset position and interaction", "Quit overlay"
 - **CLI** (`anima-overlay-ctl`, no extra features): `toggle`,
@@ -184,6 +187,9 @@ Interaction and control:
   — the rectangle count follows edge complexity, not display scale — while the
   surface-space scan costs 4× less at 50% (∝ area). Updates are throttled to every
   3rd presented frame, and a static image is scanned once.
+- Optional region heuristic (`ANIMA_REGION_STEP`): `off` → 990 rects at step 1;
+  `auto` → 475 rects at step 2 (990 > the 768 soft budget, capped at 2 by the
+  412 px display dimension); `2` → 475 at step 2.
 - Portal on this machine: `A portal frontend implementing
   org.freedesktop.portal.GlobalShortcuts was not found` (expected — the installed
   backend does not implement it); the code path is in place where a backend does.
@@ -324,4 +330,4 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   per-pixel input region → CLI control (`anima-overlay-ctl`) → size control →
   geometry persistence → remaining instance fields (lock/fps/layer/hover/orientation)
   → 1x1 keep-alive hide/show → multi-instance → in-screen clamping →
-  frame-count region throttling/coarsening.
+  frame-count region throttling/coarsening (+ optional auto step).
