@@ -34,7 +34,8 @@ use std::time::Instant;
 
 use iced::animation::{Animation, Easing};
 use iced::widget::{
-    button, column, container, image, pick_list, row, scrollable, space, text, text_input, tooltip,
+    button, column, container, image, pick_list, row, scrollable, slider, space, text, text_input,
+    tooltip,
 };
 use iced::{Element, Length, Subscription, Task};
 use iced_material::button::{filled as primary, outlined as secondary, text as text_button};
@@ -608,19 +609,6 @@ fn matches(item: &WorkshopItem, title: Option<&str>, query: &str) -> bool {
     })
 }
 
-/// A `pick_list` entry that carries the control file (the identity) and shows the label.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct InstanceChoice {
-    control: PathBuf,
-    label: String,
-}
-
-impl std::fmt::Display for InstanceChoice {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.label)
-    }
-}
-
 /// The last path component of a control file's animation, or the label itself when it is not a
 /// path (an instance list from an older build).
 fn asset_file_name(label: &str) -> String {
@@ -628,14 +616,6 @@ fn asset_file_name(label: &str) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| label.to_string())
-}
-
-/// The `pick_list` entry for one instance.
-fn instance_choice(instance: &OverlayInstance, disambiguate: bool) -> InstanceChoice {
-    InstanceChoice {
-        control: instance.path.clone(),
-        label: instance_label(instance, disambiguate),
-    }
 }
 
 /// A name that fits. Steam assets often carry a timestamp in the middle, so the head and the
@@ -838,8 +818,6 @@ enum Message {
     /// Ask for another page of the same search.
     RemotePage(u32),
     ShowInstalled,
-    /// Turn "follow the overlay you touched" on or off.
-    ToggleFollow,
     Select(u64),
     Loaded(u64, Option<Meta>, Result<(u32, u32, Vec<u8>), String>),
     CopyPath(String),
@@ -867,6 +845,9 @@ enum Message {
     ControlChanged,
     /// Show another tab. Nothing is cleared: coming back shows what you left.
     Tab(Tab),
+    /// Turn "follow the overlay you touched" on or off. It lived on the old panel; it belongs with the
+    /// instances, so it moved to the overlays tab's heading.
+    ToggleFollow,
     /// What is in the settings tab's key field.
     KeyDraft(String),
     /// Write the key field to `studio.json`.
@@ -875,9 +856,12 @@ enum Message {
     ToggleReduceMotion,
     /// Put the diagnostics on the clipboard, for a bug report.
     CopyDiagnostics,
-    RefreshOverlay,
-    SelectOverlay(PathBuf),
-    Overlay(OverlayAction),
+    /// One parameter change, aimed at one instance: the overlays tab has a row per instance, so the
+    /// control file has to travel with the action.
+    OverlayOn(PathBuf, OverlayAction),
+    /// The scale slider moved. Fine-grained on purpose: 1% steps between the same bounds the overlay
+    /// enforces (10..=100), instead of only the coarse ±10% buttons.
+    SetScale(PathBuf, u32),
     PollOverlay,
     Quit,
 }
@@ -1535,20 +1519,17 @@ impl Studio {
     /// Write one control file, exactly as `anima-overlay-ctl` would: load, change a
     /// field (which bumps the generation), save. The overlay picks up the newest
     /// generation on its next poll.
-    fn apply_overlay(&mut self, action: OverlayAction) {
-        let Some(selected) = self.overlay_selected.clone() else {
-            self.note = "select an overlay instance first".to_string();
-            return;
-        };
+    /// Write one instance's control file, for the row that asked. The running check stays: writing into
+    /// a file nobody reads looks like "nothing happened", which is worse than saying so.
+    fn apply_overlay_to(&mut self, control: PathBuf, action: OverlayAction) {
         let Some(instance) = self
             .overlay
             .iter()
-            .find(|instance| instance.path == selected)
+            .find(|instance| instance.path == control)
         else {
             return;
         };
         if !instance.running {
-            // Say so instead of writing into a file nobody reads.
             self.note = format!(
                 "{} is not running — start it with Play, or `anima-shepherd enable`",
                 instance.label
@@ -1557,11 +1538,32 @@ impl Studio {
         }
         let label = instance.label.clone();
         let next = apply_action(instance.state.clone(), action);
-        self.note = match next.save(&instance.path) {
+        self.note = match next.save(&control) {
             Ok(()) => format!("{label}: generation {}", next.generation),
             Err(error) => format!("could not write the control file: {error}"),
         };
-        self.overlay_selected = Some(selected);
+        self.reload_overlay();
+    }
+
+    /// Set one instance's scale to an exact percentage — what the slider sends.
+    fn set_scale_on(&mut self, control: PathBuf, percent: u32) {
+        let Some(instance) = self
+            .overlay
+            .iter()
+            .find(|instance| instance.path == control)
+        else {
+            return;
+        };
+        if !instance.running {
+            self.note = format!("{} is not running", instance.label);
+            return;
+        }
+        let label = instance.label.clone();
+        let next = instance.state.clone().set_scale_percent(percent);
+        self.note = match next.save(&control) {
+            Ok(()) => format!("{label}: {}%", next.scale_percent),
+            Err(error) => format!("could not write the control file: {error}"),
+        };
         self.reload_overlay();
     }
 
@@ -1596,6 +1598,14 @@ impl Studio {
                 self.now = at;
             }
             Message::Tab(tab) => self.tab = tab,
+            Message::ToggleFollow => {
+                self.follow = !self.follow;
+                self.note = format!(
+                    "{}: {}",
+                    self.i18n.tr("follow"),
+                    if self.follow { "●" } else { "○" }
+                );
+            }
             Message::KeyDraft(draft) => self.key_draft = draft,
             Message::SaveKey => {
                 use anima_engine_rs::settings::{ConfigFile, StudioSettings};
@@ -1806,17 +1816,8 @@ impl Studio {
                     self.refresh();
                 }
             }
-            Message::RefreshOverlay => self.reload_overlay(),
-            Message::ToggleFollow => {
-                self.follow = !self.follow;
-                self.note = format!(
-                    "{}: {}",
-                    self.i18n.tr("follow"),
-                    if self.follow { "●" } else { "○" }
-                );
-            }
-            Message::SelectOverlay(control) => self.overlay_selected = Some(control),
-            Message::Overlay(action) => self.apply_overlay(action),
+            Message::OverlayOn(control, action) => self.apply_overlay_to(control, action),
+            Message::SetScale(control, percent) => self.set_scale_on(control, percent),
             Message::MetaLoaded(loaded) => {
                 let count = loaded.len();
                 for (id, meta) in loaded {
@@ -2367,14 +2368,108 @@ impl Studio {
         .into()
     }
 
-    /// The instances, as a page of their own: every overlay in one place instead of a narrow panel
-    /// squeezed under a list.
+    /// Every instance as a row with its own controls. The narrow panel could only drive the selected
+    /// one; that was the reason to move this out of the workshop tab at all.
     fn tab_overlays(&self) -> El<'_> {
-        scrollable(
-            column![text(self.i18n.tr("Overlay")).size(20), self.overlay_panel()].spacing(10),
-        )
-        .style(iced_material::scrollable::default)
-        .into()
+        let heading = row![
+            text(self.i18n.tr("Overlay")).size(20),
+            space().width(Length::Fill),
+            // Following is a property of the whole list, not of one instance, so it sits in the heading.
+            button(text(format!(
+                "{} {}",
+                self.i18n.tr("follow"),
+                if self.follow { "●" } else { "○" }
+            )))
+            .style(if self.follow { primary } else { secondary })
+            .on_press(Message::ToggleFollow),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        let mut rows = column![heading].spacing(10);
+        if self.overlay.is_empty() {
+            return rows
+                .push(text("no control file yet — start an overlay first").size(11))
+                .into();
+        }
+        for instance in &self.overlay {
+            rows = rows.push(self.instance_row(instance));
+        }
+        scrollable(rows)
+            .style(iced_material::scrollable::default)
+            .into()
+    }
+
+    /// One instance: what it is, what state it is in, and its own parameters. The scale gets a slider
+    /// with 1% steps — the ±10% buttons stay beside it for coarse jumps.
+    fn instance_row(&self, instance: &OverlayInstance) -> El<'_> {
+        use anima_engine_rs::control::{MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
+
+        let control = instance.path.clone();
+        let state = &instance.state;
+        let mode = match state.input_mode {
+            InputMode::Full => "full",
+            InputMode::Opaque => "opaque",
+            InputMode::PassThrough => "pass-through",
+        };
+        let summary = format!(
+            "{} {}% · {}° · {mode}",
+            if instance.running { "●" } else { "○" },
+            state.scale_percent,
+            state.rotation
+        );
+        let mut details = column![
+            row![
+                text(instance_label(instance, true)).size(14),
+                space().width(Length::Fill),
+                text(summary).size(11),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+        ]
+        .spacing(6);
+
+        if instance.running {
+            let down = control.clone();
+            let up = control.clone();
+            details = details.push(
+                row![
+                    button(text("−10%"))
+                        .style(secondary)
+                        .on_press(Message::OverlayOn(down, OverlayAction::ScaleDown)),
+                    slider(
+                        MIN_SCALE_PERCENT..=MAX_SCALE_PERCENT,
+                        state.scale_percent,
+                        {
+                            let control = control.clone();
+                            move |percent| Message::SetScale(control.clone(), percent)
+                        },
+                    )
+                    .step(1u32)
+                    .width(Length::Fill),
+                    button(text("+10%"))
+                        .style(secondary)
+                        .on_press(Message::OverlayOn(up, OverlayAction::ScaleUp)),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+            details = details.push(self.overlay_params(Some(state), |action| {
+                Message::OverlayOn(control.clone(), action)
+            }));
+            details = details.push(
+                row![
+                    button(text(self.i18n.tr("Quit overlay")))
+                        .style(danger)
+                        .on_press(Message::OverlayOn(control.clone(), OverlayAction::Quit))
+                ]
+                .spacing(6),
+            );
+        }
+        container(details)
+            .style(iced_material::container::surface_container_low)
+            .padding(10)
+            .width(Length::Fill)
+            .into()
     }
 
     /// The installed items whose title, id or asset names match the query.
@@ -2466,120 +2561,6 @@ impl Studio {
         list.into()
     }
 
-    /// The overlay control panel. Same channel as the tray, the portal and the CLI:
-    /// everything it does is one write to a control file.
-    fn overlay_panel(&self) -> El<'_> {
-        let mut panel = column![
-            row![
-                text(self.i18n.tr("Overlay")).size(14),
-                space().width(Length::Fill),
-                text(format!(
-                    "shepherd {}",
-                    if anima_engine_rs::shepherd::is_up() {
-                        "●"
-                    } else {
-                        "○"
-                    }
-                ))
-                .size(11),
-                button(text(format!(
-                    "{} {}",
-                    self.i18n.tr("follow"),
-                    if self.follow { "●" } else { "○" }
-                )))
-                .style(if self.follow { primary } else { secondary })
-                .on_press(Message::ToggleFollow),
-                button(text("↻").size(14))
-                    .style(fab)
-                    .width(Length::Fixed(28.0))
-                    .height(Length::Fixed(28.0))
-                    .on_press(Message::RefreshOverlay),
-            ]
-            .align_y(iced::Alignment::Center)
-        ]
-        .spacing(6);
-
-        if self.overlay.is_empty() {
-            return panel
-                .push(text("no control file yet — start an overlay first").size(11))
-                .into();
-        }
-
-        // Two instances can ship assets with the same file name; the label only grows to include
-        // the directory when that actually happens.
-        let mut names: HashMap<String, usize> = HashMap::new();
-        for instance in &self.overlay {
-            *names.entry(asset_file_name(&instance.label)).or_insert(0) += 1;
-        }
-        let ambiguous = |instance: &OverlayInstance| {
-            names
-                .get(&asset_file_name(&instance.label))
-                .copied()
-                .unwrap_or(0)
-                > 1
-        };
-        panel = panel.push(
-            pick_list(
-                self.overlay
-                    .iter()
-                    .map(|instance| instance_choice(instance, ambiguous(instance)))
-                    .collect::<Vec<_>>(),
-                self.overlay_selected
-                    .as_ref()
-                    .and_then(|selected| {
-                        self.overlay
-                            .iter()
-                            .find(|instance| instance.path == *selected)
-                    })
-                    .map(|instance| instance_choice(instance, ambiguous(instance))),
-                |choice: InstanceChoice| Message::SelectOverlay(choice.control),
-            )
-            .style(iced_material::pick_list::default),
-        );
-
-        let Some(instance) = self.overlay_selected.as_ref().and_then(|selected| {
-            self.overlay
-                .iter()
-                .find(|instance| instance.path == *selected)
-        }) else {
-            return panel.into();
-        };
-        let state = &instance.state;
-        let mode = match state.input_mode {
-            InputMode::Full => "full",
-            InputMode::Opaque => "opaque",
-            InputMode::PassThrough => "pass-through",
-        };
-        let mut summary = format!(
-            "{} {}% · {}° · {mode}",
-            if instance.running { "●" } else { "○" },
-            state.scale_percent,
-            state.rotation
-        );
-        for (set, key) in [
-            (state.hidden, "hidden"),
-            (state.locked, "locked"),
-            (state.flip_h, "Flip H"),
-            (state.flip_v, "Flip V"),
-        ] {
-            if set {
-                summary.push_str(&format!(" · {}", self.i18n.tr(key)));
-            }
-        }
-        panel = panel.push(text(summary).size(11));
-
-        panel = panel.push(self.overlay_params(Some(state), Message::Overlay));
-        panel = panel.push(
-            row![
-                button(text(self.i18n.tr("Quit overlay")))
-                    .style(danger)
-                    .on_press(Message::Overlay(OverlayAction::Quit))
-            ]
-            .spacing(6),
-        );
-        panel.into()
-    }
-
     /// Show one asset's first frame in the tuning area. The cache answers instantly;
     /// otherwise the decode runs on the task pool and comes back as [`Message::AssetPreview`].
     /// The staged state is read here, once, so the summary line never opens a file per frame.
@@ -2664,7 +2645,7 @@ impl Studio {
     fn overlay_params(
         &self,
         state: Option<&ControlState>,
-        tag: fn(OverlayAction) -> Message,
+        tag: impl Fn(OverlayAction) -> Message,
     ) -> El<'_> {
         let hidden = state.is_some_and(|state| state.hidden);
         let locked = state.is_some_and(|state| state.locked);
