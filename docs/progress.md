@@ -700,6 +700,11 @@ search field with IME, and Workshop browse/search.
       What the crate does **not** provide: the Material type scale (its `text` styles are colour
       roles, not sizes) and elevation beyond what `styled()` computes — so "more Material" from
       here means picking our own sizes and paddings, not adopting a widget set.
+- [x] Two things the eye caught. The destructive buttons were square because `danger` was built on
+      a default `Border`; it now carries the same pill radius that iced_material's `styled()` gives
+      every other button. And refresh became a Material 3 **floating action button** — `↻` in a
+      round primary-container circle, 36px in the header and 28px in the overlay panel — because
+      refreshing is an affordance rather than a word.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).
