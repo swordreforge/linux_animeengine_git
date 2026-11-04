@@ -9,7 +9,18 @@
     "No preview": "No preview",
     "subscriptions": "subscriptions",
     "views": "views",
-    "assets": "assets"
+    "assets": "assets",
+    "Overlay": "Overlay",
+    "Hide": "Hide",
+    "Show": "Show",
+    "Lock": "Lock",
+    "Unlock": "Unlock",
+    "Flip H": "Flip H",
+    "Flip V": "Flip V",
+    "Reset": "Reset",
+    "Quit overlay": "Quit overlay",
+    "hidden": "hidden",
+    "locked": "locked"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -21,7 +32,18 @@
     "No preview": "无预览",
     "subscriptions": "订阅数",
     "views": "浏览数",
-    "assets": "个资源"
+    "assets": "个资源",
+    "Overlay": "浮层",
+    "Hide": "隐藏",
+    "Show": "显示",
+    "Lock": "锁定",
+    "Unlock": "解锁",
+    "Flip H": "水平镜像",
+    "Flip V": "垂直镜像",
+    "Reset": "重置",
+    "Quit overlay": "退出浮层",
+    "hidden": "已隐藏",
+    "locked": "已锁定"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -33,7 +55,18 @@
     "No preview": "無預覽",
     "subscriptions": "訂閱數",
     "views": "瀏覽數",
-    "assets": "個資源"
+    "assets": "個資源",
+    "Overlay": "浮層",
+    "Hide": "隱藏",
+    "Show": "顯示",
+    "Lock": "鎖定",
+    "Unlock": "解鎖",
+    "Flip H": "水平鏡像",
+    "Flip V": "垂直鏡像",
+    "Reset": "重設",
+    "Quit overlay": "結束浮層",
+    "hidden": "已隱藏",
+    "locked": "已鎖定"
   },
   "ja": {
     "Refresh": "更新",
@@ -45,6 +78,17 @@
     "No preview": "プレビューなし",
     "subscriptions": "購読数",
     "views": "閲覧数",
-    "assets": "アセット"
+    "assets": "アセット",
+    "Overlay": "オーバーレイ",
+    "Hide": "非表示",
+    "Show": "表示",
+    "Lock": "ロック",
+    "Unlock": "ロック解除",
+    "Flip H": "左右反転",
+    "Flip V": "上下反転",
+    "Reset": "リセット",
+    "Quit overlay": "オーバーレイを終了",
+    "hidden": "非表示中",
+    "locked": "ロック中"
   }
 }

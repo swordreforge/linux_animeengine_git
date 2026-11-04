@@ -453,9 +453,18 @@ Interaction and control:
       `anima-i18n merge` (39 entries): `anima-i18n verify` reports the four primary
       languages complete (0 missing, 0 empty). The zh/ja values are assistant-written and
       want a native check, like the earlier four.
-- [ ] Not yet: layout review of this pass; then driving the overlay through
-      `ControlState`, a search field with IME, API-key browse/search, and a desktop
-      entry for the window.
+- [x] Overlay control wired to the same channel the tray, the portal and the CLI use.
+      The panel lists every control file (`ControlState::instances()`), labels each with
+      the animation it belongs to (the file name is only a 16-hex slug of the canonical
+      path, so `instance_slug` reverses it against `secondary_instances.json`), and every
+      button is load → mutate → `save`, where the builder bumps `generation`: hide/show,
+      lock/unlock, click-through, ±10% scale, rotate 90°, flip H/V, reset, quit. A
+      headless test asserts the discovery matches the control directory, and the CLI is
+      interchangeable with the window by construction — they call the same builders.
+- [ ] Not yet: the panel reads and writes on demand (there is a Refresh button) instead
+      of subscribing to control-file changes, so it does not live-update; also a search
+      field with IME, API-key browse/search, a desktop entry for the window, and
+      list-row thumbnails once the library is big.
 
 ### Steam / Workshop
 

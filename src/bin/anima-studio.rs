@@ -23,8 +23,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use anima_engine_rs::control::{ControlState, InputMode, instance_slug};
 use anima_engine_rs::i18n::{I18n, PRIMARY_LANGUAGES, STEAM_LANGUAGES, normalize_language};
 use anima_engine_rs::paths::{ensure_dir, user_data_dir};
+use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::steamcmd::SteamCmd;
 use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
@@ -139,6 +141,67 @@ struct Loaded {
     thumb: Result<(u32, u32, Vec<u8>), String>,
 }
 
+/// One overlay control file. The file name is only a 16-hex slug of the animation path,
+/// so the label comes from the persisted instance list (`secondary_instances.json`).
+#[derive(Debug, Clone)]
+struct OverlayInstance {
+    label: String,
+    path: PathBuf,
+    state: ControlState,
+}
+
+/// What the overlay panel can ask for. Every one of these bumps the generation, exactly
+/// like `anima-overlay-ctl` does — the window writes the same file, nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayAction {
+    ToggleHidden,
+    ToggleLocked,
+    ToggleClickThrough,
+    ScaleUp,
+    ScaleDown,
+    Rotate,
+    FlipH,
+    FlipV,
+    Reset,
+    Quit,
+}
+
+/// Newtype so `pick_list` can show instance labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstanceLabel(String);
+
+impl std::fmt::Display for InstanceLabel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Every control file on disk, labelled with the animation it belongs to when the
+/// persisted instance list knows that key.
+fn overlay_instances() -> Vec<OverlayInstance> {
+    let persisted = SecondaryState::load(&SecondaryState::user_path());
+    ControlState::instances()
+        .into_iter()
+        .map(|path| {
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            let label = persisted
+                .instances
+                .iter()
+                .find(|instance| instance_slug(&instance.path) == stem)
+                .map(|instance| shorten(Path::new(&instance.path)))
+                .unwrap_or_else(|| format!("{stem} (unknown animation)"));
+            OverlayInstance {
+                label,
+                state: ControlState::load(&path),
+                path,
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     Language(String),
@@ -150,6 +213,9 @@ enum Message {
     OpenPage(u64),
     ArmRemove(u64),
     Remove(u64),
+    RefreshOverlay,
+    SelectOverlay(String),
+    Overlay(OverlayAction),
     Quit,
 }
 
@@ -235,6 +301,8 @@ struct Studio {
     pending_remove: Option<u64>,
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
+    overlay: Vec<OverlayInstance>,
+    overlay_selected: Option<usize>,
 }
 
 impl Studio {
@@ -248,8 +316,11 @@ impl Studio {
             thumbs: HashMap::new(),
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
+            overlay: Vec::new(),
+            overlay_selected: None,
         };
         studio.refresh();
+        studio.reload_overlay();
         studio
     }
 
@@ -281,6 +352,59 @@ impl Studio {
         Task::perform(async move { load_item(id, dir) }, |loaded: Loaded| {
             Message::Loaded(loaded.id, loaded.meta, loaded.thumb)
         })
+    }
+
+    /// Re-read every control file. The selection is kept by label, so a refresh (or a
+    /// write we just made) does not move it.
+    fn reload_overlay(&mut self) {
+        let previous = self
+            .overlay_selected
+            .and_then(|index| self.overlay.get(index))
+            .map(|instance| instance.label.clone());
+        self.overlay = overlay_instances();
+        self.overlay_selected = previous
+            .and_then(|label| {
+                self.overlay
+                    .iter()
+                    .position(|instance| instance.label == label)
+            })
+            .or(if self.overlay.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+    }
+
+    /// Write one control file, exactly as `anima-overlay-ctl` would: load, change a
+    /// field (which bumps the generation), save. The overlay picks up the newest
+    /// generation on its next poll.
+    fn apply_overlay(&mut self, action: OverlayAction) {
+        let Some(index) = self.overlay_selected else {
+            self.note = "select an overlay instance first".to_string();
+            return;
+        };
+        let Some(instance) = self.overlay.get(index) else {
+            return;
+        };
+        let label = instance.label.clone();
+        let next = match action {
+            OverlayAction::ToggleHidden => instance.state.clone().toggle_hidden(),
+            OverlayAction::ToggleLocked => instance.state.clone().toggle_locked(),
+            OverlayAction::ToggleClickThrough => instance.state.clone().toggle_click_through(),
+            OverlayAction::ScaleUp => instance.state.clone().nudge_scale(10),
+            OverlayAction::ScaleDown => instance.state.clone().nudge_scale(-10),
+            OverlayAction::Rotate => instance.state.clone().rotate_by(90),
+            OverlayAction::FlipH => instance.state.clone().toggle_flip_h(),
+            OverlayAction::FlipV => instance.state.clone().toggle_flip_v(),
+            OverlayAction::Reset => instance.state.clone().request_reset(),
+            OverlayAction::Quit => instance.state.clone().request_quit(),
+        };
+        self.note = match next.save(&instance.path) {
+            Ok(()) => format!("{label}: generation {}", next.generation),
+            Err(error) => format!("could not write the control file: {error}"),
+        };
+        self.overlay_selected = Some(index);
+        self.reload_overlay();
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -376,6 +500,14 @@ impl Studio {
                     self.refresh();
                 }
             }
+            Message::RefreshOverlay => self.reload_overlay(),
+            Message::SelectOverlay(label) => {
+                self.overlay_selected = self
+                    .overlay
+                    .iter()
+                    .position(|instance| instance.label == label);
+            }
+            Message::Overlay(action) => self.apply_overlay(action),
             Message::Quit => return iced::exit(),
         }
         Task::none()
@@ -546,10 +678,16 @@ impl Studio {
             None => text(self.note.clone()).into(),
         };
 
+        let left = column![
+            scrollable(list).height(Length::Fill),
+            divider(Length::Fill, Length::Fixed(1.0)),
+            self.overlay_panel(),
+        ]
+        .width(Length::FillPortion(2))
+        .spacing(10);
+
         let bodies = row![
-            scrollable(list)
-                .height(Length::Fill)
-                .width(Length::FillPortion(2)),
+            left,
             divider(Length::Fixed(1.0), Length::Fill),
             container(details).width(Length::FillPortion(3)),
         ]
@@ -561,6 +699,121 @@ impl Studio {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+
+    /// The overlay control panel. Same channel as the tray, the portal and the CLI:
+    /// everything it does is one write to a control file.
+    fn overlay_panel(&self) -> Element<'_, Message> {
+        let mut panel = column![
+            row![
+                text(self.i18n.tr("Overlay")).size(14),
+                space().width(Length::Fill),
+                button(text(self.i18n.tr("Refresh")))
+                    .style(text_button)
+                    .on_press(Message::RefreshOverlay),
+            ]
+            .align_y(iced::Alignment::Center)
+        ]
+        .spacing(6);
+
+        if self.overlay.is_empty() {
+            return panel
+                .push(text("no control file yet — start an overlay first").size(11))
+                .into();
+        }
+
+        panel = panel.push(pick_list(
+            self.overlay
+                .iter()
+                .map(|instance| InstanceLabel(instance.label.clone()))
+                .collect::<Vec<_>>(),
+            self.overlay_selected
+                .and_then(|index| self.overlay.get(index))
+                .map(|instance| InstanceLabel(instance.label.clone())),
+            |label: InstanceLabel| Message::SelectOverlay(label.0),
+        ));
+
+        let Some(instance) = self
+            .overlay_selected
+            .and_then(|index| self.overlay.get(index))
+        else {
+            return panel.into();
+        };
+        let state = &instance.state;
+        let mode = match state.input_mode {
+            InputMode::Full => "full",
+            InputMode::Opaque => "opaque",
+            InputMode::PassThrough => "pass-through",
+        };
+        let mut summary = format!("{}% · {}° · {mode}", state.scale_percent, state.rotation);
+        for (set, key) in [
+            (state.hidden, "hidden"),
+            (state.locked, "locked"),
+            (state.flip_h, "Flip H"),
+            (state.flip_v, "Flip V"),
+        ] {
+            if set {
+                summary.push_str(&format!(" · {}", self.i18n.tr(key)));
+            }
+        }
+        panel = panel.push(text(summary).size(11));
+
+        let hide = if state.hidden {
+            self.i18n.tr("Show")
+        } else {
+            self.i18n.tr("Hide")
+        };
+        let lock = if state.locked {
+            self.i18n.tr("Unlock")
+        } else {
+            self.i18n.tr("Lock")
+        };
+        panel = panel.push(
+            row![
+                button(text(hide))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::ToggleHidden)),
+                button(text(lock))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::ToggleLocked)),
+                button(text(self.i18n.tr("Click-through")))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::ToggleClickThrough)),
+            ]
+            .spacing(6),
+        );
+        panel = panel.push(
+            row![
+                button(text("−10%"))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::ScaleDown)),
+                button(text("+10%"))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::ScaleUp)),
+                button(text("⟳ 90°"))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::Rotate)),
+                button(text(self.i18n.tr("Flip H")))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::FlipH)),
+                button(text(self.i18n.tr("Flip V")))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::FlipV)),
+            ]
+            .spacing(6),
+        );
+        panel = panel.push(
+            row![
+                button(text(self.i18n.tr("Reset")))
+                    .style(secondary)
+                    .on_press(Message::Overlay(OverlayAction::Reset)),
+                button(text(self.i18n.tr("Quit overlay")))
+                    .style(danger)
+                    .on_press(Message::Overlay(OverlayAction::Quit)),
+            ]
+            .spacing(6),
+        );
+        panel.into()
     }
 
     /// The four primary languages, labelled with their native names.
@@ -606,6 +859,19 @@ mod tests {
         let dir = thumb_dir();
         assert!(dir.ends_with("thumbnails"));
         assert!(dir.starts_with(user_data_dir()));
+    }
+
+    /// The panel must target exactly the files `anima-overlay-ctl` targets. Read-only, so
+    /// it is safe to run against the real data dir.
+    #[test]
+    fn overlay_instances_match_the_control_dir() {
+        let instances = overlay_instances();
+        assert_eq!(instances.len(), ControlState::instances().len());
+        for instance in &instances {
+            assert!(instance.path.is_file());
+            assert!(!instance.label.is_empty());
+        }
+        eprintln!("[studio] {} overlay control file(s)", instances.len());
     }
 
     /// Opt-in (hits the network): `cargo test --features studio --bin anima-studio --
