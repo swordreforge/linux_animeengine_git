@@ -410,6 +410,10 @@ Interaction and control:
 
 ### Main window (`anima-studio`, Iced)
 
+Follow-up work is planned in [`next-steps.md`](./next-steps.md): the overlay lifecycle
+manager (the tray no longer dies with each overlay), the Workshop metadata cache, the
+search field with IME, and Workshop browse/search.
+
 - [x] Toolkit decision recorded in `docs/ui-toolkit-decision.md`: **Iced 0.14**, in a
       separate binary, over GPUI/egui/GTK4/Slint/Tauri. Key measured fact: Iced is on
       `wgpu 27` while the overlay is on `wgpu 29`, so the two never share a device —
