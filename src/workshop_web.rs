@@ -12,9 +12,29 @@
 //! Response parsing is pure and always available; the HTTP client is behind the
 //! `workshop-web` feature.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Error, Result};
+
+/// Steam sends the same field as `0`/`1` on one endpoint and `false`/`true` on another —
+/// `GetPublishedFileDetails` reports `banned: 0`, `QueryFiles` reports `banned: false` — so the
+/// integer fields that can arrive either way are read through this.
+fn int_or_bool<'de, D>(deserializer: D) -> std::result::Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Int(i64),
+        Bool(bool),
+    }
+
+    Ok(match Either::deserialize(deserializer)? {
+        Either::Int(value) => value,
+        Either::Bool(value) => i64::from(value),
+    })
+}
 
 /// One workshop tag.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -29,6 +49,7 @@ pub struct Tag {
 pub struct PublishedFileDetails {
     #[serde(rename = "publishedfileid")]
     pub published_file_id: String,
+    #[serde(default, deserialize_with = "int_or_bool")]
     pub result: i64,
     pub creator: String,
     pub creator_app_id: u64,
@@ -43,7 +64,9 @@ pub struct PublishedFileDetails {
     pub description: String,
     pub time_created: u64,
     pub time_updated: u64,
+    #[serde(default, deserialize_with = "int_or_bool")]
     pub visibility: i64,
+    #[serde(default, deserialize_with = "int_or_bool")]
     pub banned: i64,
     pub ban_reason: String,
     pub subscriptions: u64,

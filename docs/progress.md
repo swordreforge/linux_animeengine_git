@@ -822,6 +822,15 @@ search field with IME, and Workshop browse/search.
 - [x] The missing-key message says where to get a key now — `STEAM_WEB_API_KEY is not set — …` with
       `https://steamcommunity.com/dev/apikey` — because "not set" on its own is just a complaint. A
       test asserts the URL is in the message.
+- [x] The key found a bug on its first run, which is what it was for: `QueryFiles` reports `result`,
+      `visibility` and `banned` as **`false`/`true`** where `GetPublishedFileDetails` reports `0`/`1`,
+      so the response failed to parse at all — `invalid type: boolean \`false\`, expected i64`. Those
+      three fields go through an `int_or_bool` deserializer now, which reads either shape.
+      Verified against the live API: a search for "teto" returns **50 rows with `total` 70**, the
+      second page returns **20** (50 + 20 = 70, exactly the total), the total does not move between
+      pages, and the two pages share no ids — the cursor is doing what the old `page=1` could not.
+      The ignored `searches_the_workshop_and_pages_with_the_cursor` keeps that honest, and is the
+      reason to have such a test at all: it caught the parse failure before a user could.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

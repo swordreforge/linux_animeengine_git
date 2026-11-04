@@ -2655,6 +2655,54 @@ mod tests {
         let _ = page_count(u64::MAX, 1);
     }
 
+    /// The real thing, end to end: search the Workshop, then walk to the second page with the
+    /// cursor the first page handed over. Ignored by default — it needs a key and the network.
+    #[test]
+    #[ignore = "network: Steam Web API, needs STEAM_WEB_API_KEY"]
+    fn searches_the_workshop_and_pages_with_the_cursor() {
+        let query = Some("teto".to_string());
+        let first = match fetch_remote(query.clone(), None) {
+            Ok(page) => page,
+            Err(error) => {
+                eprintln!("[test] skipped: {error}");
+                return;
+            }
+        };
+        eprintln!(
+            "[test] page 1: {} row(s), total {}, more: {}",
+            first.rows.len(),
+            first.total,
+            first.next_cursor.is_some()
+        );
+        assert!(!first.rows.is_empty(), "a search for teto found nothing");
+        assert!(
+            first.total as usize >= first.rows.len(),
+            "the total is smaller than the page it describes"
+        );
+        // The pager's arithmetic is what the window shows, so it has to be sane for this total.
+        assert!(page_count(first.total, REMOTE_PER_PAGE) >= 1);
+
+        let Some(cursor) = first.next_cursor.clone() else {
+            eprintln!("[test] only one page of results; nothing to walk");
+            return;
+        };
+        let second = fetch_remote(query, Some(cursor)).expect("page 2");
+        eprintln!(
+            "[test] page 2: {} row(s), total {}",
+            second.rows.len(),
+            second.total
+        );
+        assert_eq!(second.total, first.total, "the total moved between pages");
+        // A cursor that did nothing would hand back the same items, which is the failure this
+        // whole change exists to prevent.
+        let first_ids: std::collections::HashSet<u64> =
+            first.rows.iter().map(|row| row.id).collect();
+        assert!(
+            second.rows.iter().all(|row| !first_ids.contains(&row.id)),
+            "page 2 repeated page 1 — the cursor was ignored"
+        );
+    }
+
     #[test]
     #[ignore = "needs a local Workshop item with an animation"]
     fn decodes_and_caches_a_real_asset_first_frame() {
