@@ -1036,6 +1036,17 @@ search field with IME, and Workshop browse/search.
       reorder sentences and assembling them from fragments would have been wrong even where it compiled.
       Still English on purpose: the diagnostics block (its job is pasting), and one error detail raised in
       a worker function that has no `i18n` in reach. Both are noted where they live.
+- [x] Two strings the i18n sweep missed, both caught by the user: the removal warning's **body** — a Rust
+      string with a `\` line continuation, which no literal-matching pass would find — and the
+      **missing-key message**, built in a free function with no catalog in reach. Both are catalogued now;
+      **862 source strings**, four languages complete.
+      The key one needed a structure change rather than a `tr()` call: "no key" is a **precondition**, not
+      an I/O failure, so `goto_remote_page` checks it before starting a task — where `self` and its catalog
+      exist — and `fetch_remote` keeps only a technical English fallback. The fallback's test no longer
+      asserts the URL, because the URL belongs to the message the window shows.
+      The lesson is the same shape as the last few: a sweep that matches literals cannot see strings
+      written in another shape. The reliable check is the reverse — grep for `text(`/`button(` calls that do
+      **not** contain `tr(` — which is how these two surfaced.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
