@@ -747,6 +747,14 @@ search field with IME, and Workshop browse/search.
       the file name did not. Two instances can ship assets with the same name, so the label grows
       to `3828587753/TETO12.apng` only when that is actually true of the list in hand; the full
       path stays in the item pane, one click away.
+- [x] Two things the eye caught in the empty state. Long asset names — `ssstik.io_1790982665008_0_20261003_024542.apng`
+      — wrapped the pick list onto two lines, so labels are now cut in the middle to 28
+      characters: `truncate_middle` keeps the head and the tail, which keeps the extension, and
+      counts characters rather than bytes so a CJK name cannot be cut mid-glyph. And with nothing
+      selected, the right pane rendered `note` while the status bar below rendered the very same
+      string, so the same path/status line appeared twice; the pane is an empty state now
+      (`placeholder` at `Length::Fill`, "Pick an item to see its details") and the note stays in
+      the status bar where it belongs.
 - [ ] The known flake, disclosed rather than hidden: `shepherd::tests::live_instances_cover_every_control_file`
       reads the **real** control directory while other tests in the same process write it, so it
       fails roughly one run in three (it passes on its own). The fix is a test-side lock around

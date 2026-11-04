@@ -312,11 +312,13 @@ fn divider<'a>(
         })
 }
 
-/// A box the size of a preview, for the states that have no picture yet or cannot make one.
-/// Same height and surface as a real preview, so the pane does not jump when one arrives.
+/// A box for the states that have no picture or no selection: a large muted glyph and one line
+/// of explanation, on the same surface as its neighbours. The height is the caller's, so the
+/// tuning area can match a preview exactly while a whole pane can fill.
 fn placeholder<'a>(
     icon: &'a str,
     note: String,
+    height: Length,
 ) -> iced::widget::Container<'a, Message, iced_material::Theme> {
     container(
         column![
@@ -332,7 +334,7 @@ fn placeholder<'a>(
     )
     .style(iced_material::container::surface_container_low)
     .width(Length::Fill)
-    .height(Length::Fixed(PREVIEW_HEIGHT))
+    .height(height)
     .align_x(iced::Alignment::Center)
     .align_y(iced::Alignment::Center)
 }
@@ -548,11 +550,28 @@ fn instance_choice(instance: &OverlayInstance, disambiguate: bool) -> InstanceCh
     }
 }
 
+/// A name that fits. Steam assets often carry a timestamp in the middle, so the head and the
+/// tail are what is kept and the middle is what goes — the extension survives that way.
+fn truncate_middle(name: &str, max: usize) -> String {
+    let length = name.chars().count();
+    if length <= max || max < 5 {
+        return name.to_string();
+    }
+    let keep_end = max / 2;
+    let keep_start = max - keep_end - 1;
+    let head: String = name.chars().take(keep_start).collect();
+    let tail: String = name.chars().skip(length - keep_end).collect();
+    format!("{head}…{tail}")
+}
+
+/// Longest a pick-list label gets before its middle is dropped.
+const INSTANCE_LABEL_MAX: usize = 28;
+
 /// `● running` / `○ stopped` in front of the animation's **file name**: a full Steam path is a
 /// mouthful in a closed drop-down, and the path is still in the item pane. Two instances can
 /// ship assets with the same name, and only then does the label need the directory in front.
 fn instance_label(instance: &OverlayInstance, disambiguate: bool) -> String {
-    let name = asset_file_name(&instance.label);
+    let name = truncate_middle(&asset_file_name(&instance.label), INSTANCE_LABEL_MAX);
     let name = if disambiguate {
         match Path::new(&instance.label)
             .parent()
@@ -1384,12 +1403,17 @@ impl Studio {
                         );
                     }
                     Some(Thumb::Loading) => {
-                        pane = pane.push(placeholder("▦", "…".to_string()));
+                        pane = pane.push(placeholder(
+                            "▦",
+                            "…".to_string(),
+                            Length::Fixed(PREVIEW_HEIGHT),
+                        ));
                     }
                     Some(Thumb::Failed(error)) => {
                         pane = pane.push(placeholder(
                             "⚠",
                             format!("{} · {error}", self.i18n.tr("No preview")),
+                            Length::Fixed(PREVIEW_HEIGHT),
                         ));
                     }
                     None => {}
@@ -1498,12 +1522,17 @@ impl Studio {
                         );
                     }
                     Some(Thumb::Loading) => {
-                        pane = pane.push(placeholder("▦", "…".to_string()));
+                        pane = pane.push(placeholder(
+                            "▦",
+                            "…".to_string(),
+                            Length::Fixed(PREVIEW_HEIGHT),
+                        ));
                     }
                     Some(Thumb::Failed(error)) => {
                         pane = pane.push(placeholder(
                             "⚠",
                             format!("{} · {error}", self.i18n.tr("No preview")),
+                            Length::Fixed(PREVIEW_HEIGHT),
                         ));
                     }
                     None => {}
@@ -1526,7 +1555,14 @@ impl Studio {
                     .style(iced_material::scrollable::default)
                     .into()
             }
-            (None, None) => text(self.note.clone()).into(),
+            // Nothing selected: an empty pane. The note belongs to the status bar below, and
+            // rendering it here as well made the same line appear twice.
+            (None, None) => placeholder(
+                "▤",
+                self.i18n.tr("Pick an item to see its details").to_string(),
+                Length::Fill,
+            )
+            .into(),
         };
 
         let placeholder = self.i18n.tr("Search");
@@ -2015,6 +2051,7 @@ impl Studio {
             return placeholder(
                 "▦",
                 self.i18n.tr("Click an asset to preview it").to_string(),
+                Length::Fixed(PREVIEW_HEIGHT),
             )
             .into();
         };
@@ -2028,12 +2065,17 @@ impl Studio {
                 );
             }
             Some(Thumb::Loading) => {
-                area = area.push(placeholder("▦", "…".to_string()));
+                area = area.push(placeholder(
+                    "▦",
+                    "…".to_string(),
+                    Length::Fixed(PREVIEW_HEIGHT),
+                ));
             }
             Some(Thumb::Failed(error)) => {
                 area = area.push(placeholder(
                     "⚠",
                     format!("{} · {error}", self.i18n.tr("No preview")),
+                    Length::Fixed(PREVIEW_HEIGHT),
                 ));
             }
             None => {}
@@ -2387,6 +2429,26 @@ mod tests {
 
     /// Selections are keyed by id / control path, so rebuilding the list or the instance set
     /// cannot move them to something else. Read-only against the real data dir.
+    #[test]
+    fn long_asset_names_keep_their_head_and_tail() {
+        assert_eq!(truncate_middle("short.apng", 28), "short.apng");
+
+        let long = "ssstik.io_1790982665008_0_20261003_024542.apng";
+        let cut = truncate_middle(long, INSTANCE_LABEL_MAX);
+        assert_eq!(cut.chars().count(), INSTANCE_LABEL_MAX);
+        assert!(cut.starts_with("ssstik.io"));
+        assert!(cut.ends_with(".apng"));
+        assert!(cut.contains('…'));
+
+        // A budget too small for both ends is not worth a mark, and must not panic.
+        assert_eq!(truncate_middle("abcdef", 3), "abcdef");
+        // Counted in characters, so CJK names do not lose bytes mid-glyph.
+        assert_eq!(
+            truncate_middle("一二三四五六七八九十", 5).chars().count(),
+            5
+        );
+    }
+
     #[test]
     fn instance_labels_are_short_unless_the_name_collides() {
         let instance = |label: &str| OverlayInstance {
