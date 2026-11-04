@@ -425,12 +425,12 @@ Interaction and control:
       bind group, layer count and UV scale) is written up step by step in
       `docs/seamless-reload-plan.md`, including the acceptance test (swap a 512²×27
       animation for a 1500×1125×64 one mid-run and expect the same PID)
+- [ ] Steamworks callbacks (`ItemInstalled` / `DownloadItemResult`) still need
       `libsteam_api.so`. The **fallback is already in place**: `WorkshopWatcher` plus
       the overlay's hot reload (in place when the geometry matches, otherwise a
-      re-exec) cover the
-      "new or updated item becomes the animation" case without the SDK. When the
-      `.so` is available, `steam::FlatSteamApi::run_callbacks` can drive the same
-      diff, and `diff` reports **updated** items too (same id, new files)
+      re-exec) cover the "new or updated item becomes the animation" case without the
+      SDK. When the `.so` is available, `steam::FlatSteamApi::run_callbacks` can drive
+      the same diff, and `diff` reports **updated** items too (same id, new files)
 - [ ] Upload via SteamCMD (`workshop_build_item`) and/or the Steamworks worker,
   incl. legal-agreement handling
 - [ ] Browse UI using the three-tier fallback documented in the RE notes
