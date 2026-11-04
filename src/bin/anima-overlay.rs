@@ -685,6 +685,8 @@ struct OverlayState {
     fps: u32,
     /// `anim_meta.json` override for this animation; 0 when unset.
     meta_fps: u32,
+    /// Where the surface starts inside the author's canvas (cropped padding).
+    crop: (u32, u32),
     /// Dragging disabled.
     locked: bool,
     /// Hide the surface while the pointer is over an opaque pixel.
@@ -993,13 +995,48 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for OverlayState {
     }
 }
 
+/// What `load_animation` produced.
+struct Loaded {
+    animation: Arc<Animation>,
+    blocks: Option<Blocks>,
+    /// Where the visible art started inside the author's canvas; `(0, 0)` when the
+    /// animation was used as-is.
+    crop: (u32, u32),
+}
+
+/// Crop the author's transparent padding away, reporting where the art started.
+///
+/// Art usually carries padding (measured: 227 px on miku12's right, 344 px on
+/// teto234, 73% of bochi455's canvas), and the overlay clamps against the whole
+/// canvas — so without this the art can never reach a screen edge. Cropping also
+/// shrinks the texture, the input-region scan and GPU memory.
+fn crop_to_ink(animation: Animation) -> (Animation, (u32, u32)) {
+    let canvas = (animation.width, animation.height);
+    let step = if animation.frames.len() > 200 { 2 } else { 1 };
+    let Some(ink) = anima_engine_rs::anim::InkBox::scan(&animation, step) else {
+        return (animation, (0, 0));
+    };
+    let offset = (ink.min_x, ink.min_y);
+    if offset == (0, 0) && (ink.width(), ink.height()) == canvas {
+        return (animation, (0, 0));
+    }
+    let cropped = animation.crop(ink);
+    eprintln!(
+        "[overlay] cropped {}x{} -> {}x{} (art starts at {}, {})",
+        canvas.0, canvas.1, cropped.width, cropped.height, offset.0, offset.1
+    );
+    (cropped, offset)
+}
+
 /// Load an animation (and any cached BC7 blocks), using the frame cache so a file
 /// is decoded only once.
-fn load_animation(
-    path: Option<&Path>,
-) -> Result<(Arc<Animation>, Option<Blocks>), Box<dyn std::error::Error>> {
+fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Error>> {
     let Some(path) = path else {
-        return Ok((Arc::new(test_animation()), None));
+        return Ok(Loaded {
+            animation: Arc::new(test_animation()),
+            blocks: None,
+            crop: (0, 0),
+        });
     };
 
     let limits = DecodeLimits::from_env();
@@ -1018,6 +1055,10 @@ fn load_animation(
         )
     {
         let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
+        // The blocks already hold the cropped art and the sidecar remembers where
+        // the crop started, so saved canvas positions keep working and no rescan
+        // is needed.
+        let crop = blocks.crop;
         eprintln!(
             "[overlay] bc7 cache hit: {} frame(s), {}x{}, {:.1} MiB blocks{}",
             animation.frame_count(),
@@ -1026,12 +1067,17 @@ fn load_animation(
             blocks.data.len() as f64 / (1024.0 * 1024.0),
             report.note()
         );
-        return Ok((Arc::new(animation), Some(blocks)));
+        return Ok(Loaded {
+            animation: Arc::new(animation),
+            blocks: Some(blocks),
+            crop,
+        });
     }
 
     if let Some(animation) = cache.read(path) {
         let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
         let blocks = cache.read_blocks(path);
+        let (animation, crop) = crop_to_ink(animation);
         eprintln!(
             "[overlay] cache hit: {} frame(s), {}x{}{}{}",
             animation.frame_count(),
@@ -1044,7 +1090,11 @@ fn load_animation(
                 ""
             }
         );
-        return Ok((Arc::new(animation), blocks));
+        return Ok(Loaded {
+            animation: Arc::new(animation),
+            blocks,
+            crop,
+        });
     }
 
     let started = Instant::now();
@@ -1059,6 +1109,7 @@ fn load_animation(
         started.elapsed().as_secs_f32()
     );
 
+    let (animation, crop) = crop_to_ink(animation);
     let animation = Arc::new(animation);
     // Read any existing BC7 sidecar before `cache` moves into the writer thread.
     let blocks = cache.read_blocks(path);
@@ -1083,7 +1134,11 @@ fn load_animation(
         });
     }
 
-    Ok((animation, blocks))
+    Ok(Loaded {
+        animation,
+        blocks,
+        crop,
+    })
 }
 
 /// A small generated animation so the binary is useful with no arguments.
@@ -1528,11 +1583,15 @@ fn persist_geometry(state: &OverlayState) {
     };
     let click_through = state.input_mode == InputMode::PassThrough;
     let rotation = state.orientation.degrees();
+    // Stored x/y stay in the author's canvas space. The surface sits `crop` pixels
+    // into the canvas, so the canvas position is the surface position minus that.
+    let canvas_x = state.margin_left - (state.crop.0 * state.scale_percent / 100) as i32;
+    let canvas_y = state.margin_top - (state.crop.1 * state.scale_percent / 100) as i32;
     let mut document = SecondaryState::load(&state.state_path);
     let changed = {
         let instance = document.entry(key);
-        let changed = instance.x != state.margin_left
-            || instance.y != state.margin_top
+        let changed = instance.x != canvas_x
+            || instance.y != canvas_y
             || instance.scale_percent != state.scale_percent
             || instance.click_through != click_through
             || instance.locked != state.locked
@@ -1541,8 +1600,8 @@ fn persist_geometry(state: &OverlayState) {
             || instance.flip_h != state.orientation.flip_h
             || instance.flip_v != state.orientation.flip_v;
         if changed {
-            instance.x = state.margin_left;
-            instance.y = state.margin_top;
+            instance.x = canvas_x;
+            instance.y = canvas_y;
             instance.scale_percent = state.scale_percent;
             instance.click_through = click_through;
             instance.locked = state.locked;
@@ -1858,7 +1917,11 @@ fn frame_delay(frame: &Frame, fps: u32) -> Duration {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).map(PathBuf::from);
-    let (animation, blocks) = load_animation(path.as_deref())?;
+    let Loaded {
+        animation,
+        blocks,
+        crop,
+    } = load_animation(path.as_deref())?;
     let frame_count = animation.frames.len();
     if frame_count == 0 {
         return Err("animation has no frames".into());
@@ -1894,6 +1957,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .map_or(MAX_SCALE_PERCENT, |instance| instance.scale_percent)
         .clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    // Saved positions are canvas margins; the surface sits `crop` pixels into the
+    // canvas, so its margin is the saved one plus that (and minus it again when
+    // persisting).
+    let (pos_x, pos_y) = (
+        pos_x + (crop.0 * initial_scale / 100) as i32,
+        pos_y + (crop.1 * initial_scale / 100) as i32,
+    );
     let always_on_top = persisted.as_ref().is_none_or(|i| i.always_on_top);
     let initial_mode = if persisted.as_ref().is_some_and(|i| i.click_through) {
         InputMode::PassThrough
@@ -1984,6 +2054,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_path,
         fps,
         meta_fps,
+        crop,
         locked: initial_locked,
         hover_hide: initial_hover_hide,
         hidden: false,
@@ -2247,6 +2318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 height: frames.height,
                 count: frames.frames.len(),
                 uber_level: params.uber_level,
+                crop,
                 delays: frames.frames.iter().map(|frame| frame.delay_ms).collect(),
                 data,
             };

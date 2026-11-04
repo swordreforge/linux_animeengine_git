@@ -213,6 +213,9 @@ pub struct Blocks {
     pub count: usize,
     /// `bc7enc_rdo` uber level the blocks were encoded with (0..=4).
     pub uber_level: u32,
+    /// Where the cropped art started inside the author's canvas. Saved positions
+    /// are canvas-space, so this must survive the round trip or they drift.
+    pub crop: (u32, u32),
     /// Per-frame display delay, so an animation cached as BC7 keeps its timing.
     pub delays: Vec<u32>,
     pub data: Vec<u8>,
@@ -352,7 +355,7 @@ fn read_u32(reader: &mut impl Read) -> Result<u32> {
 }
 
 const BLOCKS_MAGIC: &[u8; 8] = b"ANIMBC7\0";
-const BLOCKS_VERSION: u32 = 2;
+const BLOCKS_VERSION: u32 = 3;
 
 fn read_blocks(path: &Path) -> Result<Blocks> {
     let mut file = BufReader::new(File::open(path)?);
@@ -370,6 +373,7 @@ fn read_blocks(path: &Path) -> Result<Blocks> {
     let height = read_u32(&mut file)?;
     let count = read_u32(&mut file)? as usize;
     let uber_level = read_u32(&mut file)?;
+    let crop = (read_u32(&mut file)?, read_u32(&mut file)?);
     let mut delays = Vec::with_capacity(count.min(1 << 16));
     for _ in 0..count {
         delays.push(read_u32(&mut file)?);
@@ -382,6 +386,7 @@ fn read_blocks(path: &Path) -> Result<Blocks> {
         height,
         count,
         uber_level,
+        crop,
         delays,
         data,
     };
@@ -413,6 +418,8 @@ fn write_blocks(path: &Path, blocks: &Blocks) -> Result<()> {
         file.write_all(&blocks.height.to_le_bytes())?;
         file.write_all(&(blocks.count as u32).to_le_bytes())?;
         file.write_all(&blocks.uber_level.to_le_bytes())?;
+        file.write_all(&blocks.crop.0.to_le_bytes())?;
+        file.write_all(&blocks.crop.1.to_le_bytes())?;
         for delay_ms in &blocks.delays {
             file.write_all(&delay_ms.to_le_bytes())?;
         }
@@ -550,6 +557,7 @@ mod tests {
             height: 4,
             count: 2,
             uber_level: 4,
+            crop: (7, 9),
             delays: vec![40, 60],
             data: vec![7u8; 64],
         };
@@ -562,6 +570,7 @@ mod tests {
         assert_eq!(loaded.rows(), 1);
         assert_eq!(loaded.frame_bytes(), 32);
         assert_eq!(loaded.delays, vec![40, 60]);
+        assert_eq!(loaded.crop, (7, 9));
     }
 
     #[test]
@@ -574,6 +583,7 @@ mod tests {
             height: 4,
             count: 3,
             uber_level: 4,
+            crop: (0, 0),
             delays: vec![10, 10, 10],
             data: vec![0u8; 96],
         };

@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **131** default (128 lib + 3 CLI); **136** with `bc7` (the `bc7`
+- `cargo test`: **134** default (131 lib + 3 CLI); **139** with `bc7` (the `bc7`
   feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -224,6 +224,15 @@ Interaction and control:
   448 frames (613 MiB of blocks), i.e. a ~7 GiB peak decode that was deliberately
   not run. Note the sidecar bakes the decode limits at encode time, so raising
   `ANIMA_MAX_DECODE_MB` later does not restore the dropped frames.
+- Crop + clamp + persistence (`bochi455`, 73% transparent): `cropped 512x512 ->
+  136x132 (art starts at 184, 196)` then `clamped position to (1784, 948)` — i.e.
+  `1920-136 / 1080-132`, so the art now reaches the right/bottom edge (it stopped
+  184/196 px short before); CPU 27 MiB -> 1.8 MiB, BC7 6.8 MiB -> 0.5 MiB. Three
+  consecutive runs kept `x = 1600, y = 752` in canvas space and restored the
+  surface at `(1784, 948)` every time. An earlier attempt **did** drift
+  (1743 -> 1656 -> 1344) because the sidecar did not record the crop — that is why
+  the crop is in the block format now, and why the load/persist signs are covered
+  by the round-trip above.
 - BC7 blocks are stored as `<key>.bc7.animacache`, so the LRU pass counts and
   clears them with the frames; a missing or malformed sidecar falls back to RGBA.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
@@ -396,6 +405,13 @@ Interaction and control:
       GPU shows. Without `bc7` the zstd frames cache is used as before. The sidecar
       carries the per-frame delays (block format version 2) so playback timing
       survives
+- [x] Transparent padding no longer pins the overlay: `InkBox::scan` finds the
+      union of the visible pixels and `Animation::crop` cuts every frame to it, so
+      the bounds clamp is tight (the art can reach a screen edge) and the texture,
+      the input-region scan and GPU memory all shrink. Saved x/y stay canvas-space
+      and are translated by the crop offset; the BC7 sidecar records the crop
+      (block format version 3) because without it the position drifted on every
+      start
 - [ ] Ship the i18n catalog as a data file; verify all locales
 - [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
 
