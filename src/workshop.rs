@@ -70,16 +70,28 @@ pub fn item_bytes(content_root: &Path, id: u64) -> u64 {
 
 /// `<library>/steamapps/workshop/appworkshop_<appid>.acf`.
 pub fn acf_path(library: &Path) -> PathBuf {
-    library
-        .join("steamapps")
-        .join("workshop")
-        .join(acf_file_name())
+    steamapps_of(library).join("workshop").join(acf_file_name())
+}
+
+/// The `steamapps` directory of a library, however `libraryfolders.vdf` happened to spell it.
+///
+/// Older files list `…/steamapps`, newer ones list the root above it, and both are in the wild. Guessing
+/// wrong used to be silent: the `.acf` was not found, the state was cleared, and an item Steam was
+/// actively downloading showed nothing at all — which is what the user saw when they reported that the
+/// polling never appeared.
+fn steamapps_of(library: &Path) -> PathBuf {
+    if library.file_name().is_some_and(|name| name == "steamapps") {
+        library.to_path_buf()
+    } else {
+        library.join("steamapps")
+    }
 }
 
 /// `<library>/steamapps/workshop/content/<appid>`.
 pub fn content_root(library: &Path) -> PathBuf {
-    library
-        .join(WORKSHOP_CONTENT_SUBDIR)
+    steamapps_of(library)
+        .join("workshop")
+        .join("content")
         .join(APP_ID.to_string())
 }
 
@@ -579,6 +591,19 @@ mod tests {
         assert_eq!(
             root,
             PathBuf::from("/lib/steamapps/workshop/content/3474900")
+        );
+        // Both spellings of a library, because `libraryfolders.vdf` has used both.
+        assert_eq!(
+            content_root(Path::new("/lib/steamapps")),
+            PathBuf::from("/lib/steamapps/workshop/content/3474900")
+        );
+        assert_eq!(
+            acf_path(Path::new("/lib")),
+            PathBuf::from("/lib/steamapps/workshop/appworkshop_3474900.acf")
+        );
+        assert_eq!(
+            acf_path(Path::new("/lib/steamapps")),
+            PathBuf::from("/lib/steamapps/workshop/appworkshop_3474900.acf")
         );
     }
 

@@ -31,7 +31,7 @@ use anima_engine_rs::i18n::{I18n, PRIMARY_LANGUAGES, STEAM_LANGUAGES, normalize_
 use anima_engine_rs::paths::{ensure_dir, user_data_dir};
 use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::steamcmd::SteamCmd;
-use anima_engine_rs::workshop::{ItemState, WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
+use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
 use std::time::Instant;
 
@@ -105,9 +105,10 @@ fn danger(
     }
 }
 
-/// How often the window asks Steam what it is doing. One small file, and only while the client owes an
-/// item a download — see `Message::PollWorkshop`, which returns before reading anything when it does not.
-const WORKSHOP_POLL_MS: u64 = 1000;
+/// How often the window asks Steam what it is doing: one small `.acf`, twice a second. A download can land
+/// in well under a second, so the tick is deliberately short — the point is to catch the state while it is
+/// true, not to be frugal with a file this size.
+const WORKSHOP_POLL_MS: u64 = 500;
 
 /// The download cell: it exists while the Steam client owes the item a download, and reports once it does
 /// not. Nothing to press either way — the download is the client's, and its progress is what Steam writes
@@ -2015,12 +2016,12 @@ impl Studio {
             Message::OverlayOn(control, action) => self.apply_overlay_to(control, action),
             Message::SetScale(control, percent) => self.set_scale_on(control, percent),
             Message::PollWorkshop => {
-                // Only while something is actually owed: an idle window does no reading at all, which is
-                // why this can be unconditional in the subscription without costing anything.
-                if self.states.values().any(ItemState::pending) {
-                    let roots = WorkshopWatcher::discover().roots().to_vec();
-                    self.refresh_states(&roots);
-                }
+                // Read every tick, unconditionally. The first version skipped the read unless something was
+                // already known to be pending, which made the whole thing unable to start: the single
+                // observation that could have told it "yes, there is one" was the observation it refused to
+                // make. It is one small file twice a second; there was never a cost worth that.
+                let roots = WorkshopWatcher::discover().roots().to_vec();
+                self.refresh_states(&roots);
             }
             Message::CancelRemove => {
                 self.pending_remove = None;
@@ -3239,8 +3240,7 @@ impl Studio {
             // The fast path: an event from the watcher, which is what makes a change look immediate.
             control_events(),
             // Steam downloads on its own schedule and tells nobody, so the row has to notice by itself.
-            // This tick is outside the `animating` branch on purpose: a download is not an animation, and
-            // `Message::PollWorkshop` returns without reading anything unless the client owes something.
+            // Outside the `animating` branch on purpose: a download is not an animation.
             iced::time::every(std::time::Duration::from_millis(WORKSHOP_POLL_MS))
                 .map(|_| Message::PollWorkshop),
         ];

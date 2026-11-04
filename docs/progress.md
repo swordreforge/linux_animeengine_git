@@ -1123,6 +1123,18 @@ search field with IME, and Workshop browse/search.
 - [ ] A percentage would need a total, and while Steam is downloading there is nowhere honest to get one:
       the `.acf` has no size until it is done, and the keyless `GetPublishedFileDetails` response is the
       obvious candidate to check for a `file_size` field if a bar is wanted later.
+- [x] **Two bugs that made the polling invisible, both mine, both found by the user pressing the button.**
+      The first was a self-lock: the tick refused to read the `.acf` unless something was *already* known to
+      be pending, so the single observation that could have told it "yes, there is one" was the observation
+      it refused to make. An optimization that made the only bootstrap path impossible. It reads every tick
+      now — one small file twice a second, and there was never a cost worth guarding.
+      The second was a silent path guess. `libraryfolders.vdf` lists either `…/steamapps` (older files) or
+      the root above it (newer ones), and `acf_path`/`content_root` assumed the root. When the guess was
+      wrong the `.acf` was simply not found, the state was cleared, and an item Steam was actively
+      downloading showed nothing at all — no error anywhere. `steamapps_of` accepts both spellings and both
+      are asserted in the tests.
+      The interval came down to 500 ms with them: a download can land in well under a second, and the point
+      is to catch the state while it is true, not to be frugal with a file this size.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
