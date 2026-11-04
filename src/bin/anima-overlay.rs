@@ -32,9 +32,10 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anima_engine_rs::anim::{Animation, Frame, Orientation};
+use anima_engine_rs::anim::{Animation, DecodeLimits, Frame, Orientation};
 use anima_engine_rs::cache::FrameCache;
 use anima_engine_rs::control::{ControlState, InputMode, MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
+use anima_engine_rs::settings::{ANIM_META_FILE, AnimMeta, ConfigFile};
 use anima_engine_rs::state::SecondaryState;
 
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
@@ -682,6 +683,8 @@ struct OverlayState {
     state_path: PathBuf,
     /// Playback override in frames per second; 0 follows the frame delays.
     fps: u32,
+    /// `anim_meta.json` override for this animation; 0 when unset.
+    meta_fps: u32,
     /// Dragging disabled.
     locked: bool,
     /// Hide the surface while the pointer is over an opaque pixel.
@@ -996,41 +999,50 @@ fn load_animation(path: Option<&Path>) -> Result<Arc<Animation>, Box<dyn std::er
         return Ok(Arc::new(test_animation()));
     };
 
+    let limits = DecodeLimits::from_env();
     let cache = FrameCache::user_default();
     if let Some(animation) = cache.read(path) {
+        let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
         eprintln!(
-            "[overlay] cache hit: {} frame(s), {}x{}",
+            "[overlay] cache hit: {} frame(s), {}x{}{}",
             animation.frame_count(),
             animation.width,
-            animation.height
+            animation.height,
+            report.note()
         );
         return Ok(Arc::new(animation));
     }
 
     let started = Instant::now();
-    let animation = Arc::new(anima_engine_rs::anim::decode(path)?);
+    let (animation, report) = anima_engine_rs::anim::decode_reporting(path, limits)?;
     eprintln!(
-        "[overlay] decoded {} frame(s), {}x{} in {:.2}s",
+        "[overlay] decoded {} frame(s) at {}x{}, {:.1} MiB{} in {:.2}s",
         animation.frame_count(),
         animation.width,
         animation.height,
+        animation.bytes() as f64 / (1024.0 * 1024.0),
+        report.note(),
         started.elapsed().as_secs_f32()
     );
 
-    // Encode/write the cache in the background so playback is not blocked by
-    // PNG compression of large animations.
-    let cache_animation = Arc::clone(&animation);
-    let cache_path = path.to_path_buf();
-    std::thread::spawn(move || {
-        if let Err(err) = cache.write(&cache_path, &cache_animation) {
-            eprintln!("[overlay] cache write failed: {err}");
-        } else {
-            eprintln!(
-                "[overlay] cached {} frame(s)",
-                cache_animation.frame_count()
-            );
-        }
-    });
+    let animation = Arc::new(animation);
+    // A decimated decode depends on the configured limits, so it is never
+    // cached: the cache always holds a complete decode. Encoding runs in the
+    // background so playback is not blocked by PNG compression of large files.
+    if !report.limited() {
+        let cache_animation = Arc::clone(&animation);
+        let cache_path = path.to_path_buf();
+        std::thread::spawn(move || {
+            if let Err(err) = cache.write(&cache_path, &cache_animation) {
+                eprintln!("[overlay] cache write failed: {err}");
+            } else {
+                eprintln!(
+                    "[overlay] cached {} frame(s)",
+                    cache_animation.frame_count()
+                );
+            }
+        });
+    }
 
     Ok(animation)
 }
@@ -1802,12 +1814,7 @@ fn frame_delay(frame: &Frame, fps: u32) -> Duration {
     if fps > 0 {
         return Duration::from_millis(u64::from(1000 / fps.max(1)));
     }
-    let ms = if frame.delay_ms == 0 {
-        33
-    } else {
-        frame.delay_ms
-    };
-    Duration::from_millis(u64::from(ms))
+    Duration::from_millis(u64::from(frame.effective_delay_ms()))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1857,6 +1864,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_locked = persisted.as_ref().is_some_and(|i| i.locked);
     let initial_hover_hide = persisted.as_ref().is_some_and(|i| i.hover_hide);
     let fps = persisted.as_ref().map_or(0, |instance| instance.fps);
+    // `anim_meta.json` is a per-animation override; the instance's own `fps`
+    // wins over it, and 0 in both means "follow the file's frame delays".
+    let meta_fps = AnimMeta::load(&anima_engine_rs::paths::user_data_dir().join(ANIM_META_FILE))
+        .fps_for(instance_key.as_deref().unwrap_or_default())
+        .unwrap_or(0);
     let orientation = Orientation::from_degrees(
         persisted.as_ref().map_or(0, |i| i.rotation),
         persisted.as_ref().is_some_and(|i| i.flip_h),
@@ -1867,7 +1879,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "[overlay] restored instance: ({pos_x}, {pos_y}) at {initial_scale}%, \
              mode {initial_mode:?}, locked {initial_locked}, hover_hide {initial_hover_hide}, \
-             fps {fps}, quarters {}, flip_h {}, flip_v {}",
+             fps {fps} (meta {meta_fps}), quarters {}, flip_h {}, flip_v {}",
             orientation.quarter_turns, orientation.flip_h, orientation.flip_v
         );
     }
@@ -1932,6 +1944,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         instance_key,
         state_path,
         fps,
+        meta_fps,
         locked: initial_locked,
         hover_hide: initial_hover_hide,
         hidden: false,
@@ -2442,7 +2455,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // The frame just presented stays up for its own delay; hit-testing
         // must use the frame that is actually visible.
-        next_change = now + frame_delay(&animation.frames[index], state.fps);
+        let fps = if state.fps > 0 {
+            state.fps
+        } else {
+            state.meta_fps
+        };
+        next_change = now + frame_delay(&animation.frames[index], fps);
         state.frame_index = index;
         if state.pointer_inside {
             state.pointer_over = state.opaque_at(state.pointer_pos.0, state.pointer_pos.1);

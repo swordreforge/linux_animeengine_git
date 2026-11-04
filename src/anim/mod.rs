@@ -25,7 +25,20 @@ pub struct Frame {
     pub delay_ms: u32,
 }
 
+/// Delay used when a file stores none (0 ms): browsers clamp these so a GIF with
+/// zero delays does not spin at maximum speed.
+pub const DEFAULT_FRAME_MS: u32 = 33;
+
 impl Frame {
+    /// Delay to actually wait on this frame (0 ms becomes [`DEFAULT_FRAME_MS`]).
+    pub fn effective_delay_ms(&self) -> u32 {
+        if self.delay_ms == 0 {
+            DEFAULT_FRAME_MS
+        } else {
+            self.delay_ms
+        }
+    }
+
     /// Extract the alpha channel (used for pixel hit-testing the overlay).
     pub fn alpha_mask(&self) -> Vec<u8> {
         self.rgba
@@ -315,6 +328,234 @@ pub trait FrameSource {
     fn decode(&self, path: &Path) -> Result<Animation>;
 }
 
+impl Animation {
+    /// Bytes of one composited frame at the canvas size.
+    pub fn frame_bytes(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height) * 4
+    }
+
+    /// Rough memory footprint of the decoded frames.
+    pub fn bytes(&self) -> u64 {
+        self.frame_bytes() * self.frames.len() as u64
+    }
+}
+
+/// Caps on how much of an animation is held in RAM at once.
+///
+/// A 1350x1012 animation with 448 frames needs ~2.4 GiB decoded. Past these
+/// limits frames are decimated — every other one dropped, its delay folded into
+/// the survivor — until the set fits, so a huge Workshop item cannot exhaust
+/// memory. The animation plays the same length, just with fewer steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeLimits {
+    pub max_bytes: u64,
+    pub max_frames: usize,
+}
+
+/// Overrides [`DecodeLimits::max_bytes`] in MiB (`ANIMA_MAX_DECODE_MB`).
+pub const MAX_DECODE_MB_ENV: &str = "ANIMA_MAX_DECODE_MB";
+/// Overrides [`DecodeLimits::max_frames`] (`ANIMA_MAX_FRAMES`).
+pub const MAX_FRAMES_ENV: &str = "ANIMA_MAX_FRAMES";
+
+impl Default for DecodeLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: 1024 * 1024 * 1024,
+            max_frames: 4096,
+        }
+    }
+}
+
+impl DecodeLimits {
+    /// No limits at all (tests that want every frame).
+    pub const fn unbounded() -> Self {
+        Self {
+            max_bytes: u64::MAX,
+            max_frames: usize::MAX,
+        }
+    }
+
+    /// The defaults with `ANIMA_MAX_DECODE_MB` / `ANIMA_MAX_FRAMES` applied.
+    pub fn from_env() -> Self {
+        let mut limits = Self::default();
+        if let Some(mb) = env_u64(MAX_DECODE_MB_ENV) {
+            limits.max_bytes = mb.saturating_mul(1024 * 1024);
+        }
+        if let Some(frames) = env_u64(MAX_FRAMES_ENV) {
+            limits.max_frames = frames.min(usize::MAX as u64) as usize;
+        }
+        limits
+    }
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
+/// What a bounded decode did: frames kept out of the source and the grid used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeReport {
+    pub source_frames: usize,
+    pub kept_frames: usize,
+    pub bytes: u64,
+    pub stride: usize,
+}
+
+impl DecodeReport {
+    fn whole(animation: &Animation) -> Self {
+        Self {
+            source_frames: animation.frames.len(),
+            kept_frames: animation.frames.len(),
+            bytes: animation.bytes(),
+            stride: 1,
+        }
+    }
+
+    /// Whether frames were dropped to satisfy the limits.
+    pub fn limited(&self) -> bool {
+        self.kept_frames < self.source_frames || self.stride > 1
+    }
+
+    /// Log suffix describing any decimation (empty when nothing was dropped).
+    pub fn note(&self) -> String {
+        if self.limited() {
+            format!(
+                " (1 of every {} frames: {} of {} kept to fit the memory cap)",
+                self.stride, self.kept_frames, self.source_frames
+            )
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// Decimate `frames` until they fit `limits`, folding dropped delays into their
+/// neighbours so the total playing time is preserved.
+pub fn limit_frames(frames: Vec<Frame>, limits: DecodeLimits) -> (Vec<Frame>, DecodeReport) {
+    let frame_bytes = frames.first().map_or(0, |frame| frame.rgba.len()) as u64;
+    let mut limiter = FrameLimiter::new(limits, frame_bytes);
+    for frame in frames {
+        limiter.push(frame);
+    }
+    limiter.finish()
+}
+
+/// [`limit_frames`] for a whole animation.
+pub fn limit_animation(animation: Animation, limits: DecodeLimits) -> (Animation, DecodeReport) {
+    let Animation {
+        width,
+        height,
+        frames,
+    } = animation;
+    let (frames, report) = limit_frames(frames, limits);
+    (
+        Animation {
+            width,
+            height,
+            frames,
+        },
+        report,
+    )
+}
+
+/// Streaming half of [`limit_frames`]: frames arrive one at a time and the
+/// retained set shrinks as soon as it exceeds the budget — each shrink halves it
+/// and doubles the sampling stride, so memory stays bounded while decoding.
+struct FrameLimiter {
+    limits: DecodeLimits,
+    frame_bytes: u64,
+    frames: Vec<Frame>,
+    pending_ms: u32,
+    stride: usize,
+    index: usize,
+}
+
+impl FrameLimiter {
+    fn new(limits: DecodeLimits, frame_bytes: u64) -> Self {
+        Self {
+            limits,
+            frame_bytes,
+            frames: Vec::new(),
+            pending_ms: 0,
+            stride: 1,
+            index: 0,
+        }
+    }
+
+    fn push(&mut self, mut frame: Frame) {
+        if self.stride > 1 && !self.index.is_multiple_of(self.stride) {
+            self.pending_ms = self.pending_ms.saturating_add(frame.delay_ms);
+            self.index += 1;
+            return;
+        }
+        frame.delay_ms = frame.delay_ms.saturating_add(self.pending_ms);
+        self.pending_ms = 0;
+        self.frames.push(frame);
+        self.index += 1;
+        self.shrink();
+    }
+
+    fn shrink(&mut self) {
+        while self.over_budget() && self.frames.len() > 1 {
+            self.decimate();
+        }
+    }
+
+    fn over_budget(&self) -> bool {
+        self.frames.len() > self.limits.max_frames
+            || (self.frames.len() as u64).saturating_mul(self.frame_bytes) > self.limits.max_bytes
+    }
+
+    /// Drop every other kept frame, adding its delay to the survivor.
+    fn decimate(&mut self) {
+        let frames = std::mem::take(&mut self.frames);
+        let last = frames.len().saturating_sub(1);
+        let mut kept = Vec::with_capacity(frames.len().div_ceil(2));
+        let mut carry = 0u32;
+        for (position, mut frame) in frames.into_iter().enumerate() {
+            frame.delay_ms = frame.delay_ms.saturating_add(carry);
+            carry = 0;
+            if position % 2 == 0 {
+                kept.push(frame);
+            } else {
+                carry = frame.delay_ms;
+            }
+            if position == last
+                && carry > 0
+                && let Some(previous) = kept.last_mut()
+            {
+                previous.delay_ms = previous.delay_ms.saturating_add(carry);
+                carry = 0;
+            }
+        }
+        if carry > 0
+            && let Some(previous) = kept.last_mut()
+        {
+            previous.delay_ms = previous.delay_ms.saturating_add(carry);
+        }
+        self.frames = kept;
+        self.stride *= 2;
+    }
+
+    fn finish(mut self) -> (Vec<Frame>, DecodeReport) {
+        // The last source frames may have been skipped; their time still belongs
+        // to the animation, so fold it into the final kept frame.
+        if self.pending_ms > 0
+            && let Some(last) = self.frames.last_mut()
+        {
+            last.delay_ms = last.delay_ms.saturating_add(self.pending_ms);
+            self.pending_ms = 0;
+        }
+        let report = DecodeReport {
+            source_frames: self.index,
+            kept_frames: self.frames.len(),
+            bytes: (self.frames.len() as u64).saturating_mul(self.frame_bytes),
+            stride: self.stride,
+        };
+        (self.frames, report)
+    }
+}
+
 /// Decoder backed by the `image` crate.
 pub struct ImageSource;
 
@@ -324,44 +565,44 @@ impl FrameSource for ImageSource {
     }
 }
 
-/// Decode any supported animation file into composited frames.
+/// Decode any supported animation file into composited frames (bounded by
+/// [`DecodeLimits::default`]).
 pub fn decode(path: &Path) -> Result<Animation> {
     ImageSource.decode(path)
 }
 
 /// Decode `path` using the `image` crate, dispatching on the detected format.
 pub fn decode_path(path: &Path) -> Result<Animation> {
+    decode_with_limits(path, DecodeLimits::default())
+}
+
+/// [`decode_path`] with explicit memory limits.
+pub fn decode_with_limits(path: &Path, limits: DecodeLimits) -> Result<Animation> {
+    decode_reporting(path, limits).map(|(animation, _)| animation)
+}
+
+/// Decode `path` and report how much of it was decimated to fit `limits`.
+pub fn decode_reporting(path: &Path, limits: DecodeLimits) -> Result<(Animation, DecodeReport)> {
     let reader = open(path)?;
     match reader.format() {
         Some(ImageFormat::Gif) => {
-            let frames = GifDecoder::new(reader.into_inner())
-                .map_err(decode_err)?
-                .into_frames()
-                .collect_frames()
-                .map_err(decode_err)?;
-            animation_from_frames(frames)
+            let decoder = GifDecoder::new(reader.into_inner()).map_err(decode_err)?;
+            collect_limited(decoder.into_frames(), limits)
         }
         Some(ImageFormat::Png) => {
             let decoder = PngDecoder::new(reader.into_inner()).map_err(decode_err)?;
             if decoder.is_apng().map_err(decode_err)? {
-                let frames = decoder
-                    .apng()
-                    .map_err(decode_err)?
-                    .into_frames()
-                    .collect_frames()
-                    .map_err(decode_err)?;
-                animation_from_frames(frames)
+                collect_limited(decoder.apng().map_err(decode_err)?.into_frames(), limits)
             } else {
-                still(path)
+                still(path).map(single)
             }
         }
         Some(ImageFormat::WebP) => {
             let decoder = WebPDecoder::new(reader.into_inner()).map_err(decode_err)?;
             if decoder.has_animation() {
-                let frames = decoder.into_frames().collect_frames().map_err(decode_err)?;
-                animation_from_frames(frames)
+                collect_limited(decoder.into_frames(), limits)
             } else {
-                still(path)
+                still(path).map(single)
             }
         }
         other => Err(Error::Decode(format!(
@@ -391,25 +632,44 @@ fn still(path: &Path) -> Result<Animation> {
     })
 }
 
-fn animation_from_frames(frames: Vec<image::Frame>) -> Result<Animation> {
+/// Decode frames one at a time, decimating as soon as `limits` are exceeded.
+fn collect_limited<I>(frames: I, limits: DecodeLimits) -> Result<(Animation, DecodeReport)>
+where
+    I: Iterator<Item = std::result::Result<image::Frame, image::ImageError>>,
+{
+    let mut frames = frames;
     let first = frames
-        .first()
-        .ok_or_else(|| Error::Decode("image has no frames".into()))?;
+        .next()
+        .ok_or_else(|| Error::Decode("image has no frames".into()))?
+        .map_err(decode_err)?;
     let (width, height) = (first.buffer().width(), first.buffer().height());
+    let mut limiter = FrameLimiter::new(limits, u64::from(width) * u64::from(height) * 4);
+    limiter.push(convert_frame(first));
+    for frame in frames {
+        limiter.push(convert_frame(frame.map_err(decode_err)?));
+    }
+    let (frames, report) = limiter.finish();
+    Ok((
+        Animation {
+            width,
+            height,
+            frames,
+        },
+        report,
+    ))
+}
 
-    let frames = frames
-        .into_iter()
-        .map(|frame| Frame {
-            delay_ms: delay_ms(frame.delay()),
-            rgba: frame.into_buffer().into_raw(),
-        })
-        .collect();
+fn convert_frame(frame: image::Frame) -> Frame {
+    Frame {
+        delay_ms: delay_ms(frame.delay()),
+        rgba: frame.into_buffer().into_raw(),
+    }
+}
 
-    Ok(Animation {
-        width,
-        height,
-        frames,
-    })
+/// Report for a single-frame decode (nothing can be dropped).
+fn single(animation: Animation) -> (Animation, DecodeReport) {
+    let report = DecodeReport::whole(&animation);
+    (animation, report)
 }
 
 /// `Delay` is a fraction of milliseconds (`numer_denom_ms` returns `(num, den)`
@@ -481,6 +741,98 @@ mod tests {
             }
         }
         out
+    }
+
+    fn plain_frame(delay_ms: u32) -> Frame {
+        Frame {
+            rgba: vec![0, 0, 0, 255],
+            delay_ms,
+        }
+    }
+
+    #[test]
+    fn zero_delay_frames_fall_back_to_a_visible_delay() {
+        assert_eq!(plain_frame(0).effective_delay_ms(), DEFAULT_FRAME_MS);
+        assert_eq!(plain_frame(50).effective_delay_ms(), 50);
+    }
+
+    #[test]
+    fn limits_keep_small_animations_intact() {
+        let frames: Vec<Frame> = (0..4).map(|_| plain_frame(50)).collect();
+        let (kept, report) = limit_frames(frames, DecodeLimits::unbounded());
+        assert_eq!(kept.len(), 4);
+        assert_eq!(report.stride, 1);
+        assert!(!report.limited());
+        assert_eq!(kept.iter().map(|f| f.delay_ms).sum::<u32>(), 200);
+    }
+
+    #[test]
+    fn limits_decimate_and_preserve_total_delay() {
+        let frames: Vec<Frame> = (0..8).map(|_| plain_frame(30)).collect();
+        // 4 bytes per frame: a 16-byte budget keeps 4 of the 8.
+        let limits = DecodeLimits {
+            max_bytes: 16,
+            max_frames: usize::MAX,
+        };
+        let (kept, report) = limit_frames(frames, limits);
+        assert_eq!(kept.len(), 4);
+        assert_eq!(report.stride, 2);
+        assert_eq!(report.source_frames, 8);
+        assert!(report.limited());
+        assert!(report.bytes <= 16);
+        assert_eq!(kept.iter().map(|f| f.delay_ms).sum::<u32>(), 240);
+        assert!(report.note().contains("1 of every 2 frames"));
+    }
+
+    #[test]
+    fn limits_respect_the_frame_cap() {
+        let frames: Vec<Frame> = (0..8).map(|_| plain_frame(10)).collect();
+        let limits = DecodeLimits {
+            max_bytes: u64::MAX,
+            max_frames: 3,
+        };
+        let (kept, report) = limit_frames(frames, limits);
+        assert!(kept.len() <= 3);
+        assert_eq!(kept.iter().map(|f| f.delay_ms).sum::<u32>(), 80);
+        assert!(report.limited());
+    }
+
+    #[test]
+    fn decoding_a_gif_respects_the_byte_limit() {
+        let frames: Vec<gif::Frame<'static>> = (0..6)
+            .map(|i| {
+                gif_frame(
+                    2,
+                    2,
+                    0,
+                    0,
+                    if i % 2 == 0 { 1 } else { 2 },
+                    gif::DisposalMethod::Keep,
+                    5,
+                )
+            })
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("six.gif");
+        std::fs::write(&path, encode_gif((2, 2), &frames)).unwrap();
+
+        let (animation, report) = decode_reporting(&path, DecodeLimits::unbounded()).unwrap();
+        assert_eq!(animation.frame_count(), 6);
+        assert!(!report.limited());
+        assert_eq!(animation.frames[0].delay_ms, 50);
+
+        // 2x2 RGBA = 16 bytes per frame; this budget holds three of them.
+        let limits = DecodeLimits {
+            max_bytes: 48,
+            max_frames: usize::MAX,
+        };
+        let (animation, report) = decode_reporting(&path, limits).unwrap();
+        assert_eq!(animation.frame_count(), 3);
+        assert_eq!(report.stride, 2);
+        assert_eq!(
+            animation.frames.iter().map(|f| f.delay_ms).sum::<u32>(),
+            300
+        );
     }
 
     #[test]

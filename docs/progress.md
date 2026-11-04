@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **121** default (118 lib + 3 CLI), **124** with
+- `cargo test`: **126** default (123 lib + 3 CLI), **129** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -186,6 +186,13 @@ Interaction and control:
   `https://steamcommunity.com/sharedfiles/filedetails/?id=9999999999`.
 - Uploading a **real** item still needs the user's Steam account (`--user` or
   `STEAM_USER`); anonymous login cannot publish.
+- Bounded decode: `ANIMA_MAX_DECODE_MB=64` on `tetonahall.apng` (448 frames of
+  1350x1012, ~2.4 GiB raw) logged
+  `decoded 7 frame(s) at 1350x1012, 36.5 MiB (1 of every 64 frames: 7 of 448 kept
+  to fit the memory cap) in 1.60s` — bounded as asked, at the cost of choppier
+  playback (tune with the env vars; the default 1 GiB keeps roughly 1/4 of it).
+- `anim_meta.json` fps: with `{"<canonical path>": {"fps": 60}}` the overlay
+  logged `restored instance: ... fps 0 (meta 60)` — instance `fps` still wins.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -300,8 +307,11 @@ Interaction and control:
 - [ ] GNOME/Mutter fallback (no layer-shell → compositor rules / normal window)
 - [ ] HiDPI buffer scale + pin surface size across compositor reconfigures
       (the live2d-rs configure-bounce pattern)
-- [ ] Frame timing edge cases: GIF centisecond delays, APNG fractions,
-      per-path `fps` overrides from `anim_meta.json`
+- [x] Frame timing: GIF centisecond and APNG fractional delays were already
+      exact through `image::Delay` (tests cover both); `anim_meta.json`'s
+      per-path `fps` is now wired into playback and the instance's own `fps` wins
+      over it; frames with a 0 ms delay fall back to 33 ms
+      (`Frame::effective_delay_ms`)
 
 ### Steam / Workshop
 
@@ -319,8 +329,12 @@ Interaction and control:
 
 ### Robustness / distribution
 
-- [ ] Large animations currently decode fully into RAM (tetonahall: ~2.4 GiB) —
-  needs streaming / bounded decode
+- [x] Large animations are no longer decoded fully into RAM: a bounded decode
+      decimates (halving the retained frames and doubling the stride until the set
+      fits `DecodeLimits`, folding dropped delays into the survivor so the total
+      playing time is preserved). `ANIMA_MAX_DECODE_MB` (default 1024) and
+      `ANIMA_MAX_FRAMES` (default 4096) tune it; a decimated decode is **not**
+      cached, so the cache always holds a complete decode
 - [ ] Cache encodes PNGs (CPU heavy for large frames); consider zstd raw frames
 - [ ] Skip caching or clean stale `.tmp` files for interrupted background writes
 - [ ] Ship the i18n catalog as a data file; verify all locales
@@ -373,8 +387,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (121 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (124)
+cargo test                                        # pure logic (126 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (129)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -413,4 +427,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   Steam root/library discovery + `anima-workshop` CLI → SteamCMD download path →
   SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray +
   menu) → `anima-workshop play` (download → sync → overlay) → workshop upload
-  (`workshop.vdf` + `workshop_build_item`).
+  (`workshop.vdf` + `workshop_build_item`) → bounded decode + frame-timing
+  fidelity.
