@@ -546,8 +546,13 @@ search field with IME, and Workshop browse/search.
       point at. A test asserts the id lookup and that the control path survives
       `reload_overlay`. This is the prerequisite for the search box: a filtered list cannot
       carry positions.
-- [ ] Not yet: the search box itself (now unblocked), API-key browse/search, and list-row
-      thumbnails once the library is big.
+- [x] A search box over the list, above it, with a `×` to clear and a `shown/total` count
+      while filtering. It matches the item id, the Steam title and the asset file names,
+      case-insensitively; `matches` is a pure function with a unit test covering the empty
+      query, the whitespace-only query, id, title in either case and an asset name. The
+      selection is kept by id, so filtering the selected row away does not lose it — the pane
+      keeps showing it. The placeholder reuses the catalog's `Search`, so it is translated.
+- [ ] Not yet: API-key browse/search, and list-row thumbnails once the library is big.
 
 ### Overlay lifecycle (`anima-shepherd`)
 

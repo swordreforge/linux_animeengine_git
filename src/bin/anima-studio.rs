@@ -31,7 +31,9 @@ use anima_engine_rs::steamcmd::SteamCmd;
 use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
 use iced::widget::button::{danger, primary, secondary, text as text_button};
-use iced::widget::{button, column, container, image, pick_list, row, scrollable, space, text};
+use iced::widget::{
+    button, column, container, image, pick_list, row, scrollable, space, text, text_input,
+};
 use iced::{Element, Length, Subscription, Task};
 use serde::{Deserialize, Serialize};
 
@@ -210,6 +212,28 @@ enum OverlayAction {
     Quit,
 }
 
+/// Does `item` match `query`? The id, the Steam title and the asset file names are searched,
+/// case-insensitively; an empty query matches everything. Pure, so list filtering is tested
+/// without a window.
+fn matches(item: &WorkshopItem, title: Option<&str>, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    if item.id.to_string().contains(&query) {
+        return true;
+    }
+    if title.is_some_and(|title| title.to_lowercase().contains(&query)) {
+        return true;
+    }
+    item.assets.iter().any(|asset| {
+        asset
+            .file_name()
+            .map(|name| name.to_string_lossy().to_lowercase().contains(&query))
+            .unwrap_or(false)
+    })
+}
+
 /// A `pick_list` entry that carries the control file (the identity) and shows the label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InstanceChoice {
@@ -341,6 +365,8 @@ fn overlay_instances() -> Vec<OverlayInstance> {
 enum Message {
     Language(String),
     Refresh,
+    Search(String),
+    ClearSearch,
     Select(u64),
     Loaded(u64, Option<Meta>, Result<(u32, u32, Vec<u8>), String>),
     CopyPath(String),
@@ -480,6 +506,8 @@ struct Studio {
     snapshot: WorkshopSnapshot,
     /// The selected Workshop item, by id: an index moves when the list changes under it.
     selected_item: Option<u64>,
+    /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
+    query: String,
     note: String,
     meta: HashMap<u64, Meta>,
     thumbs: HashMap<u64, Thumb>,
@@ -504,6 +532,7 @@ impl Studio {
             i18n: I18n::discover(),
             snapshot: WorkshopSnapshot::default(),
             selected_item: None,
+            query: String::new(),
             note: String::new(),
             meta: HashMap::new(),
             thumbs: HashMap::new(),
@@ -667,6 +696,8 @@ impl Studio {
                 }
             }
             Message::Refresh => self.refresh(),
+            Message::Search(query) => self.query = query,
+            Message::ClearSearch => self.query.clear(),
             Message::Select(id) => {
                 self.selected_item = Some(id);
                 if let Some(item) = self.item(id) {
@@ -781,7 +812,16 @@ impl Studio {
         .align_y(iced::Alignment::Center);
 
         let mut list = column![].spacing(4);
+        let mut shown = 0usize;
         for (id, item) in &self.snapshot.items {
+            if !matches(
+                item,
+                self.meta.get(id).map(|meta| meta.title.as_str()),
+                &self.query,
+            ) {
+                continue;
+            }
+            shown += 1;
             let name = self
                 .meta
                 .get(id)
@@ -939,7 +979,29 @@ impl Studio {
             None => text(self.note.clone()).into(),
         };
 
+        if shown == 0 && !self.snapshot.is_empty() {
+            list = list.push(text("—").size(12));
+        }
+
+        let placeholder = self.i18n.tr("Search");
+        let mut search = row![
+            text_input(&placeholder, &self.query)
+                .on_input(Message::Search)
+                .width(Length::Fill)
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        if !self.query.trim().is_empty() {
+            search = search.push(
+                button(text("×"))
+                    .style(secondary)
+                    .on_press(Message::ClearSearch),
+            );
+            search = search.push(text(format!("{shown}/{}", self.snapshot.len())).size(11));
+        }
+
         let left = column![
+            search,
             scrollable(list).height(Length::Fill),
             divider(Length::Fill, Length::Fixed(1.0)),
             self.overlay_panel(),
@@ -1213,6 +1275,30 @@ mod tests {
             assert!(!instance.label.is_empty());
         }
         eprintln!("[studio] {} overlay control file(s)", instances.len());
+    }
+
+    #[test]
+    fn the_filter_searches_id_title_and_assets() {
+        let item = WorkshopItem {
+            id: 3_828_587_753,
+            path: PathBuf::from("/w/3828587753"),
+            assets: vec![
+                PathBuf::from("/w/3828587753/Miku12.APNG"),
+                PathBuf::from("/w/3828587753/teto.png"),
+            ],
+        };
+        // Empty and whitespace-only queries keep everything.
+        assert!(matches(&item, None, ""));
+        assert!(matches(&item, None, "   "));
+        // Id, title (either case) and asset names, case-insensitively.
+        assert!(matches(&item, None, "3828"));
+        assert!(matches(&item, Some("Hatsune Miku"), "hatsune"));
+        assert!(matches(&item, Some("Hatsune Miku"), "MIKU"));
+        assert!(matches(&item, None, "apng"));
+        assert!(matches(&item, None, "teto"));
+        // A title is optional, and a miss is a miss.
+        assert!(!matches(&item, Some("something else"), "zzz"));
+        assert!(!matches(&item, None, "zzz"));
     }
 
     /// Selections are keyed by id / control path, so rebuilding the list or the instance set
