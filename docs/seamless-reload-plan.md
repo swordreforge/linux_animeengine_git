@@ -1,63 +1,54 @@
-# Seamless reload for a *geometry change* — implementation plan
+# Seamless reload for a *geometry change* — executable plan
 
-## Ordering constraint discovered while reading the code (do this first)
+Goal: remove the `CommandExt::exec` fallback so that swapping in an animation with a
+different size/frame count also happens in place (same PID, no flicker).
 
-The refactor is *not* a pure substitution. Two things must move before `FrameState`
-can exist:
+Current state (verified): same-geometry reload swaps the pixels in the existing
+texture (`reloaded in place: 27 frame(s) 136x132`, PID unchanged). A geometry change
+re-execs. Baseline: 139 lib + 3 CLI tests, `cargo clippy --all-targets --features
+"overlay,workshop-web,steamworks,bc7"` clean.
 
-1. `bind_group_layout`, `sampler` and `uniform` are currently created **after** the
-   frame-storage block (around lines 2450-2520 of `anima-overlay.rs`), but a rebuild
-   needs them to create the new `bind_group`. Move those three above the storage
-   block, before `FrameState::build`. They do not depend on the animation, so the
-   move is safe; the pipelines can stay where they are (they only need the layout).
-2. `width`, `height`, `frame_count` and `crop` are consumed *before* the storage block
-   by the instance/state setup (orientation, persistence, control-file seeding, the
-   surface's initial size). The rebuild therefore cannot just re-derive them: it has
-   to **update the state** (`native_size`, `crop`, `desired_size`, surface size,
-   clamp) from the new `Loaded` and only then create the frames, otherwise the
-   pre-loop values win. Concretely, keep the initial `Loaded` in a variable and have
-   the rebuild path do `let loaded = load_animation(...)?;` plus the state update in
-   the loop before rebuilding.
+Measurements below are for `src/bin/anima-overlay.rs` at 2917 lines.
 
-Measured anchors (this revision of the file, 2917 lines):
+---
 
-| what | line |
-| --- | --- |
-| surface config + `configure` | 2264-2270 |
-| frame-storage decision, texture, uploads | 2272-2392 |
-| BC7 background encoder (captures `animation` by `Arc`) | 2394-2450 |
-| sampler / uniform / bind group layout / bind group | ~2450-2520 |
-| loop locals (`index`, `hot_reload`, …) | ~2560-2608 |
-| `while !state.closed` body | 2609-2868 |
-| pause/quit tail (`persist_geometry`) | 2868-2874 |
+## Step 0 — safety net (do first)
 
-Also note: the encoder block captures the animation by `Arc` at that point, so after
-a rebuild it must be re-spawned for the new animation when `blocks` is `None` (this
-was already in the plan; the line reference is new).
+```bash
+cd ~/projects/anima-engine-rs
+cp src/bin/anima-overlay.rs /tmp/anima-overlay.before-frames.rs
+cargo test --quiet                                   # 139 lib pass
+```
 
-## Where we are
+Rollback at any point: `git checkout -- src/bin/anima-overlay.rs` (nothing else is
+touched until Step 5 adds a helper).
 
-Hot reload has two tiers today:
+---
 
-1. **Same geometry** (size, frame count and BC7-vs-RGBA path identical) — verified
-   seamless: the new frames are uploaded into the existing texture
-   (`reloaded in place: 27 frame(s) 136x132`, same PID).
-2. **Different geometry** — falls back to `CommandExt::exec`, which keeps the
-   persisted placement but recreates the layer surface, so it flickers.
+## Step 1 — move three GPU objects above the frame block
 
-Tier 2 is what this plan removes. It is a mechanical refactor, not a new feature.
+They are created at ≈2450–2520, *after* the frame storage, but a rebuild needs them:
 
-## Why it needs a refactor
+- `let bind_group_layout = device.create_bind_group_layout(...)`
+- `let sampler = device.create_sampler(...)`
+- `let uniform = device.create_buffer(...)`
 
-`texture`, `texture_view`, `bind_group`, `layers`, `use_array`, `tex_width`,
-`tex_height` and `texture_scale` are locals in `main`, and `upload_frame` is a closure
-capturing them. A different geometry means new values for all of them, so they must
-live in something replaceable.
+Cut all three and paste them right after `wgpu_surface.configure(&device, &config);`
+(≈2270). They do not depend on the animation. Leave the pipelines and the standalone
+`bind_group` creation where they are for now (Step 3 deletes the latter).
 
-## `struct Frames`
+Checkpoint: `cargo check --features overlay` must still pass.
+
+---
+
+## Step 2 — the two structs and the build
+
+Insert above `fn main()`:
 
 ```rust
-struct Frames {
+/// Everything that depends on the animation's geometry and must be replaced when the
+/// animation changes size, frame count or storage path (BC7 vs RGBA).
+struct FrameState {
     animation: Arc<Animation>,
     blocks: Option<Blocks>,
     blocks_usable: bool,
@@ -68,122 +59,227 @@ struct Frames {
     use_array: bool,
     tex_width: u32,
     tex_height: u32,
-    /// `(width / tex_width, height / tex_height)`: 1:1 for RGBA, < 1 for BC7 padding.
+    /// `(width / tex_width, height / tex_height)`: 1:1 for RGBA, <1 for BC7 padding.
     scale: (f32, f32),
 }
 
-impl Frames {
-    /// Storage decision, texture creation, the initial upload, the view and the bind
-    /// group — everything that depends on the animation's geometry.
-    #[allow(clippy::too_many_arguments)]
-    fn build(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        loaded: Loaded,
-        bc7: bool,
-        max_array_layers: u32,
-        bind_group_layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
-        uniform: &wgpu::Buffer,
-    ) -> Self;
+/// Immutable objects `FrameState::build` needs; all outlive any rebuild.
+struct FrameBuild<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    layout: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+    uniform: &'a wgpu::Buffer,
+    bc7: bool,
+    max_layers: u32,
+}
 
-    /// The old `upload_frame` body, now a method (`index`/`layer` as before).
-    fn upload(&self, queue: &wgpu::Queue, index: usize, layer: u32);
+impl FrameState {
+    /// Storage decision + texture + initial upload + view + bind group.
+    /// Body: the current lines ≈2272–2392, with `animation`/`blocks` coming from
+    /// `loaded` and `bind_group` built from `ctx.layout`/`ctx.sampler`/`ctx.uniform`.
+    fn build(ctx: &FrameBuild, loaded: Loaded) -> Self { /* see below */ }
 
-    fn len(&self) -> usize { self.animation.frames.len() }
+    /// The current `upload_frame` closure body, verbatim (`self.texture`, `self.*`).
+    fn upload(&self, queue: &wgpu::Queue, index: usize, layer: u32) { /* ... */ }
+
+    fn len(&self) -> usize {
+        self.animation.frames.len()
+    }
 }
 ```
 
-`Frames::build` absorbs lines ~2260-2392 of `anima-overlay.rs`: the `rgba_array` /
-`bc7_array` decision, the `use_array`/`layers` choice, the storage `eprintln!` (keep
-the wording, it is quoted in the docs), the block-aligned `(tex_format, tex_width,
-tex_height)`, `texture_scale`, `create_texture`, the per-layer upload loop and the
-`create_view` (D2Array). The bind group creation that follows it moves in as well so
-that `bind_group` and `view` always match.
+`build` computes, from `loaded.animation` / `loaded.blocks` / `ctx.bc7` /
+`ctx.max_layers` (instead of the current locals):
 
-## Loop changes (mechanical)
+```rust
+let (width, height) = (loaded.animation.width, loaded.animation.height);
+let frame_count = loaded.animation.frames.len();
+let blocks_usable = loaded.blocks.as_ref().is_some_and(|b| {
+    ctx.bc7 && b.is_consistent() && b.width == width && b.height == height
+});
+// … the existing rgba_array / bc7_array / use_array / layers / total_bytes math …
+// … the existing storage eprintln! (keep the wording: the docs quote it) …
+let (tex_format, tex_width, tex_height) = /* existing match */;
+let scale = (width as f32 / tex_width.max(1) as f32,
+             height as f32 / tex_height.max(1) as f32);
+let texture = ctx.device.create_texture(/* existing descriptor */);
+// upload all layers (array) or layer 0 (JIT) through a local helper with the same
+// body as `upload`, or construct `Self` first and call `state.upload(...)`.
+let view = texture.create_view(&TextureViewDescriptor {
+    dimension: Some(TextureViewDimension::D2Array),
+    ..Default::default()
+});
+let bind_group = ctx.device.create_bind_group(&BindGroupDescriptor {
+    label: Some("anima-bind"),
+    layout: ctx.layout,
+    entries: &[/* the existing entries, with &view */],
+});
+FrameState { animation: loaded.animation, blocks: loaded.blocks, blocks_usable,
+             texture, view, bind_group, layers, use_array, tex_width, tex_height, scale }
+```
 
-| today | after |
+**Tip that avoids a borrow problem**: build the struct with an empty-texture
+placeholder is *not* possible; instead do the uploads with a local closure identical
+to `upload` (three lines duplicated), or make `upload` a free function taking
+`(&Texture, &Animation, Option<&Blocks>, blocks_usable, tex_width, tex_height, width,
+height, queue, index, layer)`. The free function is the smaller diff.
+
+---
+
+## Step 3 — replace the inline block in `main`
+
+After Step 1, `main` has `bind_group_layout`, `sampler`, `uniform` before the frame
+block. Then:
+
+```rust
+let frame_ctx = FrameBuild {
+    device: &device,
+    queue: &queue,
+    layout: &bind_group_layout,
+    sampler: &sampler,
+    uniform: &uniform,
+    bc7,
+    max_layers: limits.max_texture_array_layers,
+};
+let mut frames = FrameState::build(
+    &frame_ctx,
+    Loaded { animation, blocks, crop: loaded_crop, limits: decode_limits },
+);
+```
+
+Delete the old inline texture/upload/view block **and** the standalone `bind_group`
+creation (its only consumer is the render pass's `set_bind_group`).
+
+`crop` is still needed pre-loop for persistence, so keep the initial `Loaded` in a
+variable (`let mut loaded = load_animation(...)?;` at the top) and take `crop` from it;
+`FrameState::build` consumes `loaded` only on the first iteration.
+
+---
+
+## Step 4 — loop substitutions (exact)
+
+| current text | replacement |
 | --- | --- |
-| `use_array` | `frames.use_array` |
-| `upload_frame(&animation, blocks.as_ref(), index, 0)` | `frames.upload(&queue, index, 0)` |
-| `texture_scale` | `frames.scale` |
-| `frame_count` (wrap, logs) | `frames.len()` |
-| `animation.frames[index]` | `frames.animation.frames[index]` |
-| `set_bind_group(0, &bind_group, &[])` | `set_bind_group(0, &frames.bind_group, &[])` |
-| `state.animation` | keep in sync: `state.animation = Arc::clone(&frames.animation)` |
+| `let layer = if use_array {` | `let layer = if frames.use_array {` |
+| `upload_frame(&animation, blocks.as_ref(), index, 0);` | `frames.upload(&queue, index, 0);` |
+| `if texture_scale == (1.0, 1.0) {` | `if frames.scale == (1.0, 1.0) {` |
+| the three `texture_scale.0` / `.1` uses below it | `frames.scale.0` / `.1` |
+| `index = (index + 1) % frame_count;` | `index = (index + 1) % frames.len();` |
+| `frame_delay(&animation.frames[index], fps)` | `frame_delay(&frames.animation.frames[index], fps)` |
+| `pass.set_bind_group(0, &bind_group, &[])` | `pass.set_bind_group(0, &frames.bind_group, &[])` |
 
-`index`, `uploaded_layer0`, `next_change` and `last_presented` stay loop locals
-(`index = 0`, `uploaded_layer0 = 0`, `last_presented = None` on reload).
+`frame_count`, `layers`, `use_array`, `texture_scale` stay only inside `FrameState`.
+`width`/`height` remain outer (used by the pre-loop state setup and by
+`state.native_size`).
 
-## Reload branch
+Checkpoint: `cargo check --features overlay` and run the same-geometry reload test
+(touch a copy) — it must still log `reloaded in place`.
 
-Replace the exec block with:
+---
+
+## Step 5 — the reload branch
+
+Replace the current in-place/exec block (≈2618–2670) with:
 
 ```rust
 if hot_reload.changed() {
     let loaded = load_animation(path.as_deref())?;
-    let next = Frames::build(&device, &queue, loaded, bc7, limits.max_texture_array_layers,
-                             &bind_group_layout, &sampler, &uniform);
+    let (new_w, new_h) = (loaded.animation.width, loaded.animation.height);
+    let new_crop = loaded.crop;
+    let next = FrameState::build(&frame_ctx, loaded);
 
-    // Geometry follows the new art; the existing helpers keep it on screen.
-    let (width, height) = (next.animation.width, next.animation.height);
     state.animation = Arc::clone(&next.animation);
-    state.native_size = (width, height);
-    state.crop = next_crop;                     // from the new Loaded
+    state.native_size = (new_w, new_h);
+    state.crop = new_crop;
+    state.frame_index = 0;
+    state.applied_rects.clear();
+    state.region_dirty = true;
+    state.visual_dirty = true;
     if !state.hidden {
+        // New art, new surface size; the Configure answer lands in `state.configured`.
         let (w, h) = fit_to_output(&state, scaled_size(&state));
         state.desired_size = (w, h);
         state.layer_surface.set_size(w, h);
         state.surface.commit();
         reapply_clamp(&mut state);
     }
-    state.frame_index = 0;
-    state.region_dirty = true;
-    state.visual_dirty = true;
+    #[cfg(feature = "bc7")]
+    if next.blocks.is_none() {
+        spawn_bc7_encode(path.as_deref(), &next.animation, bc7);
+    }
+    frames = next;
     index = 0;
     uploaded_layer0 = 0;
     last_presented = None;
-    frames = next;
-    eprintln!("[overlay] rebuilt frames: {} frame(s) {}x{}", ..., width, height);
+    eprintln!(
+        "[overlay] rebuilt frames: {} frame(s) {}x{}",
+        frames.len(), new_w, new_h
+    );
     persist_geometry(&state);
 }
 ```
 
-The surface resize arrives through the existing `state.configured` path (line ~2728):
-the compositor answers with a new size, `config` is updated and `reapply_clamp` runs.
+`CommandExt` and the `exec` call disappear; the `use std::os::unix::process::CommandExt;`
+import goes with them.
 
-## The BC7 background encoder
+---
 
-It is spawned once, before the loop, and captures the current animation. Factor it into
+## Step 6 — factor the BC7 background encoder
+
+The inline block (≈2394–2450) captures the animation by `Arc` and is spawned once. A
+rebuild needs it again when the new item has no sidecar:
 
 ```rust
-fn spawn_bc7_encode(path: Option<&Path>, animation: &Arc<Animation>, bc7: bool);
+#[cfg(feature = "bc7")]
+fn spawn_bc7_encode(path: Option<&Path>, animation: &Arc<Animation>, bc7: bool) {
+    if !bc7 { return; }
+    let Some(source) = path else { return; };
+    // … the existing thread body, using `animation` and `source` …
+}
 ```
 
-and call it both at startup and after a reload whose `blocks` is `None` (otherwise a
-re-published item without a sidecar would never get one until the next launch).
+Call it at startup (after the first `FrameState::build`) and from Step 5.
 
-## Acceptance test (the case that flickers today)
+---
+
+## Step 7 — acceptance
+
+1. `cargo test --quiet` → 139 lib + 3 CLI; `cargo clippy --all-targets --features
+   "overlay,workshop-web,steamworks,bc7"` → clean; both `overlay` and `overlay,bc7`
+   builds warning-free.
+2. **Same geometry** (regression): run a copy of `bochi455.apng`, `touch` it →
+   `reloaded in place: 27 frame(s) 136x132`, PID unchanged.
+3. **Geometry change** (the new case): while it runs, `cp <workshop>/miku12.apng
+   /tmp/hot.apng` (512²×27 → 1500×1125×64) → expect
+   `rebuilt frames: 64 frame(s) 1440x1080` (cropped/fitted), **same PID**, no
+   `restored instance` line, surface resized. Then swap back to the 512² file and
+   expect the same in the other direction.
+4. `anima-overlay-ctl --instance /tmp/hot.apng scale 50` / `rotate 90` / `quit` still
+   work after a rebuild.
+
+## Step 8 — commit
 
 ```bash
-cp ~/projects/AnimaEngine/bochi455.apng /tmp/hot.apng            # 512² x 27
-./target/release/anima-overlay /tmp/hot.apng &
-# swap in a different geometry while it runs:
-cp <workshop>/miku12.apng /tmp/hot.apng                          # 1500×1125 x 64
+cargo fmt
+git add -A && git commit -F - <<'EOF'
+Rebuild the frame texture in place on a geometry change
+
+… (state the verification numbers from Step 7) …
+EOF
 ```
 
-Expect: `rebuilt frames: 64 frame(s) 1500x1125` (or the cropped size), the **same
-PID**, no `restored instance` line, and the surface resized. Then swap back to a
-smaller animation to prove it works in both directions.
+---
 
-## Risks to watch
+## Checklist of the traps
 
-- Recreating the bind group on every rebuild is required — a stale one samples the old
-  texture (invisible or garbage).
-- `state.surface_size` is refreshed at the top of each iteration from `config`, so the
-  hit-test/region code needs no extra change once `config` updates.
-- `fit_to_output` + `reapply_clamp` must run *after* `state.native_size` changes,
-  otherwise the overlay can hang off-screen after growing.
-- The region throttle uses `applied_rects`; clearing it (as the reload does) forces a
-  rebuild from the new animation.
+- **New bind group per rebuild** — a stale one samples the old texture (garbage or
+  nothing).
+- **`fit_to_output` + `reapply_clamp` after `native_size` changes**, otherwise a
+  larger animation can hang off-screen.
+- **`last_presented = None` and `uploaded_layer0 = 0`** after a rebuild, or a static
+  frame may never be presented and a JIT layer may be skipped.
+- **Encoder re-spawn** when the new `blocks` is `None`, or the item never gets a BC7
+  sidecar until the next launch.
+- `state.surface_size` is refreshed from `config` at the top of each iteration, so the
+  hit-test and region code need nothing extra.
