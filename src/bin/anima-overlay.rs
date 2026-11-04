@@ -1002,6 +1002,9 @@ struct Loaded {
     /// Where the visible art started inside the author's canvas; `(0, 0)` when the
     /// animation was used as-is.
     crop: (u32, u32),
+    /// Decode limits this load used; recorded in the sidecar when encoding (the
+    /// encode bakes them in, so a different setting must re-encode).
+    limits: DecodeLimits,
 }
 
 /// Crop the author's transparent padding away, reporting where the art started.
@@ -1031,47 +1034,69 @@ fn crop_to_ink(animation: Animation) -> (Animation, (u32, u32)) {
 /// Load an animation (and any cached BC7 blocks), using the frame cache so a file
 /// is decoded only once.
 fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Error>> {
+    let limits = DecodeLimits::from_env();
     let Some(path) = path else {
         return Ok(Loaded {
             animation: Arc::new(test_animation()),
             blocks: None,
             crop: (0, 0),
+            limits,
         });
     };
 
-    let limits = DecodeLimits::from_env();
     let cache = FrameCache::user_default();
+    let stale = cache.clean_stale_temps(std::time::Duration::from_secs(3600));
+    if stale > 0 {
+        eprintln!(
+            "[overlay] removed {:.1} MiB of interrupted cache writes",
+            stale as f64 / (1024.0 * 1024.0)
+        );
+    }
 
     // With `bc7` the blocks are the cached format: rebuild the RGBA that
     // hit-testing and regions need from them, instead of keeping a second copy of
     // the frames on disk.
     #[cfg(feature = "bc7")]
-    if let Some(blocks) = cache.read_blocks(path)
-        && let Ok(animation) = anima_engine_rs::bc7::animation_from_blocks(
-            blocks.width,
-            blocks.height,
-            &blocks.delays,
-            &blocks.data,
-        )
     {
-        let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
-        // The blocks already hold the cropped art and the sidecar remembers where
-        // the crop started, so saved canvas positions keep working and no rescan
-        // is needed.
-        let crop = blocks.crop;
-        eprintln!(
-            "[overlay] bc7 cache hit: {} frame(s), {}x{}, {:.1} MiB blocks{}",
-            animation.frame_count(),
-            animation.width,
-            animation.height,
-            blocks.data.len() as f64 / (1024.0 * 1024.0),
-            report.note()
-        );
-        return Ok(Loaded {
-            animation: Arc::new(animation),
-            blocks: Some(blocks),
-            crop,
-        });
+        let cached = cache.read_blocks(path);
+        // The encode bakes the decode limits in, so a sidecar from a different
+        // setting is dropped and re-encoded instead of silently reused.
+        if let Some(blocks) = cached.as_ref().filter(|blocks| blocks.limits == limits)
+            && let Ok(animation) = anima_engine_rs::bc7::animation_from_blocks(
+                blocks.width,
+                blocks.height,
+                &blocks.delays,
+                &blocks.data,
+            )
+        {
+            let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
+            // The blocks already hold the cropped art and the sidecar remembers where
+            // the crop started, so saved canvas positions keep working and no rescan
+            // is needed.
+            let crop = blocks.crop;
+            eprintln!(
+                "[overlay] bc7 cache hit: {} frame(s), {}x{}, {:.1} MiB blocks{}",
+                animation.frame_count(),
+                animation.width,
+                animation.height,
+                blocks.data.len() as f64 / (1024.0 * 1024.0),
+                report.note()
+            );
+            return Ok(Loaded {
+                animation: Arc::new(animation),
+                blocks: Some(blocks.clone()),
+                crop,
+                limits,
+            });
+        }
+        if cached.is_some_and(|blocks| blocks.limits != limits) {
+            eprintln!(
+                "[overlay] bc7 sidecar was encoded with different decode limits; re-encoding"
+            );
+            if let Ok(blocks_path) = cache.blocks_path(path) {
+                let _ = std::fs::remove_file(blocks_path);
+            }
+        }
     }
 
     if let Some(animation) = cache.read(path) {
@@ -1094,6 +1119,7 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
             animation: Arc::new(animation),
             blocks,
             crop,
+            limits,
         });
     }
 
@@ -1138,6 +1164,7 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
         animation,
         blocks,
         crop,
+        limits,
     })
 }
 
@@ -1921,6 +1948,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         animation,
         blocks,
         crop,
+        limits: decode_limits,
     } = load_animation(path.as_deref())?;
     let frame_count = animation.frames.len();
     if frame_count == 0 {
@@ -2319,6 +2347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 count: frames.frames.len(),
                 uber_level: params.uber_level,
                 crop,
+                limits: decode_limits,
                 delays: frames.frames.iter().map(|frame| frame.delay_ms).collect(),
                 data,
             };

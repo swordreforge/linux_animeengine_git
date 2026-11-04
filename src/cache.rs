@@ -22,11 +22,11 @@
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
-use crate::anim::{Animation, Frame};
+use crate::anim::{Animation, DecodeLimits, Frame};
 use crate::paths::{ensure_dir, user_data_dir};
 use crate::{Error, Result};
 
@@ -170,6 +170,48 @@ impl FrameCache {
         for entry in self.entries() {
             let _ = fs::remove_file(entry.path);
         }
+        self.clean_stale_temps(Duration::ZERO);
+    }
+
+    /// Delete `.tmp` files left behind by an interrupted write — nothing else
+    /// counts them, so they would otherwise linger forever. Files younger than
+    /// `min_age` are kept so a concurrent writer's temp survives. Returns the
+    /// bytes removed.
+    pub fn clean_stale_temps(&self, min_age: Duration) -> u64 {
+        let Ok(dir) = fs::read_dir(&self.root) else {
+            return 0;
+        };
+        let now = SystemTime::now();
+        let mut removed = 0;
+
+        for entry in dir.flatten() {
+            let path = entry.path();
+            let is_temp = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.') && name.ends_with(".tmp"));
+            if !is_temp {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let age = meta
+                .modified()
+                .ok()
+                .and_then(|stamp| now.duration_since(stamp).ok())
+                .unwrap_or_default();
+            if age < min_age {
+                continue;
+            }
+            if fs::remove_file(&path).is_ok() {
+                removed += meta.len();
+            }
+        }
+        removed
     }
 
     fn entries(&self) -> Vec<Entry> {
@@ -218,6 +260,10 @@ pub struct Blocks {
     pub crop: (u32, u32),
     /// Per-frame display delay, so an animation cached as BC7 keeps its timing.
     pub delays: Vec<u32>,
+    /// Decode limits the blocks were encoded with. The encode bakes the limits in
+    /// (frames dropped by decimation are gone), so a load with different limits
+    /// must re-encode rather than silently reuse them.
+    pub limits: DecodeLimits,
     pub data: Vec<u8>,
 }
 
@@ -354,8 +400,14 @@ fn read_u32(reader: &mut impl Read) -> Result<u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
+fn read_u64(reader: &mut impl Read) -> Result<u64> {
+    let mut bytes = [0u8; 8];
+    reader.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
 const BLOCKS_MAGIC: &[u8; 8] = b"ANIMBC7\0";
-const BLOCKS_VERSION: u32 = 3;
+const BLOCKS_VERSION: u32 = 4;
 
 fn read_blocks(path: &Path) -> Result<Blocks> {
     let mut file = BufReader::new(File::open(path)?);
@@ -374,6 +426,10 @@ fn read_blocks(path: &Path) -> Result<Blocks> {
     let count = read_u32(&mut file)? as usize;
     let uber_level = read_u32(&mut file)?;
     let crop = (read_u32(&mut file)?, read_u32(&mut file)?);
+    let limits = DecodeLimits {
+        max_bytes: read_u64(&mut file)?,
+        max_frames: read_u64(&mut file)? as usize,
+    };
     let mut delays = Vec::with_capacity(count.min(1 << 16));
     for _ in 0..count {
         delays.push(read_u32(&mut file)?);
@@ -387,6 +443,7 @@ fn read_blocks(path: &Path) -> Result<Blocks> {
         count,
         uber_level,
         crop,
+        limits,
         delays,
         data,
     };
@@ -420,6 +477,8 @@ fn write_blocks(path: &Path, blocks: &Blocks) -> Result<()> {
         file.write_all(&blocks.uber_level.to_le_bytes())?;
         file.write_all(&blocks.crop.0.to_le_bytes())?;
         file.write_all(&blocks.crop.1.to_le_bytes())?;
+        file.write_all(&blocks.limits.max_bytes.to_le_bytes())?;
+        file.write_all(&(blocks.limits.max_frames as u64).to_le_bytes())?;
         for delay_ms in &blocks.delays {
             file.write_all(&delay_ms.to_le_bytes())?;
         }
@@ -558,6 +617,10 @@ mod tests {
             count: 2,
             uber_level: 4,
             crop: (7, 9),
+            limits: DecodeLimits {
+                max_bytes: 1234,
+                max_frames: 7,
+            },
             delays: vec![40, 60],
             data: vec![7u8; 64],
         };
@@ -571,6 +634,8 @@ mod tests {
         assert_eq!(loaded.frame_bytes(), 32);
         assert_eq!(loaded.delays, vec![40, 60]);
         assert_eq!(loaded.crop, (7, 9));
+        assert_eq!(loaded.limits.max_bytes, 1234);
+        assert_eq!(loaded.limits.max_frames, 7);
     }
 
     #[test]
@@ -584,6 +649,7 @@ mod tests {
             count: 3,
             uber_level: 4,
             crop: (0, 0),
+            limits: DecodeLimits::default(),
             delays: vec![10, 10, 10],
             data: vec![0u8; 96],
         };
@@ -601,6 +667,36 @@ mod tests {
             ..blocks
         };
         assert!(cache.write_blocks(&src, &too_short).is_err());
+    }
+
+    #[test]
+    fn stale_temps_are_cleaned_but_fresh_ones_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FrameCache::new(dir.path().join("cache"));
+        fs::create_dir_all(cache.root()).unwrap();
+        let stale = cache.root().join(".123.tmp");
+        let stale_blocks = cache.root().join(".123.bc7.tmp");
+        let fresh = cache.root().join(".456.bc7.tmp");
+        fs::write(&stale, b"stale").unwrap();
+        fs::write(&stale_blocks, b"stale blocks").unwrap();
+        fs::write(&fresh, b"fresh").unwrap();
+        for path in [&stale, &stale_blocks] {
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(3600))
+                .unwrap();
+        }
+        // A real entry must never be touched.
+        let src = source(dir.path(), "clip.gif", b"data");
+        cache.write(&src, &two_frame_animation()).unwrap();
+
+        let removed = cache.clean_stale_temps(Duration::from_secs(60));
+        assert_eq!(removed, 5 + 12);
+        assert!(!stale.exists() && !stale_blocks.exists());
+        assert!(fresh.exists());
+        assert!(cache.read(&src).is_some());
     }
 
     #[test]

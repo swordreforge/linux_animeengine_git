@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **134** default (131 lib + 3 CLI); **139** with `bc7` (the `bc7`
+- `cargo test`: **135** default (132 lib + 3 CLI); **140** with `bc7` (the `bc7`
   feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -235,6 +235,11 @@ Interaction and control:
   by the round-trip above.
 - BC7 blocks are stored as `<key>.bc7.animacache`, so the LRU pass counts and
   clears them with the frames; a missing or malformed sidecar falls back to RGBA.
+- Cache robustness: a stale `.tmp` (1 MiB, backdated an hour) made the overlay log
+  `removed 1.0 MiB of interrupted cache writes` and disappear, while a real entry
+  survived; a sidecar written under `ANIMA_MAX_DECODE_MB=512` was refused on the
+  next run with `ANIMA_MAX_DECODE_MB=8` (`bc7 sidecar was encoded with different
+  decode limits; re-encoding`) and reused on the run after that.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
