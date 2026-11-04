@@ -672,7 +672,15 @@ search field with IME, and Workshop browse/search.
       It is read **once at boot**, so a wallpaper change shows up on the next launch —
       watching the file (notify) is the follow-up. The theme *type* is still `iced::Theme`, so no
       view signature changed.
-- [ ] Turning the theme type over is the real Material step. What is now **verified** about
+- [x] Step (1) of the theme switch: the noctalia palette now also parses into
+      `iced_material::ColorScheme` (`parse_color_scheme`) — the four quartets (colour/text/
+      container/container-text), the five surface-container tones, `on_surface_variant`, both
+      outline tones, and `shadow`/`scrim`. The inverse roles are not in the file, so they come
+      from swapping the surface pair rather than being invented. `palette_roles` is shared with
+      the iced palette, so there is one parser. The UI does not consume the scheme yet, which is
+      why this commit changes no behaviour; the test pins every role **and parses the live file**
+      when it exists.
+- [ ] Turning the theme type over is the remaining Material step. What is now **verified** about
       `iced_material` 0.14.2, which decides the order:
       - it implements iced's `Catalog` for `Theme` on `button`, `container`, `pick_list`,
         `scrollable` and `text` — so those keep their default styles and the "every text call
