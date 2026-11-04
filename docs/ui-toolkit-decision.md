@@ -70,7 +70,7 @@ render path.
   `Download` through SteamCMD on a detached thread; subscribe/unsubscribe handed to the
   Steam client via `steam://url/CommunityFilePage/<id>`; local removal restricted to our
   own SteamCMD root behind a confirmation.
-- Still to do: the overlay panel reads/writes control files on demand rather than
-  subscribing to their changes (so it needs the Refresh button to live-update); a search
-  field with IME; API-key browse/search; list-row thumbnails; and a window icon + desktop
-  entry (the packaging step already ships an `anima-overlay` entry, not yet a studio one).
+- Still to do: a search field with IME; API-key browse/search; list-row thumbnails; a
+  process-liveness check for the overlay panel (it lists control files); and a window
+  icon + desktop entry (the packaging step already ships an `anima-overlay` entry, not
+  yet a studio one).

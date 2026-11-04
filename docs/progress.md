@@ -461,10 +461,17 @@ Interaction and control:
       lock/unlock, click-through, ±10% scale, rotate 90°, flip H/V, reset, quit. A
       headless test asserts the discovery matches the control directory, and the CLI is
       interchangeable with the window by construction — they call the same builders.
-- [ ] Not yet: the panel reads and writes on demand (there is a Refresh button) instead
-      of subscribing to control-file changes, so it does not live-update; also a search
-      field with IME, API-key browse/search, a desktop entry for the window, and
-      list-row thumbnails once the library is big.
+- [x] The panel live-updates. A 1s `iced::time::every` subscription polls a fingerprint
+      of every control file plus `secondary_instances.json` (`path:mtime:size`) and
+      re-reads only when it moves. Note for anyone touching this: `iced::time::every`
+      needs iced's `tokio` feature — the default `thread-pool` backend ships no timer, so
+      without it the function does not exist. Verified live: 0 refreshes while idle, then
+      `touch`ing one control file logged `overlay panel refreshed: 11 instance(s)` —
+      exactly one reload. An overlay dragging or scaling itself writes its own control
+      file, so that shows up the same way.
+- [ ] Not yet: a search field with IME, API-key browse/search, a desktop entry for the
+      window, list-row thumbnails once the library is big, and a process-liveness check
+      (the panel lists control files, not running processes — a stale file still shows).
 
 ### Steam / Workshop
 

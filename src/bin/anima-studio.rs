@@ -32,12 +32,14 @@ use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher}
 use anima_engine_rs::workshop_web::WorkshopWeb;
 use iced::widget::button::{danger, primary, secondary, text as text_button};
 use iced::widget::{button, column, container, image, pick_list, row, scrollable, space, text};
-use iced::{Element, Length, Task};
+use iced::{Element, Length, Subscription, Task};
 
 const APP_TITLE: &str = "AnimaEngine";
 /// Fixed height of the preview slot, so items with different aspect ratios do not make
 /// everything below them jump.
 const PREVIEW_HEIGHT: f32 = 200.0;
+/// How often the overlay panel checks whether the control files moved.
+const OVERLAY_POLL_MS: u64 = 1000;
 /// `preview.*` names an author may have shipped inside the content folder.
 const LOCAL_PREVIEWS: &[&str] = &[
     "preview.png",
@@ -176,6 +178,37 @@ impl std::fmt::Display for InstanceLabel {
     }
 }
 
+/// A cheap fingerprint of everything the panel shows: each control file and the persisted
+/// instance list, as `path:mtime:size`. Comparing it is much cheaper than rebuilding the
+/// instance list every tick, and it also catches an overlay changing its own state — a
+/// drag or a scale writes that instance's control file.
+fn overlay_signature() -> String {
+    use std::fmt::Write as _;
+
+    fn stamp(path: &Path) -> Option<String> {
+        let meta = std::fs::metadata(path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        Some(format!("{}:{mtime}:{}", path.display(), meta.len()))
+    }
+
+    let mut parts: Vec<String> = ControlState::instances()
+        .iter()
+        .filter_map(|path| stamp(path))
+        .collect();
+    parts.extend(stamp(&SecondaryState::user_path()));
+    parts.sort();
+    let mut out = String::new();
+    for part in parts {
+        let _ = write!(out, "{part};");
+    }
+    out
+}
+
 /// Every control file on disk, labelled with the animation it belongs to when the
 /// persisted instance list knows that key.
 fn overlay_instances() -> Vec<OverlayInstance> {
@@ -216,6 +249,7 @@ enum Message {
     RefreshOverlay,
     SelectOverlay(String),
     Overlay(OverlayAction),
+    PollOverlay,
     Quit,
 }
 
@@ -303,6 +337,8 @@ struct Studio {
     steamcmd_root: Option<PathBuf>,
     overlay: Vec<OverlayInstance>,
     overlay_selected: Option<usize>,
+    /// Fingerprint of the control files as of the last read (see [`overlay_signature`]).
+    overlay_signature: String,
 }
 
 impl Studio {
@@ -318,6 +354,7 @@ impl Studio {
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
             overlay_selected: None,
+            overlay_signature: String::new(),
         };
         studio.refresh();
         studio.reload_overlay();
@@ -373,6 +410,22 @@ impl Studio {
             } else {
                 Some(0)
             });
+        self.overlay_signature = overlay_signature();
+    }
+
+    /// One poll tick: re-read only when the fingerprint moved, so an overlay that changes
+    /// its own state (drag, scale, tray) shows up here without rebuilding every second.
+    fn poll_overlay(&mut self) {
+        let signature = overlay_signature();
+        if signature == self.overlay_signature {
+            return;
+        }
+        self.overlay_signature = signature;
+        self.reload_overlay();
+        eprintln!(
+            "[studio] overlay panel refreshed: {} instance(s)",
+            self.overlay.len()
+        );
     }
 
     /// Write one control file, exactly as `anima-overlay-ctl` would: load, change a
@@ -508,6 +561,7 @@ impl Studio {
                     .position(|instance| instance.label == label);
             }
             Message::Overlay(action) => self.apply_overlay(action),
+            Message::PollOverlay => self.poll_overlay(),
             Message::Quit => return iced::exit(),
         }
         Task::none()
@@ -816,6 +870,13 @@ impl Studio {
         panel.into()
     }
 
+    /// The panel follows the control files on its own; the Refresh buttons are for
+    /// impatience rather than correctness.
+    fn subscription(&self) -> Subscription<Message> {
+        iced::time::every(std::time::Duration::from_millis(OVERLAY_POLL_MS))
+            .map(|_| Message::PollOverlay)
+    }
+
     /// The four primary languages, labelled with their native names.
     fn languages(&self) -> Vec<Language> {
         PRIMARY_LANGUAGES
@@ -834,6 +895,7 @@ fn main() -> iced::Result {
             min_size: Some(iced::Size::new(760.0, 520.0)),
             ..Default::default()
         })
+        .subscription(Studio::subscription)
         .run()
 }
 
@@ -872,6 +934,17 @@ mod tests {
             assert!(!instance.label.is_empty());
         }
         eprintln!("[studio] {} overlay control file(s)", instances.len());
+    }
+
+    /// The fingerprint must be stable while nothing changes, and cover the control dir.
+    #[test]
+    fn overlay_signature_is_stable_and_covers_the_control_dir() {
+        let first = overlay_signature();
+        assert_eq!(first, overlay_signature());
+        if !ControlState::instances().is_empty() {
+            assert!(first.contains("overlay_control"));
+            assert!(first.contains(".json"));
+        }
     }
 
     /// Opt-in (hits the network): `cargo test --features studio --bin anima-studio --
