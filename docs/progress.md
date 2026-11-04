@@ -259,6 +259,15 @@ Interaction and control:
   (`spawn-at-startup "<prefix>/bin/anima-overlay"`); `--uninstall` left zero
   binaries behind; after the real run all four binaries resolve on `PATH` and the
   catalog is the 4-language file (199,078 bytes).
+- Flatpak: built with `org.flatpak.Builder` (user install; a user `flathub` remote
+  was added first because `--user` installs cannot see the system remote) and
+  installed as `io.github.swordreforge.AnimaEngine` 0.1.0. Inside the sandbox
+  `flatpak run --command=anima-overlay-ctl … status` works and the data dir is
+  `~/.var/app/io.github.swordreforge.AnimaEngine/data/AnimaEngine/…`. The overlay
+  run fails at
+  `Error: "binding zwlr_layer_shell_v1: the requested global was not found in the registry"`
+  while the same binary on the host logs `gpu … | bc7 blocks: supported` and
+  renders — so layer-shell is not exposed to the sandbox in this setup.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -464,17 +473,20 @@ Interaction and control:
       those rules `zh-CN`/`zh-TW` are complete; `ja` was missing four real strings,
       which `packaging/i18n-additions.json` supplies and `anima-i18n merge` applies.
       After the merge all four primary languages verify clean (exit 0)
-- [ ] AppImage / Flatpak: `packaging/flatpak/` has the manifest and a README with
-      the access decisions (wayland + dri, network for SteamCMD, tray talk-name,
-      read-only `~/.local/share/Steam`/`~/.steam`/`home`, and the consequence that
-      `anima-overlay-ctl` must run via `flatpak run` because the sandbox has its own
-      data dir). **Not built here**: this machine lacks `flatpak-builder` and
-      `org.freedesktop.Sdk//26.08`, so the manifest is reviewed-by-inspection only.
-      A Flatpak also cannot reach the host `steamcmd`, so the decision is to keep
-      **downloads on the host**: the manifest grants no network and mounts
-      `~/.local/share/AnimaEngine:ro` (our SteamCMD download root), and
-      `anima-workshop list/show/play` now discover that root as well — it used to
-      scan Steam libraries only, so host-side downloads were invisible
+- [x] Flatpak: built and installed user-level (`org.flatpak.Builder` +
+      `org.freedesktop.Sdk//26.08`, no sudo needed once a user `flathub` remote
+      exists). `packaging/flatpak/stage.sh` stages the four binaries plus the
+      desktop assets (19 MB) so the multi-gigabyte `target/` never enters the build
+      sandbox, and the manifest installs that staging tree. The sandboxed CLI works
+      (`flatpak run --command=anima-overlay-ctl … status` reads the sandbox control
+      file).
+- [ ] **The overlay itself cannot run inside the Flatpak here**: the sandboxed
+      client is not offered `zwlr_layer_shell_v1` — the app exits with
+      `binding zwlr_layer_shell_v1: the requested global was not found in the
+      registry`, while the same binary on the host binds it fine. So keep the
+      overlay on the portable install and treat the Flatpak as CLI-only until this
+      is understood (niri/libwayland/flatpak-version specifics). The manifest stays
+      as the basis for that work
 
 ### Main UI (optional)
 

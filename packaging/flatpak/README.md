@@ -1,9 +1,23 @@
 # Flatpak
 
-Status: **manifest written, not built here.** This machine has Flatpak 1.18.4 and
-`org.freedesktop.Platform//26.08`, but **not** `flatpak-builder` and **not**
-`org.freedesktop.Sdk//26.08`, so nothing below has been executed. Treat the
-manifest as reviewed-by-inspection, not verified.
+Status: **built and installed, but the overlay does not run in the sandbox here.**
+`org.flatpak.Builder` and `org.freedesktop.Sdk//26.08` were installed user-level
+(no sudo needed; a user `flathub` remote was required because `--user` installs
+cannot see the system remote), and the app builds and installs as
+`io.github.swordreforge.AnimaEngine` 0.1.0. The sandboxed CLI works
+(`flatpak run --command=anima-overlay-ctl … status`).
+
+The overlay itself exits with:
+
+```
+Error: "binding zwlr_layer_shell_v1: the requested global was not found in the registry"
+```
+
+i.e. the sandboxed client is **not offered `zwlr_layer_shell_v1`**, while the same
+binary on the host binds it and renders. Until that is understood, run the overlay
+from the portable install and keep the Flatpak for the CLI tools.
+
+Build steps (already executed here, kept for reference): see the previous section.
 
 ## Build
 
