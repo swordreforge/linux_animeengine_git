@@ -1021,10 +1021,21 @@ search field with IME, and Workshop browse/search.
       motion toggle's labels, and the key's "stored"/"not set" state — all English, some of them the only
       English left on their screen. They go through `tr()` now, in four languages: **834 source strings**,
       all four primary languages complete.
-      Deliberately still English, and this is a choice rather than an oversight: the **diagnostics block**
-      (its whole purpose is being pasted into a bug report — a translated key list would be less useful,
-      not more) and the **status-line notes** (about twenty of them, written at the point they describe;
-      localising those deserves its own pass instead of being swept in here).
+      Deliberately still English: the **diagnostics block**, whose whole purpose is being pasted into a bug
+      report — a translated key list would be less useful, not more. The status-line notes were left for
+      their own pass at the time; that pass is the entry below.
+- [x] The status line is localised, and the line the user caught was a left-over from the arming design:
+      `ArmRemove` still wrote *"remove the local copy of …? press again to confirm"* — a prompt for a
+      second press on the same button, which the warning dialog replaced — and `CancelRemove` did not
+      touch the note, so it stayed put after the warning was dismissed. It says "confirm the removal in
+      the warning" now, and cancelling says "cancelled".
+      Beyond that, every note goes through `tr()`: the two dozen messages about downloads, overlays,
+      staging, the shepherd registry and the Workshop page are catalogued — **861 source strings**, all
+      four primary languages complete. Where a sentence carries values, the catalogue holds the whole
+      sentence with `{}` placeholders and a small `fill()` helper substitutes them, because languages
+      reorder sentences and assembling them from fragments would have been wrong even where it compiled.
+      Still English on purpose: the diagnostics block (its job is pasting), and one error detail raised in
+      a worker function that has no `i18n` in reach. Both are noted where they live.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

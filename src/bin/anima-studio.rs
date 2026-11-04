@@ -369,6 +369,17 @@ fn toggle<'a>(
         .into()
 }
 
+/// Fill a translated template: `{}` in the catalog entry, the values here. Languages reorder
+/// sentences, so the template has to come from the catalog whole rather than being assembled from
+/// fragments.
+fn fill(template: &str, values: &[String]) -> String {
+    let mut out = template.to_string();
+    for value in values {
+        out = out.replacen("{}", value, 1);
+    }
+    out
+}
+
 fn divider<'a>(
     width: Length,
     height: Length,
@@ -1558,16 +1569,25 @@ impl Studio {
         };
         if !instance.running {
             self.note = format!(
-                "{} is not running — start it with Play, or `anima-shepherd enable`",
-                instance.label
+                "{} · {}",
+                instance.label,
+                self.i18n
+                    .tr("not running — start it with Play, or anima-shepherd enable")
             );
             return;
         }
         let label = instance.label.clone();
         let next = apply_action(instance.state.clone(), action);
         self.note = match next.save(&control) {
-            Ok(()) => format!("{label}: generation {}", next.generation),
-            Err(error) => format!("could not write the control file: {error}"),
+            Ok(()) => format!(
+                "{label}: {} {}",
+                self.i18n.tr("generation"),
+                next.generation
+            ),
+            Err(error) => format!(
+                "{}: {error}",
+                self.i18n.tr("could not write the control file")
+            ),
         };
         self.reload_overlay();
     }
@@ -1582,14 +1602,17 @@ impl Studio {
             return;
         };
         if !instance.running {
-            self.note = format!("{} is not running", instance.label);
+            self.note = format!("{} · {}", instance.label, self.i18n.tr("not running"));
             return;
         }
         let label = instance.label.clone();
         let next = instance.state.clone().set_scale_percent(percent);
         self.note = match next.save(&control) {
             Ok(()) => format!("{label}: {}%", next.scale_percent),
-            Err(error) => format!("could not write the control file: {error}"),
+            Err(error) => format!(
+                "{}: {error}",
+                self.i18n.tr("could not write the control file")
+            ),
         };
         self.reload_overlay();
     }
@@ -1644,9 +1667,9 @@ impl Studio {
                     Ok(()) => {
                         // Never leave the key sitting in a text field.
                         self.key_draft.clear();
-                        "Steam API key saved".to_string()
+                        self.i18n.tr("Steam API key saved")
                     }
-                    Err(error) => format!("could not save the key: {error}"),
+                    Err(error) => format!("{}: {error}", self.i18n.tr("could not save the key")),
                 };
             }
             Message::ToggleReduceMotion => {
@@ -1656,15 +1679,20 @@ impl Studio {
                 let mut stored = StudioSettings::load(&path);
                 stored.reduce_motion = !stored.reduce_motion;
                 self.note = match stored.save(&path) {
-                    Ok(()) => "motion preference saved".to_string(),
-                    Err(error) => format!("could not save the motion preference: {error}"),
+                    Ok(()) => self.i18n.tr("motion preference saved"),
+                    Err(error) => format!(
+                        "{}: {error}",
+                        self.i18n.tr("could not save the motion preference")
+                    ),
                 };
                 // Re-resolve instead of flipping in memory: the environment may override the file, and
                 // the UI must not claim a change that will not happen.
                 self.motion = motion_enabled();
                 if std::env::var_os("ANIMA_NO_MOTION").is_some() {
-                    self.note
-                        .push_str(" — ANIMA_NO_MOTION is set and overrides it");
+                    self.note.push_str(&format!(
+                        " — {}",
+                        self.i18n.tr("ANIMA_NO_MOTION is set and overrides it")
+                    ));
                 }
             }
             Message::CopyDiagnostics => {
@@ -1672,7 +1700,7 @@ impl Studio {
             }
             Message::Language(code) => {
                 if let Err(error) = self.i18n.set_language(&code) {
-                    self.note = format!("language not saved: {error}");
+                    self.note = format!("{}: {error}", self.i18n.tr("language not saved"));
                 }
             }
             Message::Refresh => {
@@ -1719,12 +1747,14 @@ impl Studio {
                 // Steam counts its matches, so the pager can say how many pages there are instead
                 // of making the user walk to the end to find out.
                 self.remote_note = match loaded.rows.len() {
-                    0 => "no Workshop results".to_string(),
-                    _ if loaded.total > 0 => format!(
-                        "about {} Workshop result(s) · page {}/{}",
-                        loaded.total,
-                        page,
-                        page_count(loaded.total, REMOTE_PER_PAGE)
+                    0 => self.i18n.tr("no Workshop results"),
+                    _ if loaded.total > 0 => fill(
+                        &self.i18n.tr("about {} Workshop result(s) · page {}/{}"),
+                        &[
+                            loaded.total.to_string(),
+                            page.to_string(),
+                            page_count(loaded.total, REMOTE_PER_PAGE).to_string(),
+                        ],
                     ),
                     count => format!("{count} Workshop result(s)"),
                 };
@@ -1775,14 +1805,16 @@ impl Studio {
                 );
             }
             Message::CopyPath(path) => {
-                self.note = format!("copied {path}");
+                self.note = format!("{}: {path}", self.i18n.tr("copied"));
                 return iced::clipboard::write(path);
             }
             Message::Download(id) => {
                 if self.steamcmd_root.is_none() {
-                    self.note = "steamcmd not found (set STEAMCMD / STEAMCMD_DIR)".to_string();
+                    self.note = self
+                        .i18n
+                        .tr("steamcmd not found (set STEAMCMD / STEAMCMD_DIR)");
                 } else {
-                    self.note = format!("downloading {id} with SteamCMD…");
+                    self.note = format!("{} {id}", self.i18n.tr("downloading with SteamCMD…"));
                     // Detached on purpose: a download takes minutes and the window must
                     // stay responsive. `SteamCmd` is built inside the thread so nothing
                     // borrows the UI state.
@@ -1801,12 +1833,12 @@ impl Studio {
                 let url = format!("steam://url/CommunityFilePage/{id}");
                 self.note = match std::process::Command::new("xdg-open").arg(&url).spawn() {
                     Ok(_) => format!("opened {url} — subscribe/unsubscribe there"),
-                    Err(error) => format!("could not open {url}: {error}"),
+                    Err(error) => format!("{} {url}: {error}", self.i18n.tr("could not open")),
                 };
             }
             Message::ArmRemove(id) => {
                 self.pending_remove = Some(id);
-                self.note = format!("remove the local copy of {id}? press again to confirm");
+                self.note = self.i18n.tr("confirm the removal in the warning");
             }
             Message::Remove(id) => {
                 self.pending_remove = None;
@@ -1827,16 +1859,16 @@ impl Studio {
                     .as_ref()
                     .is_some_and(|root| item.path.starts_with(root));
                 if !ours {
-                    self.note = "only our own SteamCMD downloads can be removed here; \
-                                 unsubscribe in Steam"
-                        .to_string();
+                    self.note = self.i18n.tr(
+                        "only our own SteamCMD downloads can be removed here; unsubscribe in Steam",
+                    );
                 } else {
                     let path = item.path.clone();
                     self.note = match std::fs::remove_dir_all(&path) {
                         Ok(()) => {
                             self.thumbs.remove(&id);
                             self.meta.remove(&id);
-                            format!("removed the local copy of {id}")
+                            format!("{} {id}", self.i18n.tr("removed the local copy of"))
                         }
                         Err(error) => format!("remove failed: {error}"),
                     };
@@ -1845,7 +1877,10 @@ impl Studio {
             }
             Message::OverlayOn(control, action) => self.apply_overlay_to(control, action),
             Message::SetScale(control, percent) => self.set_scale_on(control, percent),
-            Message::CancelRemove => self.pending_remove = None,
+            Message::CancelRemove => {
+                self.pending_remove = None;
+                self.note = self.i18n.tr("cancelled");
+            }
             Message::ScaleDraft(control, text) => {
                 let cleaned: String = text.chars().filter(char::is_ascii_digit).take(3).collect();
                 self.scale_draft = Some((control, cleaned));
@@ -2723,7 +2758,7 @@ impl Studio {
             return;
         };
         if matches!(action, OverlayAction::Quit) {
-            self.note = format!("{} is not running", file_name(&asset));
+            self.note = format!("{} · {}", file_name(&asset), self.i18n.tr("not running"));
             return;
         }
         let key = anima_engine_rs::paths::canonical_path(&asset.to_string_lossy());
@@ -2741,7 +2776,10 @@ impl Studio {
                 file_name(&asset),
                 next.generation
             ),
-            Err(error) => format!("could not stage the parameters: {error}"),
+            Err(error) => format!(
+                "{}: {error}",
+                self.i18n.tr("could not stage the parameters")
+            ),
         };
         self.staged = Some((asset, next));
     }
@@ -2926,7 +2964,10 @@ impl Studio {
             let next = ControlState::load(&control).set_hidden(false);
             self.note = match next.save(&control) {
                 Ok(()) => format!("showing {} on the overlay", file_name(asset)),
-                Err(error) => format!("could not write the control file: {error}"),
+                Err(error) => format!(
+                    "{}: {error}",
+                    self.i18n.tr("could not write the control file")
+                ),
             };
             self.reload_overlay();
             return;
@@ -2939,8 +2980,15 @@ impl Studio {
             let mut registry = anima_engine_rs::shepherd::Registry::load(&registry_path);
             self.note = if registry.enable(&asset.to_string_lossy()) {
                 match registry.save(&registry_path) {
-                    Ok(()) => format!("handed {} to the shepherd", file_name(asset)),
-                    Err(error) => format!("could not update the shepherd registry: {error}"),
+                    Ok(()) => format!(
+                        "{} {}",
+                        self.i18n.tr("handed to the shepherd"),
+                        file_name(asset)
+                    ),
+                    Err(error) => format!(
+                        "{}: {error}",
+                        self.i18n.tr("could not update the shepherd registry")
+                    ),
                 }
             } else {
                 format!("{} is already wanted by the shepherd", file_name(asset))
@@ -2948,8 +2996,9 @@ impl Studio {
             return;
         }
         let Some(binary) = find_overlay_binary() else {
-            self.note = "anima-overlay not found — build or install it first (--features overlay)"
-                .to_string();
+            self.note = self
+                .i18n
+                .tr("anima-overlay not found — build or install it first (--features overlay)");
             return;
         };
         self.note = match std::process::Command::new(&binary).arg(asset).spawn() {
@@ -2957,9 +3006,17 @@ impl Studio {
                 // Keep the handle so `poll_overlay` can wait for it: a killed overlay that
                 // nobody reaps stays a zombie in `/proc`, where it still looks alive.
                 self.children.push(child);
-                format!("started an overlay for {}", file_name(asset))
+                format!(
+                    "{} {}",
+                    self.i18n.tr("started an overlay for"),
+                    file_name(asset)
+                )
             }
-            Err(error) => format!("could not start {}: {error}", binary.display()),
+            Err(error) => format!(
+                "{} {}: {error}",
+                self.i18n.tr("could not start"),
+                binary.display()
+            ),
         };
     }
 
