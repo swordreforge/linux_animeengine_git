@@ -149,8 +149,8 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **129** default (126 lib + 3 CLI), **132** with
-  `workshop-web,steamworks`.
+- `cargo test`: **129** default (126 lib + 3 CLI), **133** with
+  `workshop-web,steamworks,bc7` (the `bc7` feature needs a C++ toolchain).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
@@ -198,6 +198,13 @@ Interaction and control:
   write 0.63 s / read 0.23 s / 46.3 MiB vs PNG-in-ZIP write 1.66 s / read 0.57 s
   / 43.5 MiB. Version 2 (PNG) entries still on disk were 192 MiB and 144 MiB for
   two large animations; they are orphaned by the key change and LRU-evicted.
+- BC7 quality (uber 4, linear weights, `examples/bc7_bench.rs`): bochi455 6.8 MiB
+  at 71.6 dB colour / 69.2 dB alpha (max alpha error 4); miku12 103.3 MiB at
+  45.8 dB colour / 44.5 dB alpha (max alpha error 133), 2.7 fps — the average is
+  visibly lossless, the worst silhouette pixels are not, which is why the CPU
+  alpha stays authoritative for hit-testing and regions.
+- Only a **degenerate** all-transparent 4x4 input was rejected by the encoder in
+  testing (real antialiased sprites round-trip); noted for investigation.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -346,7 +353,16 @@ Interaction and control:
       0.23 s at 46.3 MiB versus PNG write 1.66 s / read 0.57 s at 43.5 MiB — about
       2.5x faster for 6% more bytes (`examples/cache_bench.rs`); PNG encoding was
       the reason a big animation took minutes to cache
-- [ ] Skip caching or clean stale `.tmp` files for interrupted background writes
+- [x] BC7 block compression (quality first) through the vendored `bc7enc_rdo`,
+      behind the optional `bc7` feature (needs a C++ toolchain). At uber level 4:
+      `bochi455.apng` (512², 27 frames) 6.8 MiB, **71.6 dB colour / 69.2 dB alpha**
+      PSNR, max alpha error 4; `miku12.apng` (1500x1125, 64 frames) 103.3 MiB
+      (25.1% of raw), 24 s (2.7 fps), **45.8 dB colour / 44.5 dB alpha**, max alpha
+      error 133. Note BC7 (8 bpp) is ~2.2x **larger** than the zstd cache (46 MiB
+      for miku12) — its win is VRAM and direct upload, not disk
+- [ ] Wire BC7 into the renderer: request `TEXTURE_COMPRESSION_BC`, upload
+      `Bc7RgbaUnorm` array textures, and keep CPU alpha for hit-testing (the alpha
+      masks must stay bounded like the decode itself)
 - [ ] Ship the i18n catalog as a data file; verify all locales
 - [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
 
@@ -399,6 +415,8 @@ Interaction and control:
 ```bash
 cargo test                                        # pure logic (129 tests)
 cargo test --features "workshop-web,steamworks"   # + Steam adapters (132)
+cargo test --features bc7                         # + BC7 encode/decode (133)
+cargo run --release --features bc7 --example bc7_bench -- <animation>
 cargo run --release --example cache_bench -- <animation>   # zstd vs PNG cache
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
@@ -439,4 +457,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray +
   menu) → `anima-workshop play` (download → sync → overlay) → workshop upload
   (`workshop.vdf` + `workshop_build_item`) → bounded decode + frame-timing
-  fidelity → zstd frame cache (PNG dropped).
+  fidelity → zstd frame cache (PNG dropped) → vendored bc7enc_rdo BC7 encoder
+  (`bc7` feature, off by default; renderer wiring is the next step).

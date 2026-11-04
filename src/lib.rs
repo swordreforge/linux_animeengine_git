@@ -6,6 +6,8 @@
 //! on any platform. The always-on-top window/render layer is added later.
 
 pub mod anim;
+#[cfg(feature = "bc7")]
+pub mod bc7;
 pub mod cache;
 pub mod control;
 pub mod error;

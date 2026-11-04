@@ -29,6 +29,7 @@ version = "0.1.0"
 dependencies = [
  "ashpd",
  "bytemuck",
+ "cc",
  "futures-util",
  "gif 0.13.3",
  "image",

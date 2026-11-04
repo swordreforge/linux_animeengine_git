@@ -11,6 +11,9 @@ default = []
 workshop-web = ["dep:reqwest"]
 # Enables runtime `libsteam_api` binding (`steam::flat`); no build-time SDK.
 steamworks = ["dep:libloading"]
+# Enables BC7 block compression via the vendored bc7enc_rdo (needs a C++
+# toolchain at build time). Quality-first alternative to the lossless cache.
+bc7 = []
 # Enables the `anima-overlay` binary (Wayland layer-shell + wgpu).
 overlay = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:pollster", "dep:bytemuck", "dep:wayland-client", "dep:ksni", "dep:ashpd", "dep:futures-util", "dep:tokio"]
 
@@ -53,3 +56,11 @@ tempfile = "3"
 gif = "0.13"
 png = "0.17"
 image-webp = "0.2"
+
+[build-dependencies]
+# Compiles the vendored bc7enc_rdo sources when the `bc7` feature is on.
+cc = "1"
+
+[[example]]
+name = "bc7_bench"
+required-features = ["bc7"]
