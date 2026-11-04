@@ -59,19 +59,32 @@ Instance state, the frame cache and the translation catalog all live in the
 sandbox's data dir; the portable install and the Flatpak therefore do not share
 them.
 
-## SteamCMD
+## SteamCMD: downloads stay on the host (decided)
 
-`steamcmd` is a host program and is **not** available inside the sandbox. Two
-honest options:
+`steamcmd` is a host program, so `anima-workshop download` runs **outside** the
+sandbox and writes to the host data dir
+(`~/.local/share/AnimaEngine/steamcmd/steamapps/workshop/content/3474900/<id>`).
+The Flatpak mounts that root read-only (`~/.local/share/AnimaEngine:ro`), so
+`flatpak run --command=anima-workshop … play <id>` still finds the item, and
+`anima-workshop list` on the host discovers the download root as well — not just
+the Steam libraries.
 
-1. **Keep downloads on the host** (recommended): run
-   `anima-workshop download <id>` outside Flatpak (it writes to the host data
-   dir), then read the content through the `~/.local/share/Steam` mount. The
-   Flatpak's `anima-workshop list`/`play` only need read access.
-2. **Ship SteamCMD in the sandbox**: add a module with
-   `type: archive, url: https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz`
-   and its `sha256` (compute it yourself — I will not guess a checksum). It then
-   downloads into the sandbox's data dir.
+There is deliberately **no** `--share=network`: the overlay needs none, and the
+workshop CLI's network paths (`download`, `web`) belong on the host. Grant it with
+`flatpak override --user --share=network <id>` if you ever want them inside the
+sandbox.
+
+Workflow:
+
+```bash
+# Host: fetch and pick an asset
+anima-workshop download 3828587753
+anima-workshop list
+
+# Sandbox: render what the host downloaded (path or id both work)
+flatpak run --command=anima-workshop io.github.swordreforge.AnimaEngine \
+    play 3828587753 mikubuenahall
+```
 
 ## Narrowing or widening
 

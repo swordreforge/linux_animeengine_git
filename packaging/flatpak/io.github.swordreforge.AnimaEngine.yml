@@ -14,14 +14,16 @@ finish-args:
   # Layer-shell surface + wgpu rendering.
   - --socket=wayland
   - --device=dri
-  # SteamCMD downloads, and the Steam Web API metadata path.
-  - --share=network
   # ksni registers a StatusNotifierItem on the session bus.
   - --talk-name=org.kde.StatusNotifierWatcher
-  # Read-only access to what the Steam client already downloaded. The sandbox has
-  # its own data directory, so anything AnimaEngine writes stays inside it.
+  # Workshop downloads stay on the host (`anima-workshop download`), so the
+  # sandbox only needs read access: the Steam client's items, our own SteamCMD
+  # download root, and the animation files. No network is granted on purpose —
+  # SteamCMD cannot run in the sandbox anyway; add `--share=network` with
+  # `flatpak override` if you ever want `web`/`download` inside.
   - --filesystem=~/.local/share/Steam:ro
   - --filesystem=~/.steam:ro
+  - --filesystem=~/.local/share/AnimaEngine:ro
   # Animations live anywhere in $HOME; narrow this (e.g. ~/Pictures:ro) if you
   # prefer, then pass paths explicitly.
   - --filesystem=home:ro

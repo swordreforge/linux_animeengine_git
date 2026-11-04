@@ -470,8 +470,11 @@ Interaction and control:
       `anima-overlay-ctl` must run via `flatpak run` because the sandbox has its own
       data dir). **Not built here**: this machine lacks `flatpak-builder` and
       `org.freedesktop.Sdk//26.08`, so the manifest is reviewed-by-inspection only.
-      A Flatpak also cannot reach the host `steamcmd` (documented: download on the
-      host, or add a SteamCMD module with a checksum)
+      A Flatpak also cannot reach the host `steamcmd`, so the decision is to keep
+      **downloads on the host**: the manifest grants no network and mounts
+      `~/.local/share/AnimaEngine:ro` (our SteamCMD download root), and
+      `anima-workshop list/show/play` now discover that root as well — it used to
+      scan Steam libraries only, so host-side downloads were invisible
 
 ### Main UI (optional)
 

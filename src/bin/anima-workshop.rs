@@ -60,13 +60,33 @@ fn usage() -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Content roots for every discovered library that actually has workshop data.
+/// Workshop content roots: every discovered Steam library **plus our own SteamCMD
+/// download root**, so items fetched with `anima-workshop download` are visible to
+/// `list`, `show` and `play` too (deduplicated by canonical path).
 fn content_roots() -> Vec<PathBuf> {
-    workshop::discover_libraries()
+    let mut roots: Vec<PathBuf> = workshop::discover_libraries()
         .iter()
         .map(|library| workshop::content_root(library))
         .filter(|root| root.is_dir())
-        .collect()
+        .collect();
+
+    // The download root matters when downloads stay on the host (as they do for
+    // the Flatpak build): it holds items the Steam client never saw.
+    let install_dir = std::env::var_os(anima_engine_rs::steamcmd::STEAMCMD_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| anima_engine_rs::paths::user_data_dir().join("steamcmd"));
+    let ours = install_dir
+        .join(anima_engine_rs::workshop::WORKSHOP_CONTENT_SUBDIR)
+        .join(anima_engine_rs::workshop::APP_ID.to_string());
+    if ours.is_dir() {
+        let canonical_ours = std::fs::canonicalize(&ours).unwrap_or(ours);
+        if !roots.iter().any(|root| {
+            std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()) == canonical_ours
+        }) {
+            roots.push(canonical_ours);
+        }
+    }
+    roots
 }
 
 fn list() -> ExitCode {
