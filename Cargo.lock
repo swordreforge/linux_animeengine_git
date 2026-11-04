@@ -131,6 +131,7 @@ dependencies = [
  "tokio",
  "wayland-client",
  "wgpu 29.0.4",
+ "zbus",
  "zip",
  "zstd",
 ]

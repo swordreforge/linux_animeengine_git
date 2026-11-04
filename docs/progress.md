@@ -907,6 +907,29 @@ search field with IME, and Workshop browse/search.
         3810914663: title 'kasane teto hooked trend'  ·  file 'Pre-comp 2_0_20260930_032758.apng'
       Same lesson as the two bugs before it: one decision read from two places will eventually go two
       ways, and a picture is not evidence about data.
+- [x] The overlay panel refreshes faster: `OVERLAY_POLL_MS` is 250ms instead of 1000, so a tray action
+      or a drag shows up within a quarter second instead of up to a full one. This is the free half of
+      "notify 即时刷新": `notify` is **not** in the tree, so the real thing would add a crate, a watcher
+      thread and a channel; a shorter poll gets the perceived result with none of that. Measured: idle
+      CPU stays at **1.0% of one core** either way — the poll's cost is not measurable on this machine,
+      because each tick is a handful of `stat` calls and iced only redraws when the fingerprint
+      actually changed.
+      Correction to an earlier note in this file: the "ticks" quoted there were **CPU jiffies**, not
+      scheduler wakeups. Seven jiffies in three seconds is 70ms of CPU, not seven wakeups. The
+      conclusion held; the unit did not.
+- [x] The shepherd has a session-bus face (`dbus` feature, reusing the `zbus` copy the tray already
+      pulls in — **no new crates**). `dev.AnimaEngine.Shepherd` at `/dev/AnimaEngine/Shepherd` exposes
+      `Start(animation)`, `Stop(animation)`, `List()` and `Status()`. Each is a line of registry work,
+      so the bus cannot do anything the CLI cannot, and `Intent` holds no state of its own: every call
+      reads the registry, changes it and writes it back.
+      Verified live against a freshly started shepherd, using a path that does not exist so nothing
+      could be spawned:
+        Status  → s "0 wanted, 5 known"
+        Start /tmp/dbus-e2e.apng → b true
+        List    → as 1 "/tmp/dbus-e2e.apng"
+        Stop    → b true        (then `anima-shepherd forget` removed the test entry)
+      The daemon was stopped afterwards, leaving the machine as found, and
+      `the_bus_writes_the_same_registry_the_cli_would` covers the registry semantics in a test.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

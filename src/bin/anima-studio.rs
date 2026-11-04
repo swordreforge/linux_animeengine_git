@@ -59,8 +59,12 @@ const ASSET_PREVIEW_MAGIC: &[u8; 8] = b"ANIPREV1";
 
 /// One decoded still: width, height, straight RGBA.
 type Still = (u32, u32, Vec<u8>);
-/// How often the overlay panel checks whether the control files moved.
-const OVERLAY_POLL_MS: u64 = 1000;
+/// How often the overlay panel checks whether the control files moved. Short enough that a tray
+/// action or a drag appears to be immediate, long enough that an idle window is doing almost nothing:
+/// each tick is a handful of `stat` calls, and iced only redraws when the fingerprint actually
+/// changed. (`notify` would make it truly instant, at the cost of a dependency, a watcher thread and
+/// a channel — say the word if the 250ms ever shows.)
+const OVERLAY_POLL_MS: u64 = 250;
 /// `preview.*` names an author may have shipped inside the content folder.
 const LOCAL_PREVIEWS: &[&str] = &[
     "preview.png",

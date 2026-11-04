@@ -656,6 +656,18 @@ fn supervise(once: bool) -> ExitCode {
         spawn_tray(registry_path.clone())
     };
 
+    // The session-bus face, on its own thread: a session without a bus logs and the supervision
+    // loop carries on. `--once` has nothing to serve, since it exits immediately.
+    #[cfg(feature = "dbus")]
+    if !once {
+        let registry = registry_path.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = anima_engine_rs::dbus_intent::serve(registry) {
+                eprintln!("[shepherd] D-Bus intent unavailable: {error}");
+            }
+        });
+    }
+
     let mut last_reap = Instant::now();
     let mut last_tray = Instant::now();
     // Children we started, so we can wait for them: a killed child that nobody waits for

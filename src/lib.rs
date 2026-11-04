@@ -19,6 +19,8 @@ pub mod paths;
 pub mod prefs;
 pub mod settings;
 pub mod shepherd;
+#[cfg(feature = "dbus")]
+pub mod dbus_intent;
 pub mod state;
 pub mod steam;
 pub mod steamcmd;
