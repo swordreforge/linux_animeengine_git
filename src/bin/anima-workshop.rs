@@ -6,6 +6,7 @@
 //! anima-workshop list               # installed items + asset counts
 //! anima-workshop show <id>          # one item's directory and assets
 //! anima-workshop download <id...>   # via SteamCMD (STEAMCMD, STEAMCMD_DIR)
+//! anima-workshop sync               # subscribed items, downloading missing ones
 //! anima-workshop web <id...>        # metadata (needs --features workshop-web)
 //! ```
 
@@ -35,6 +36,7 @@ fn main() -> ExitCode {
             None => usage(),
         },
         Some("download") => download(&args[1..]),
+        Some("sync") => sync(),
         Some("web") => web(&args[1..]),
         _ => usage(),
     }
@@ -42,7 +44,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|web <id...>>"
+        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|sync|web <id...>>"
     );
     ExitCode::FAILURE
 }
@@ -125,6 +127,34 @@ fn download(ids: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// Sync the Steam client's subscriptions, downloading anything missing through
+/// SteamCMD, and print the resulting snapshot.
+fn sync() -> ExitCode {
+    let Some(steamcmd) = anima_engine_rs::steamcmd::SteamCmd::detect() else {
+        eprintln!("steamcmd not found: install it or set STEAMCMD=/path/to/steamcmd");
+        return ExitCode::FAILURE;
+    };
+    match workshop::sync(&steamcmd) {
+        Ok(snapshot) => {
+            for id in snapshot.ids() {
+                if let Some(item) = snapshot.get(id) {
+                    println!(
+                        "{}  {} asset(s)  {}",
+                        item.id,
+                        item.assets.len(),
+                        item.path.display()
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("sync failed: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 

@@ -63,10 +63,14 @@ impl SteamCmd {
 
     /// Where SteamCMD places the downloaded item.
     pub fn item_dir(&self, id: u64) -> PathBuf {
+        self.content_root().join(id.to_string())
+    }
+
+    /// `<install>/steamapps/workshop/content/<appid>`.
+    pub fn content_root(&self) -> PathBuf {
         self.install_dir
             .join(WORKSHOP_CONTENT_SUBDIR)
             .join(APP_ID.to_string())
-            .join(id.to_string())
     }
 
     /// Run SteamCMD and return the downloaded directory.
@@ -86,6 +90,46 @@ impl SteamCmd {
             "steamcmd finished but {} is missing (private item? use `+login <user>`)",
             dir.display()
         )))
+    }
+}
+
+/// Subscriptions come from the Steam client's `appworkshop_*.acf`; missing items
+/// are downloaded through SteamCMD.
+impl crate::workshop::WorkshopSource for SteamCmd {
+    fn subscribed_ids(&self) -> Result<Vec<u64>> {
+        use std::collections::BTreeSet;
+
+        let mut ids = BTreeSet::new();
+        for library in crate::workshop::discover_libraries() {
+            let acf = library
+                .join("steamapps")
+                .join("workshop")
+                .join(crate::workshop::acf_file_name());
+            if let Ok(text) = std::fs::read_to_string(&acf)
+                && let Ok(items) = crate::workshop::installed_items(&text)
+            {
+                ids.extend(items.keys().copied());
+            }
+        }
+        if ids.is_empty() {
+            ids.extend(crate::workshop::installed_item_dirs(&self.content_root()));
+        }
+        Ok(ids.into_iter().collect())
+    }
+
+    fn ensure_installed(&self, id: u64) -> Result<Option<PathBuf>> {
+        // Prefer the Steam client's copy, then our download root, then download.
+        for library in crate::workshop::discover_libraries() {
+            let dir = crate::workshop::content_root(&library).join(id.to_string());
+            if dir.is_dir() {
+                return Ok(Some(dir));
+            }
+        }
+        let dir = self.item_dir(id);
+        if dir.is_dir() {
+            return Ok(Some(dir));
+        }
+        self.download(id).map(Some)
     }
 }
 
@@ -164,5 +208,16 @@ mod tests {
         let found = cmd.download(42).unwrap();
         assert_eq!(found, item);
         assert!(found.join("fake.apng").is_file());
+    }
+
+    #[test]
+    fn ensure_installed_prefers_the_download_root() {
+        use crate::workshop::WorkshopSource;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = SteamCmd::with_paths("/bin/true", dir.path());
+        let item = cmd.item_dir(7);
+        std::fs::create_dir_all(&item).unwrap();
+        assert_eq!(cmd.ensure_installed(7).unwrap(), Some(item));
     }
 }
