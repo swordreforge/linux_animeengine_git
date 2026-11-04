@@ -1047,6 +1047,20 @@ search field with IME, and Workshop browse/search.
       The lesson is the same shape as the last few: a sweep that matches literals cannot see strings
       written in another shape. The reliable check is the reverse — grep for `text(`/`button(` calls that do
       **not** contain `tr(` — which is how these two surfaced.
+- [x] Selection is carried by colour now instead of a `▸` glyph in front of the text. Three lists had that
+      marker — the asset list, an overlay's asset rows, and the Workshop rows — and the comment above one of
+      them admitted the reason: *"the accent colour is reserved for the primary action, so selection is
+      shown with a marker instead"*. The markers are gone.
+      There are two selected styles and the difference is not a preference. **Single-line buttons and the
+      tab strip** take the literal inversion — accent background, `on_primary` text, which is what
+      `button::filled` already did, so they now share one definition with everything else that is
+      "selected". **Two-line rows** take Material's selected *list item* (`secondary_container` and its own
+      text colour), because a widget's style colours the widget and not the `text` children inside it: a
+      filled row would leave its second line in the on-surface colour, unreadable against the accent. Both
+      are contrast-correct in every palette because both halves of each pair come from the same palette
+      role — a property a hand-picked inverse colour would not have.
+      The overlay rows keep their `●`/`○`: running or not is a *state*, a different axis from selection, and
+      a glyph is the right channel for it.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
