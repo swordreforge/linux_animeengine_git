@@ -132,6 +132,9 @@ pub enum Action {
         path: String,
         error: String,
     },
+    /// The user quit it on purpose (the overlay's menu, the tray, the CLI, the window), so
+    /// supervision was turned off instead of restarting it.
+    StoppedOnPurpose(String),
 }
 
 /// Per-animation bookkeeping between passes.
@@ -140,6 +143,9 @@ struct Progress {
     started: Option<Instant>,
     failures: u32,
     wait_until: Option<Instant>,
+    /// Whether this supervisor has seen the instance alive. A `quit` flag only counts as
+    /// "the user meant it" if we did — otherwise it is a leftover from a past session.
+    seen_running: bool,
 }
 
 /// The supervision policy. Process handling is injected — `is_running` takes a control
@@ -189,7 +195,44 @@ impl Supervisor {
                 progress.started = None;
                 progress.failures = 0;
                 progress.wait_until = None;
+                progress.seen_running = true;
                 continue;
+            }
+
+            // An intentional quit leaves `quit: true` behind (every path — the overlay's own
+            // menu, the tray, the CLI, the window — goes through `request_quit`). Honouring it
+            // is the difference between keeping an instance up and fighting the user, who
+            // closed it and does not expect it to come back.
+            let state = ControlState::load(&control);
+            if state.quit {
+                let mut cleared = state.clone();
+                cleared.quit = false;
+                if let Err(error) = cleared.save(&control) {
+                    eprintln!("[shepherd] could not clear the quit flag: {error}");
+                }
+                if progress.seen_running {
+                    progress.seen_running = false;
+                    progress.started = None;
+                    progress.failures = 0;
+                    progress.wait_until = None;
+                    let mut registry = Registry::load(&self.registry_path);
+                    registry.disable(&entry.path);
+                    if let Err(error) = registry.save(&self.registry_path) {
+                        eprintln!("[shepherd] could not update the registry: {error}");
+                    }
+                    if let Some(found) = self
+                        .registry
+                        .instances
+                        .iter_mut()
+                        .find(|candidate| candidate.path == entry.path)
+                    {
+                        found.enabled = false;
+                    }
+                    actions.push(Action::StoppedOnPurpose(entry.path.clone()));
+                    continue;
+                }
+                // Otherwise it is a flag from before this supervisor existed: cleared above,
+                // so carry on and start the instance.
             }
 
             if let Some(started) = progress.started {
@@ -565,6 +608,54 @@ mod tests {
                 error: "no binary".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn an_intentional_quit_stops_supervision() {
+        // Needs a real control file (there is no directory override), so it uses an animation
+        // path unique to this test and removes what it wrote.
+        let dir = tempfile::tempdir().unwrap();
+        let animation = dir.path().join("intentional-quit-test.apng");
+        std::fs::write(&animation, b"x").unwrap();
+        let path = animation.to_string_lossy().into_owned();
+        let control = ControlState::path_for(Some(&paths::canonical_path(&path)));
+        let _ = std::fs::remove_file(&control);
+        let _ = std::fs::remove_file(ControlState::announce_path(&control));
+
+        let registry_path = dir.path().join(REGISTRY_FILE);
+        let mut registry = Registry::default();
+        registry.enable(&path);
+        registry.save(&registry_path).unwrap();
+
+        let mut supervisor = Supervisor::new(registry_path.clone(), Registry::load(&registry_path));
+        let starts = std::cell::Cell::new(0u32);
+        let mut spawn = |_: &str| {
+            starts.set(starts.get() + 1);
+            Ok(())
+        };
+
+        // First pass: it is alive, which is what makes a later quit meaningful.
+        supervisor.poll(Instant::now(), |_| true, &mut spawn);
+        assert_eq!(starts.get(), 0);
+
+        // The user quits it on purpose: gone, and the control file carries the flag.
+        ControlState::fresh().request_quit().save(&control).unwrap();
+        let actions = supervisor.poll(Instant::now(), |_| false, &mut spawn);
+        assert_eq!(actions, vec![Action::StoppedOnPurpose(path.clone())]);
+        assert_eq!(starts.get(), 0, "an intentional quit must not be restarted");
+        assert!(!Registry::load(&registry_path).get(&path).unwrap().enabled);
+        assert!(!ControlState::load(&control).quit, "the flag is one-shot");
+
+        // And it does not come back on the next pass either.
+        assert!(
+            supervisor
+                .poll(Instant::now(), |_| false, &mut spawn)
+                .is_empty()
+        );
+        assert_eq!(starts.get(), 0);
+
+        let _ = std::fs::remove_file(&control);
+        let _ = std::fs::remove_file(ControlState::announce_path(&control));
     }
 
     #[test]

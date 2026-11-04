@@ -623,6 +623,18 @@ search field with IME, and Workshop browse/search.
       so repeated prunes no longer accumulate `*.before-prune-*` files. Verified: six old
       backups became two (`kept the newest backup pair (dropped 6)`) and a `--no-backup` run
       left the count unchanged while printing `(no backup: --no-backup)`.
+- [x] An intentional quit is not a crash. Every way of closing an overlay on purpose — its
+      own menu, the tray, `anima-overlay-ctl quit`, the window's Quit button — goes through
+      `ControlState::request_quit`, which leaves `quit: true` in the control file. The
+      supervisor now reads that flag when it finds an instance stopped: if it had seen that
+      instance alive (so the flag is not a leftover from a past session) it turns supervision
+      off instead of restarting it, clears the one-shot flag and logs
+      `… was quit on purpose; not restarting (supervision off)`. Verified live: choosing Quit
+      in the overlay's own menu produced `exited (exit status: 0)` and that line, and the
+      registry entry went `off`. A unit test covers the flag, the one-shot clearing, the
+      registry disable and the "never restarted" rule.
+      Note for the future: `kill`-ing a supervised instance is a *crash* by design, so it
+      comes back; close it with the menu, the tray, the CLI or `disable` first.
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 

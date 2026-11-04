@@ -694,6 +694,11 @@ fn supervise(once: bool) -> ExitCode {
                 Action::SpawnFailed { path, error } => {
                     eprintln!("[shepherd] could not start {path}: {error}");
                 }
+                Action::StoppedOnPurpose(path) => {
+                    eprintln!(
+                        "[shepherd] {path} was quit on purpose; not restarting (supervision off)"
+                    );
+                }
             }
         }
 
