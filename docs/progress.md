@@ -149,8 +149,8 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **129** default (126 lib + 3 CLI), **133** with
-  `workshop-web,steamworks,bc7` (the `bc7` feature needs a C++ toolchain).
+- `cargo test`: **131** default (128 lib + 3 CLI); **135** with `bc7` (the `bc7`
+  feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
@@ -203,10 +203,17 @@ Interaction and control:
   45.8 dB colour / 44.5 dB alpha (max alpha error 133), 2.7 fps — the average is
   visibly lossless, the worst silhouette pixels are not, which is why the CPU
   alpha stays authoritative for hit-testing and regions.
-- BC7 encode/decode is covered by quality gates in `src/bc7.rs`: an antialiased
-  disc must stay above 30 dB for colour *and* alpha with a bounded worst-case
-  alpha error, solid colours above 45 dB, and mismatched buffer sizes are
-  rejected (a 4x4 image is 64 bytes of RGBA, its blocks 16 bytes).
+- BC7 in the overlay (two runs of `bochi455.apng`, 27 frames 512²):
+  - pass 1 — `27.0 MiB decoded, 0.0 MiB bc7, rgba array texture`, then the
+    background encode wrote a **7,077,916-byte** (6.75 MiB) sidecar;
+  - pass 2 — `cache hit: 27 frame(s), 512x512 + bc7 blocks` and
+    `27.0 MiB decoded, 6.8 MiB bc7, bc7 array texture`, i.e. the GPU now holds the
+    compressed array.
+  - Device check: `gpu Intel(R) Arc(tm) Graphics (MTL) | bc7 blocks: supported`.
+  - miku12 (1500x1125) is the case this exists for: 412 MiB RGBA was over the
+    256 MiB array budget (`just-in-time upload`), 103 MiB of BC7 is not.
+- BC7 blocks are also stored as `<key>.bc7.animacache`, so the LRU pass counts and
+  clears them with the frames; a missing or malformed sidecar falls back to RGBA.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -362,9 +369,15 @@ Interaction and control:
       (25.1% of raw), 24 s (2.7 fps), **45.8 dB colour / 44.5 dB alpha**, max alpha
       error 133. Note BC7 (8 bpp) is ~2.2x **larger** than the zstd cache (46 MiB
       for miku12) — its win is VRAM and direct upload, not disk
-- [ ] Wire BC7 into the renderer: request `TEXTURE_COMPRESSION_BC`, upload
-      `Bc7RgbaUnorm` array textures, and keep CPU alpha for hit-testing (the alpha
-      masks must stay bounded like the decode itself)
+- [x] BC7 wired into the renderer: with `bc7` blocks cached, the overlay builds a
+      `Bc7RgbaUnormSrgb` array texture (matching the `Rgba8UnormSrgb` frame texture
+      and the sRGB surface, so sampling is identical), block-aligned to whole 4x4
+      blocks with the UVs scaled by `width/tex_width` so the padding never shows.
+      Without blocks it keeps the RGBA array/JIT paths and encodes a sidecar in the
+      background for the next run. Verified: pass 1 logged `rgba array texture` and
+      wrote a 6.75 MiB sidecar for bochi455; pass 2 logged
+      `cache hit: 27 frame(s), 512x512 + bc7 blocks` then
+      `6.8 MiB bc7, bc7 array texture`
 - [ ] Ship the i18n catalog as a data file; verify all locales
 - [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
 
