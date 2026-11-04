@@ -71,7 +71,8 @@
     "started an overlay for": "started an overlay for",
     "could not start": "could not start",
     "could not read a first frame": "could not read a first frame",
-    "no Workshop results": "no Workshop results"
+    "no Workshop results": "no Workshop results",
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -145,7 +146,8 @@
     "started an overlay for": "已启动浮层",
     "could not start": "无法启动",
     "could not read a first frame": "无法读取首帧",
-    "no Workshop results": "工坊没有结果"
+    "no Workshop results": "工坊没有结果",
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} 未设置，且 {} 里没有 steam_api_key —— 浏览工坊需要 Steam Web API key（{}）；已安装条目不需要它"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -219,7 +221,8 @@
     "started an overlay for": "已啟動浮層",
     "could not start": "無法啟動",
     "could not read a first frame": "無法讀取首幀",
-    "no Workshop results": "工坊沒有結果"
+    "no Workshop results": "工坊沒有結果",
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} 未設定，且 {} 裡沒有 steam_api_key —— 瀏覽工坊需要 Steam Web API key（{}）；已安裝項目不需要它"
   },
   "ja": {
     "Refresh": "更新",
@@ -293,6 +296,7 @@
     "started an overlay for": "オーバーレイを起動しました",
     "could not start": "起動できません",
     "could not read a first frame": "先頭フレームを読めません",
-    "no Workshop results": "結果がありません"
+    "no Workshop results": "結果がありません",
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} が未設定で、{} に steam_api_key もありません — ワークショップの閲覧には Steam Web API キー（{}）が必要です。インストール済みの項目には不要です"
   }
 }

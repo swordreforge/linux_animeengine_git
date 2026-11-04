@@ -582,9 +582,10 @@ fn fetch_remote(query: Option<String>, cursor: Option<String>) -> Result<RemoteP
     if !web.has_api_key() {
         // Name both places it can live, and say which file: a status line that only complains is
         // not much of a status line. The path is shortened because it is the long part.
+        // The window checks this before it starts a task and says so in the user's language; this line
+        // is the technical fallback for any other caller, and is never what the UI shows.
         return Err(format!(
-            "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web \
-             API key (https://steamcommunity.com/dev/apikey); installed items work without one",
+            "{} is not set and {} has no steam_api_key",
             anima_engine_rs::workshop_web::API_KEY_ENV,
             shorten(&anima_engine_rs::workshop_web::studio_settings_path())
         ));
@@ -1465,6 +1466,27 @@ impl Studio {
         }
         self.remote_cursors[page as usize - 1] = cursor.clone();
 
+        // "No key" is a precondition, not a failure: catch it here, where the message can be in the
+        // user's language, instead of letting the task fail and display a technical error.
+        if WorkshopWeb::new()
+            .map(|web| !web.has_api_key())
+            .unwrap_or(false)
+        {
+            self.remote_loading = false;
+            self.remote_note = fill(
+                &self.i18n.tr(
+                    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam \
+                     Web API key ({}); installed items work without one",
+                ),
+                &[
+                    anima_engine_rs::workshop_web::API_KEY_ENV.to_string(),
+                    shorten(&anima_engine_rs::workshop_web::studio_settings_path()),
+                    "https://steamcommunity.com/dev/apikey".to_string(),
+                ],
+            );
+            return Task::none();
+        }
+
         let query = self.remote_query.clone();
         self.remote_loading = true;
         // Every request carries the number it belongs to, so a reply to a search the user has left
@@ -2280,11 +2302,7 @@ impl Studio {
                 column![
                     text(self.i18n.tr("Remove local copy")).size(18),
                     text(format!("{title} · {id}")).size(12),
-                    text(
-                        "This deletes the copy under the SteamCMD root. It does not unsubscribe in \
-                         Steam, and your own Steam library is never touched."
-                    )
-                    .size(11),
+                    text(self.i18n.tr("This deletes the copy under the SteamCMD root. It does not unsubscribe in Steam, and your own Steam library is never touched.")).size(11),
                     row![
                         button(text(self.i18n.tr("Remove local copy")))
                             .style(danger)
@@ -3272,8 +3290,8 @@ mod tests {
         }
         let error = fetch_remote(None, None).expect_err("no key means an error, not an empty list");
         assert!(error.contains("STEAM_WEB_API_KEY"), "{error}");
-        // The message has to say where to get one and where to put it, or it is just a complaint.
-        assert!(error.contains("steamcommunity.com/dev/apikey"), "{error}");
+        // This is the technical fallback; the window's own message (in `goto_remote_page`) is the one
+        // that names the settings file and the URL, in the user's language.
         assert!(error.contains("studio.json"), "{error}");
         eprintln!("[studio] no key: {error}");
     }
