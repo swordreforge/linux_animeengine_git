@@ -118,7 +118,16 @@ fail silently.
 
 ## 5. Smaller items
 
-- **List rows with thumbnails** once the library is big: 64px preview + title + id.
+- **Follow lock: done.** `follow ●/○` in the panel header stops it switching to whichever
+  overlay was touched last, which mattered when two of them are dragged in turn.
+- **A studio icon: done.** `anima-engine-studio.svg` (a window mark, not the overlay's), in the
+  desktop entry and `install.sh`.
+- **List rows with thumbnails**: still open, and it needs a decision first — previews are
+  fetched on selection only today, which is what keeps the API calls polite. Prefetching every
+  row means one request per item (cached for a day) on each refresh.
+- **Keyboard shortcuts**: still open — iced 0.14 removed `keyboard::on_key_press`, so this has
+  to go through the event-listening API (`event::listen` and a `keyboard::Event` match) rather
+  than the one-liner it used to be.
 - **Asset picker**: `Play` currently takes the first playable asset (the `▶` buttons cover
   the rest). A remembered choice per item, plus keyboard navigation, would be kinder.
 - **Disable actions for stopped instances?** The panel writes the desired state either
