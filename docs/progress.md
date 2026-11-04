@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **131** default (128 lib + 3 CLI); **135** with `bc7` (the `bc7`
+- `cargo test`: **131** default (128 lib + 3 CLI); **136** with `bc7` (the `bc7`
   feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -212,7 +212,19 @@ Interaction and control:
   - Device check: `gpu Intel(R) Arc(tm) Graphics (MTL) | bc7 blocks: supported`.
   - miku12 (1500x1125) is the case this exists for: 412 MiB RGBA was over the
     256 MiB array budget (`just-in-time upload`), 103 MiB of BC7 is not.
-- BC7 blocks are also stored as `<key>.bc7.animacache`, so the LRU pass counts and
+- BC7-only storage (bochi455, cache cleared first): pass 1 logged
+  `bc7 sidecar written: 6.8 MiB in 0.3s` and the cache held **exactly one entry**
+  (`<key>.bc7.animacache`, no frames entry); pass 2 logged
+  `bc7 cache hit: 27 frame(s), 512x512, 6.8 MiB blocks` and
+  `6.8 MiB bc7, bc7 array texture`.
+- Bounded decode and BC7 compose: tetonahall at the default 1 GiB cap decodes
+  **112 of 448 frames** (`1 of every 4 frames`), so its BC7 sidecar is 146.1 MiB
+  (encoded in 20.6 s) and it still fits the 256 MiB array budget. **The BC7
+  just-in-time branch is therefore not yet exercised**: forcing it needs the full
+  448 frames (613 MiB of blocks), i.e. a ~7 GiB peak decode that was deliberately
+  not run. Note the sidecar bakes the decode limits at encode time, so raising
+  `ANIMA_MAX_DECODE_MB` later does not restore the dropped frames.
+- BC7 blocks are stored as `<key>.bc7.animacache`, so the LRU pass counts and
   clears them with the frames; a missing or malformed sidecar falls back to RGBA.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
@@ -378,6 +390,12 @@ Interaction and control:
       wrote a 6.75 MiB sidecar for bochi455; pass 2 logged
       `cache hit: 27 frame(s), 512x512 + bc7 blocks` then
       `6.8 MiB bc7, bc7 array texture`
+- [x] Storage policy: with `bc7` enabled the animation is **stored as BC7 blocks
+      only** (no zstd frames entry is written), and loading rebuilds the RGBA that
+      hit-testing needs by decoding the blocks — so the CPU alpha matches what the
+      GPU shows. Without `bc7` the zstd frames cache is used as before. The sidecar
+      carries the per-frame delays (block format version 2) so playback timing
+      survives
 - [ ] Ship the i18n catalog as a data file; verify all locales
 - [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
 
@@ -472,5 +490,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray +
   menu) → `anima-workshop play` (download → sync → overlay) → workshop upload
   (`workshop.vdf` + `workshop_build_item`) → bounded decode + frame-timing
-  fidelity → zstd frame cache (PNG dropped) → vendored bc7enc_rdo BC7 encoder
-  (`bc7` feature, off by default; renderer wiring is the next step).
+  fidelity → zstd frame cache (PNG dropped) → vendored bc7enc_rdo BC7 encoder and
+  renderer wiring (`bc7` feature: blocks are the cache when enabled).

@@ -213,6 +213,8 @@ pub struct Blocks {
     pub count: usize,
     /// `bc7enc_rdo` uber level the blocks were encoded with (0..=4).
     pub uber_level: u32,
+    /// Per-frame display delay, so an animation cached as BC7 keeps its timing.
+    pub delays: Vec<u32>,
     pub data: Vec<u8>,
 }
 
@@ -232,9 +234,11 @@ impl Blocks {
         self.height.div_ceil(4)
     }
 
-    /// Whether `data` matches the declared geometry.
+    /// Whether `delays` and `data` match the declared geometry.
     pub fn is_consistent(&self) -> bool {
-        self.count > 0 && self.data.len() == self.frame_bytes() * self.count
+        self.count > 0
+            && self.delays.len() == self.count
+            && self.data.len() == self.frame_bytes() * self.count
     }
 }
 
@@ -348,7 +352,7 @@ fn read_u32(reader: &mut impl Read) -> Result<u32> {
 }
 
 const BLOCKS_MAGIC: &[u8; 8] = b"ANIMBC7\0";
-const BLOCKS_VERSION: u32 = 1;
+const BLOCKS_VERSION: u32 = 2;
 
 fn read_blocks(path: &Path) -> Result<Blocks> {
     let mut file = BufReader::new(File::open(path)?);
@@ -366,6 +370,10 @@ fn read_blocks(path: &Path) -> Result<Blocks> {
     let height = read_u32(&mut file)?;
     let count = read_u32(&mut file)? as usize;
     let uber_level = read_u32(&mut file)?;
+    let mut delays = Vec::with_capacity(count.min(1 << 16));
+    for _ in 0..count {
+        delays.push(read_u32(&mut file)?);
+    }
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
 
@@ -374,6 +382,7 @@ fn read_blocks(path: &Path) -> Result<Blocks> {
         height,
         count,
         uber_level,
+        delays,
         data,
     };
     if !blocks.is_consistent() {
@@ -404,6 +413,9 @@ fn write_blocks(path: &Path, blocks: &Blocks) -> Result<()> {
         file.write_all(&blocks.height.to_le_bytes())?;
         file.write_all(&(blocks.count as u32).to_le_bytes())?;
         file.write_all(&blocks.uber_level.to_le_bytes())?;
+        for delay_ms in &blocks.delays {
+            file.write_all(&delay_ms.to_le_bytes())?;
+        }
         file.write_all(&blocks.data)?;
         file.flush()?;
     }
@@ -538,6 +550,7 @@ mod tests {
             height: 4,
             count: 2,
             uber_level: 4,
+            delays: vec![40, 60],
             data: vec![7u8; 64],
         };
         assert!(blocks.is_consistent());
@@ -548,6 +561,7 @@ mod tests {
         assert_eq!(loaded.blocks_per_row(), 2);
         assert_eq!(loaded.rows(), 1);
         assert_eq!(loaded.frame_bytes(), 32);
+        assert_eq!(loaded.delays, vec![40, 60]);
     }
 
     #[test]
@@ -560,6 +574,7 @@ mod tests {
             height: 4,
             count: 3,
             uber_level: 4,
+            delays: vec![10, 10, 10],
             data: vec![0u8; 96],
         };
         cache.write_blocks(&src, &blocks).unwrap();

@@ -1004,6 +1004,31 @@ fn load_animation(
 
     let limits = DecodeLimits::from_env();
     let cache = FrameCache::user_default();
+
+    // With `bc7` the blocks are the cached format: rebuild the RGBA that
+    // hit-testing and regions need from them, instead of keeping a second copy of
+    // the frames on disk.
+    #[cfg(feature = "bc7")]
+    if let Some(blocks) = cache.read_blocks(path)
+        && let Ok(animation) = anima_engine_rs::bc7::animation_from_blocks(
+            blocks.width,
+            blocks.height,
+            &blocks.delays,
+            &blocks.data,
+        )
+    {
+        let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
+        eprintln!(
+            "[overlay] bc7 cache hit: {} frame(s), {}x{}, {:.1} MiB blocks{}",
+            animation.frame_count(),
+            animation.width,
+            animation.height,
+            blocks.data.len() as f64 / (1024.0 * 1024.0),
+            report.note()
+        );
+        return Ok((Arc::new(animation), Some(blocks)));
+    }
+
     if let Some(animation) = cache.read(path) {
         let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
         let blocks = cache.read_blocks(path);
@@ -1040,6 +1065,9 @@ fn load_animation(
     // A decimated decode depends on the configured limits, so it is never
     // cached: the cache always holds a complete decode. Encoding runs in the
     // background so playback is not blocked by PNG compression of large files.
+    // With `bc7` the animation is cached as blocks instead (by the background
+    // encoder below), so no frames entry is written at all.
+    #[cfg(not(feature = "bc7"))]
     if !report.limited() {
         let cache_animation = Arc::clone(&animation);
         let cache_path = path.to_path_buf();
@@ -2219,6 +2247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 height: frames.height,
                 count: frames.frames.len(),
                 uber_level: params.uber_level,
+                delays: frames.frames.iter().map(|frame| frame.delay_ms).collect(),
                 data,
             };
             match FrameCache::user_default().write_blocks(&source, &blocks) {

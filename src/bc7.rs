@@ -11,6 +11,7 @@
 
 use std::sync::OnceLock;
 
+use crate::anim::{Animation, Frame};
 use crate::{Error, Result};
 
 /// Encoder settings. `uber_level` runs 0..=4: higher is slower and better.
@@ -100,6 +101,39 @@ pub fn decode(blocks: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let mut out = vec![0u8; width as usize * height as usize * 4];
     unsafe { anima_bc7_decode(blocks.as_ptr(), width, height, out.as_mut_ptr()) };
     Ok(out)
+}
+
+/// Rebuild an animation from cached BC7 blocks.
+///
+/// RGBA is still needed in memory for hit-testing and input regions, so it is
+/// decoded back out of the blocks — which also makes the CPU alpha agree with
+/// what the GPU actually displays.
+pub fn animation_from_blocks(
+    width: u32,
+    height: u32,
+    delays: &[u32],
+    data: &[u8],
+) -> Result<Animation> {
+    let frame_bytes = encoded_size(width, height) as usize;
+    if delays.is_empty() || data.len() != frame_bytes * delays.len() {
+        return Err(Error::Decode(format!(
+            "{} bytes of BC7 blocks do not match {} frame(s) of {width}x{height}",
+            data.len(),
+            delays.len()
+        )));
+    }
+
+    let mut frames = Vec::with_capacity(delays.len());
+    for (index, &delay_ms) in delays.iter().enumerate() {
+        let start = index * frame_bytes;
+        let rgba = decode(&data[start..start + frame_bytes], width, height)?;
+        frames.push(Frame { rgba, delay_ms });
+    }
+    Ok(Animation {
+        width,
+        height,
+        frames,
+    })
 }
 
 /// Mean squared error between two 8-bit buffers.
@@ -199,6 +233,22 @@ mod tests {
         let blocks = encode(&source, width, height, Bc7Params::default()).unwrap();
         let decoded = decode(&blocks, width, height).unwrap();
         assert!(psnr(&source, &decoded) > 45.0);
+    }
+
+    #[test]
+    fn blocks_rebuild_an_animation() {
+        let (width, height) = (32u32, 32u32);
+        let source = disc(width);
+        let blocks = encode(&source, width, height, Bc7Params::default()).unwrap();
+
+        let animation = animation_from_blocks(width, height, &[40, 60], &blocks.repeat(2)).unwrap();
+        assert_eq!(animation.frame_count(), 2);
+        assert_eq!(animation.frames[0].delay_ms, 40);
+        assert_eq!(animation.frames[1].delay_ms, 60);
+        assert!(psnr(&source, &animation.frames[0].rgba) > 30.0);
+
+        assert!(animation_from_blocks(width, height, &[], &blocks).is_err());
+        assert!(animation_from_blocks(width, height, &[40], &blocks[..blocks.len() - 1]).is_err());
     }
 
     #[test]
