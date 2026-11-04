@@ -62,6 +62,10 @@ name = "anima-i18n"
 path = "src/bin/anima-i18n.rs"
 
 [[bin]]
+name = "anima-shepherd"
+path = "src/bin/anima-shepherd.rs"
+
+[[bin]]
 name = "anima-studio"
 path = "src/bin/anima-studio.rs"
 required-features = ["studio"]

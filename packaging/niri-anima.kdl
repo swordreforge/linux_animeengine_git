@@ -7,5 +7,10 @@
 //
 // Absolute paths: niri's PATH does not include ~/.local/bin.
 // The control binds live in your own config (`__custom__.kdl`), not here.
+//
+// The shepherd, not a single overlay: it starts everything registered with
+// `anima-shepherd enable <animation.apng>` and keeps those running. Starting one
+// specific overlay with `spawn-at-startup "@BIN@/anima-overlay" "/path/animation.apng"`
+// is still fine if you would rather not use the registry.
 
-spawn-at-startup "@BIN@/anima-overlay"
+spawn-at-startup "@BIN@/anima-shepherd"

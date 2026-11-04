@@ -22,7 +22,7 @@ CATALOG=""
 WRITE_NIRI=0
 UNINSTALL=0
 VALIDATE=1
-BINS=(anima-overlay anima-overlay-ctl anima-workshop anima-i18n)
+BINS=(anima-overlay anima-overlay-ctl anima-workshop anima-i18n anima-shepherd)
 # Built with `--features studio` (it pulls the whole iced tree). Installed only when the
 # binary exists, so an overlay-only build keeps working.
 OPTIONAL_BINS=(anima-studio)

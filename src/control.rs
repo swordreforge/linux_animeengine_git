@@ -230,13 +230,7 @@ impl ControlState {
     /// Write this process's marker for `control`.
     pub fn announce(control: &Path) -> std::io::Result<PathBuf> {
         let path = Self::announce_path(control);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(
-            &path,
-            format!("{} {}\n", std::process::id(), Self::announce_name()),
-        )?;
+        write_marker(&path, &Self::announce_name())?;
         Ok(path)
     }
 
@@ -248,31 +242,7 @@ impl ControlState {
 
     /// Is the process that owns `control` still alive?
     pub fn is_running(control: &Path) -> bool {
-        let path = Self::announce_path(control);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return false;
-        };
-        let mut parts = text.split_whitespace();
-        let Some(pid) = parts.next().and_then(|pid| pid.parse::<u32>().ok()) else {
-            return false;
-        };
-        let expected = parts.next().unwrap_or("anima-overlay");
-        let proc_dir = PathBuf::from(format!("/proc/{pid}"));
-        if proc_dir.is_dir() {
-            // `/proc/<pid>/comm` is truncated to 15 bytes, so compare prefixes.
-            return std::fs::read_to_string(proc_dir.join("comm"))
-                .map(|comm| {
-                    let comm = comm.trim();
-                    !comm.is_empty() && (expected == comm || expected.starts_with(comm))
-                })
-                .unwrap_or(true);
-        }
-        // No procfs (not Linux): fall back to a fresh heartbeat.
-        std::fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .ok()
-            .and_then(|time| SystemTime::now().duration_since(time).ok())
-            .is_some_and(|age| age.as_secs() < 15)
+        marker_running(&Self::announce_path(control))
     }
 
     /// Every liveness marker on disk, so a caller can notice an instance starting or
@@ -454,6 +424,53 @@ impl ControlState {
     }
 }
 
+/// Write a `<pid> <process name>` liveness marker.
+///
+/// Shared by the overlay (one marker per instance) and the shepherd (its own), so there is
+/// exactly one definition of what "alive" means.
+pub fn write_marker(marker: &Path, name: &str) -> std::io::Result<()> {
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(marker, format!("{} {name}\n", std::process::id()))
+}
+
+/// Is the process described by a `<pid> <process name>` marker still alive?
+///
+/// `/proc/<pid>/comm` is truncated to 15 bytes, so the name is compared by prefix — and
+/// that comparison is also what keeps a recycled pid from passing as the process we
+/// started. Where there is no procfs the marker's own age is used instead.
+pub fn marker_running(marker: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(marker) else {
+        return false;
+    };
+    let mut parts = text.split_whitespace();
+    let Some(pid) = parts.next().and_then(|pid| pid.parse::<u32>().ok()) else {
+        return false;
+    };
+    let expected = parts.next().unwrap_or("anima-overlay");
+    let proc_dir = PathBuf::from(format!("/proc/{pid}"));
+    if proc_dir.is_dir() {
+        return std::fs::read_to_string(proc_dir.join("comm"))
+            .map(|comm| {
+                let comm = comm.trim();
+                !comm.is_empty() && (expected == comm || expected.starts_with(comm))
+            })
+            .unwrap_or(true);
+    }
+    // Where procfs exists, a pid missing from it is gone — do not fall back to the
+    // heartbeat here, or a SIGKILLed instance would look alive for the next 15 seconds.
+    if Path::new("/proc/self").is_dir() {
+        return false;
+    }
+    // No procfs at all: the marker's own age is all we have.
+    std::fs::metadata(marker)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| SystemTime::now().duration_since(time).ok())
+        .is_some_and(|age| age.as_secs() < 15)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +614,17 @@ mod tests {
 
         ControlState::clear_announce(&control);
         assert!(!ControlState::is_running(&control), "cleared");
+    }
+
+    #[test]
+    fn a_dead_pid_is_not_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("dead.pid");
+        // A pid that cannot exist, with a fresh mtime — exactly the case the heartbeat
+        // fallback used to get wrong (a SIGKILLed instance looked alive for 15 seconds,
+        // so the shepherd never restarted it).
+        std::fs::write(&marker, format!("{} anima-overlay\n", u32::MAX)).unwrap();
+        assert!(!marker_running(&marker));
     }
 
     #[test]

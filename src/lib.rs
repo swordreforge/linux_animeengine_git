@@ -18,6 +18,7 @@ pub mod pack;
 pub mod paths;
 pub mod prefs;
 pub mod settings;
+pub mod shepherd;
 pub mod state;
 pub mod steam;
 pub mod steamcmd;

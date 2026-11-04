@@ -224,6 +224,8 @@ fn overlay_signature() -> String {
             .filter_map(|path| stamp(path)),
     );
     parts.extend(stamp(&SecondaryState::user_path()));
+    // The shepherd's own marker, so its indicator in the panel follows it too.
+    parts.extend(stamp(&anima_engine_rs::shepherd::marker_path()));
     parts.sort();
     let mut out = String::new();
     for part in parts {
@@ -387,6 +389,8 @@ struct Studio {
     steamcmd_root: Option<PathBuf>,
     overlay: Vec<OverlayInstance>,
     overlay_selected: Option<usize>,
+    /// Overlays this window started, so their exits can be reaped.
+    children: Vec<std::process::Child>,
     /// Fingerprint of the control files as of the last read (see [`overlay_signature`]).
     overlay_signature: String,
 }
@@ -404,6 +408,7 @@ impl Studio {
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
             overlay_selected: None,
+            children: Vec::new(),
             overlay_signature: String::new(),
         };
         studio.refresh();
@@ -466,6 +471,10 @@ impl Studio {
     /// One poll tick: re-read only when the fingerprint moved, so an overlay that changes
     /// its own state (drag, scale, tray) shows up here without rebuilding every second.
     fn poll_overlay(&mut self) {
+        // Wait for overlays we started: an unreaped child becomes a zombie, and a zombie
+        // still shows up in `/proc`, which would make a dead instance look alive.
+        self.children
+            .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
         let signature = overlay_signature();
         if signature == self.overlay_signature {
             return;
@@ -824,6 +833,15 @@ impl Studio {
             row![
                 text(self.i18n.tr("Overlay")).size(14),
                 space().width(Length::Fill),
+                text(format!(
+                    "shepherd {}",
+                    if anima_engine_rs::shepherd::is_up() {
+                        "●"
+                    } else {
+                        "○"
+                    }
+                ))
+                .size(11),
                 button(text(self.i18n.tr("Refresh")))
                     .style(text_button)
                     .on_press(Message::RefreshOverlay),
@@ -951,13 +969,34 @@ impl Studio {
             self.reload_overlay();
             return;
         }
+        // A shepherd, when one is up, owns starting things: hand the animation over by
+        // enabling it in the registry. The registry file is the channel, like every other
+        // piece of this program.
+        if anima_engine_rs::shepherd::is_up() {
+            let registry_path = anima_engine_rs::shepherd::registry_path();
+            let mut registry = anima_engine_rs::shepherd::Registry::load(&registry_path);
+            self.note = if registry.enable(&asset.to_string_lossy()) {
+                match registry.save(&registry_path) {
+                    Ok(()) => format!("handed {} to the shepherd", file_name(asset)),
+                    Err(error) => format!("could not update the shepherd registry: {error}"),
+                }
+            } else {
+                format!("{} is already wanted by the shepherd", file_name(asset))
+            };
+            return;
+        }
         let Some(binary) = find_overlay_binary() else {
             self.note = "anima-overlay not found — build or install it first (--features overlay)"
                 .to_string();
             return;
         };
         self.note = match std::process::Command::new(&binary).arg(asset).spawn() {
-            Ok(_) => format!("started an overlay for {}", file_name(asset)),
+            Ok(child) => {
+                // Keep the handle so `poll_overlay` can wait for it: a killed overlay that
+                // nobody reaps stays a zombie in `/proc`, where it still looks alive.
+                self.children.push(child);
+                format!("started an overlay for {}", file_name(asset))
+            }
             Err(error) => format!("could not start {}: {error}", binary.display()),
         };
     }

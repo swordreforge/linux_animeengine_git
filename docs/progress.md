@@ -524,6 +524,35 @@ search field with IME, and Workshop browse/search.
       a TTL would fix both. Also: a search field with IME, API-key browse/search, and
       list-row thumbnails once the library is big.
 
+### Overlay lifecycle (`anima-shepherd`)
+
+- [x] A long-lived process owns *starting* overlays, so a closed window no longer means
+      nothing can come back (the hole behind "quit from the tray, then Play does nothing").
+      `shepherd.json` lists the wanted animations (`anima-shepherd enable | disable | list |
+      status | stop | quit`, plus `run --once` for tests); every second the supervisor asks
+      `ControlState::is_running` for each wanted animation and starts what is missing, with a
+      5s → 30s → 120s backoff for crash loops. The window hands an item over by enabling it
+      in that file when a shepherd is up — the registry *is* the channel — and otherwise
+      starts a process itself. The panel shows `shepherd ●/○`.
+      Verified end to end: enable → exactly one start; `SIGKILL` the overlay → the shepherd
+      logged `exited (signal: 9 (SIGKILL))` and started a fresh one; `anima-shepherd quit` →
+      the overlay keeps playing, because surfaces belong to the overlays.
+- [x] Three bugs the acceptance run exposed, all fixed and covered by tests:
+      (a) the overlay announced itself only *after* decoding, so for the first ~5 seconds of a
+      large animation the shepherd saw nothing running and would have started a second copy —
+      it now announces before the decode, and a start inside its 10s startup window counts as
+      "still starting" rather than a failure;
+      (b) `marker_running` fell back to a 15-second heartbeat whenever `/proc/<pid>` was
+      missing — which is exactly the *dead pid* case, so a SIGKILLed instance looked alive for
+      fifteen seconds; where procfs exists a missing pid is now simply dead;
+      (c) an unreaped child stays a **zombie**, and a zombie still appears in `/proc` with the
+      same `comm`, so `is_running` said "alive" forever — both the shepherd and the window now
+      hold their `Child` handles and `try_wait()` them each pass, which also yields the real
+      exit status.
+- [ ] Still open from the plan: the tray has not moved into the shepherd (each overlay still
+      owns one, so N overlays still mean N tray icons), and there is no D-Bus intent call —
+      the registry file is the interface.
+
 ### Steam / Workshop
 
 - [ ] Provide a Linux `libsteam_api.so` and wire `SteamWorkshop` into the app

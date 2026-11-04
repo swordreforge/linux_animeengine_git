@@ -2120,6 +2120,17 @@ fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).map(PathBuf::from);
+    // Announce before decoding: a 1500x1125 animation takes seconds to load, and until the
+    // marker exists the shepherd would think nothing is running and start a second copy.
+    let early_control = ControlState::path_for(
+        path.as_deref()
+            .map(|path| anima_engine_rs::paths::canonical_path(&path.to_string_lossy()))
+            .as_deref(),
+    );
+    match ControlState::announce(&early_control) {
+        Ok(marker) => eprintln!("[overlay] announced {}", marker.display()),
+        Err(error) => eprintln!("[overlay] could not announce liveness: {error}"),
+    }
     let Loaded {
         animation,
         blocks,
@@ -2294,12 +2305,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         menu: menu::Menu::new(),
         control_path: control_path.clone(),
     };
-    // Tell everyone else that this instance is alive: a control file alone cannot
-    // distinguish "running" from "ran once" (see `ControlState::is_running`).
-    match ControlState::announce(&state.control_path) {
-        Ok(path) => eprintln!("[overlay] announced {}", path.display()),
-        Err(error) => eprintln!("[overlay] could not announce liveness: {error}"),
-    }
     event_queue.roundtrip(&mut state)?;
     // Configures the input region for the restored mode (Opaque builds the
     // per-pixel region; PassThrough installs the empty one).
