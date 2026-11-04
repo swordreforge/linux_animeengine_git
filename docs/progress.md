@@ -408,6 +408,24 @@ Interaction and control:
       over it; frames with a 0 ms delay fall back to 33 ms
       (`Frame::effective_delay_ms`)
 
+### Main window (`anima-studio`, Iced)
+
+- [x] Toolkit decision recorded in `docs/ui-toolkit-decision.md`: **Iced 0.14**, in a
+      separate binary, over GPUI/egui/GTK4/Slint/Tauri. Key measured fact: Iced is on
+      `wgpu 27` while the overlay is on `wgpu 29`, so the two never share a device —
+      they are separate processes, which is the design anyway.
+- [x] Skeleton: `studio` feature + `anima-studio` bin. Header with the four primary
+      languages (native names, `pick_list`), a refresh action, the installed Workshop
+      library from the same discovery the CLI uses, and per-item details (path +
+      assets). Text goes through the existing `I18n::tr()` catalog.
+- [x] Verified: a headless test boots the state and prints
+      `2 root(s) · 1 item(s) · catalog …/anima_translations.json · 793 entries`, and
+      the window itself runs on niri/Wayland with no errors (launched, stayed up, no
+      stderr).
+- [ ] Not yet: CJK glyphs confirmed on screen (needs a look at the picker), Workshop
+      thumbnails, subscribe/repair/unsubscribe, driving the overlay through
+      `ControlState`, a search field with IME, and a desktop entry for the window.
+
 ### Steam / Workshop
 
 - [ ] Provide a Linux `libsteam_api.so` and wire `SteamWorkshop` into the app
