@@ -982,6 +982,17 @@ search field with IME, and Workshop browse/search.
       following is a property of the whole list, not of one instance.
       Verified: 0 warnings, clippy 0, 162 lib + 29 studio tests (4 ignored), window relaunched. The rows
       themselves need a click on the tab to see, which is the one thing this cannot screenshot.
+- [x] The overlays tab was refined where the first pass was clumsy: **running instances sort first**
+      (`sort_by_key(|i| !i.running)`, stable, so order is otherwise kept) and the stopped ones are
+      read-only rows — name, marker and summary, no controls, which is all they can honestly offer.
+      The **duplicate scale buttons are gone** from this tab: the row has a 1% slider and, beside it, a
+      text entry that takes an exact number (`ScaleDraft`/`CommitScale`, digits only, three at most,
+      clamped by `set_scale_percent`). `overlay_params` grew a `scale: bool` so the tuning area, which has
+      no slider, keeps its ±10% buttons while the tab does not repeat them.
+      **Rotation stays quantised to 0/90/180/270 on purpose**: `ControlState` normalises it to those four,
+      and the overlay's crop and UV maths is written in terms of axis swaps (`Orientation::swaps_axes`).
+      A finer rotation is a rendering change — arbitrary-angle UV mapping and a different bounding box —
+      not a slider on top of what exists. Recorded as its own item rather than faked here.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

@@ -862,6 +862,11 @@ enum Message {
     /// The scale slider moved. Fine-grained on purpose: 1% steps between the same bounds the overlay
     /// enforces (10..=100), instead of only the coarse ±10% buttons.
     SetScale(PathBuf, u32),
+    /// The scale entry: type the exact percentage instead of dragging to it. Only digits, three at most,
+    /// because 100 is the largest the overlay accepts and anything else is a typo rather than input.
+    ScaleDraft(PathBuf, String),
+    /// Apply whatever the scale entry says.
+    CommitScale(PathBuf),
     PollOverlay,
     Quit,
 }
@@ -1280,6 +1285,8 @@ struct Studio {
     /// The settings tab's key field. Deliberately starts empty and is cleared after a save: the stored
     /// key is never rendered, only whether one is stored.
     key_draft: String,
+    /// The scale entry, when a row is being typed into: which instance, and what has been typed.
+    scale_draft: Option<(PathBuf, String)>,
     pending_remove: Option<u64>,
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
@@ -1330,6 +1337,7 @@ impl Studio {
             motion: motion_enabled(),
             tab: Tab::default(),
             key_draft: String::new(),
+            scale_draft: None,
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
@@ -1818,6 +1826,21 @@ impl Studio {
             }
             Message::OverlayOn(control, action) => self.apply_overlay_to(control, action),
             Message::SetScale(control, percent) => self.set_scale_on(control, percent),
+            Message::ScaleDraft(control, text) => {
+                let cleaned: String = text.chars().filter(char::is_ascii_digit).take(3).collect();
+                self.scale_draft = Some((control, cleaned));
+            }
+            Message::CommitScale(control) => {
+                let percent = self
+                    .scale_draft
+                    .as_ref()
+                    .filter(|(path, _)| path == &control)
+                    .and_then(|(_, text)| text.parse::<u32>().ok());
+                self.scale_draft = None;
+                if let Some(percent) = percent {
+                    self.set_scale_on(control, percent);
+                }
+            }
             Message::MetaLoaded(loaded) => {
                 let count = loaded.len();
                 for (id, meta) in loaded {
@@ -2391,7 +2414,10 @@ impl Studio {
                 .push(text("no control file yet — start an overlay first").size(11))
                 .into();
         }
-        for instance in &self.overlay {
+        // Running first: those are the rows with something to change, and the rest are read-only.
+        let mut instances: Vec<&OverlayInstance> = self.overlay.iter().collect();
+        instances.sort_by_key(|instance| !instance.running);
+        for instance in instances {
             rows = rows.push(self.instance_row(instance));
         }
         scrollable(rows)
@@ -2429,13 +2455,17 @@ impl Studio {
         .spacing(6);
 
         if instance.running {
-            let down = control.clone();
-            let up = control.clone();
+            // The slider is the fine control; the entry beside it is for typing an exact number. The
+            // coarse ±10% buttons are not repeated here — they are gone, since the slider and the entry
+            // cover both jobs.
+            let draft = self
+                .scale_draft
+                .as_ref()
+                .filter(|(path, _)| path == &control)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| state.scale_percent.to_string());
             details = details.push(
                 row![
-                    button(text("−10%"))
-                        .style(secondary)
-                        .on_press(Message::OverlayOn(down, OverlayAction::ScaleDown)),
                     slider(
                         MIN_SCALE_PERCENT..=MAX_SCALE_PERCENT,
                         state.scale_percent,
@@ -2446,16 +2476,24 @@ impl Studio {
                     )
                     .step(1u32)
                     .width(Length::Fill),
-                    button(text("+10%"))
-                        .style(secondary)
-                        .on_press(Message::OverlayOn(up, OverlayAction::ScaleUp)),
+                    text_input("100", &draft)
+                        .on_input({
+                            let control = control.clone();
+                            move |text| Message::ScaleDraft(control.clone(), text)
+                        })
+                        .on_submit(Message::CommitScale(control.clone()))
+                        .style(iced_material::text_input::default)
+                        .width(Length::Fixed(56.0)),
+                    text("%").size(11),
                 ]
-                .spacing(8)
+                .spacing(6)
                 .align_y(iced::Alignment::Center),
             );
-            details = details.push(self.overlay_params(Some(state), |action| {
-                Message::OverlayOn(control.clone(), action)
-            }));
+            details = details.push(self.overlay_params(
+                Some(state),
+                |action| Message::OverlayOn(control.clone(), action),
+                false,
+            ));
             details = details.push(
                 row![
                     button(text(self.i18n.tr("Quit overlay")))
@@ -2646,6 +2684,7 @@ impl Studio {
         &self,
         state: Option<&ControlState>,
         tag: impl Fn(OverlayAction) -> Message,
+        scale: bool,
     ) -> El<'_> {
         let hidden = state.is_some_and(|state| state.hidden);
         let locked = state.is_some_and(|state| state.locked);
@@ -2671,25 +2710,43 @@ impl Studio {
             ]
             .spacing(6)
             .wrap(),
-            row![
-                button(text("−10%"))
-                    .style(secondary)
-                    .on_press(tag(OverlayAction::ScaleDown)),
-                button(text("+10%"))
-                    .style(secondary)
-                    .on_press(tag(OverlayAction::ScaleUp)),
-                button(text("⟳ 90°"))
-                    .style(secondary)
-                    .on_press(tag(OverlayAction::Rotate)),
-                button(text(self.i18n.tr("Flip H")))
-                    .style(secondary)
-                    .on_press(tag(OverlayAction::FlipH)),
-                button(text(self.i18n.tr("Flip V")))
-                    .style(secondary)
-                    .on_press(tag(OverlayAction::FlipV)),
-            ]
-            .spacing(6)
-            .wrap(),
+            // The scale buttons live beside a slider in the overlays tab, so they are left out there and
+            // kept here, where they are the only scale control.
+            if scale {
+                row![
+                    button(text("−10%"))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::ScaleDown)),
+                    button(text("+10%"))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::ScaleUp)),
+                    button(text("⟳ 90°"))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::Rotate)),
+                    button(text(self.i18n.tr("Flip H")))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::FlipH)),
+                    button(text(self.i18n.tr("Flip V")))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::FlipV)),
+                ]
+                .spacing(6)
+                .wrap()
+            } else {
+                row![
+                    button(text("⟳ 90°"))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::Rotate)),
+                    button(text(self.i18n.tr("Flip H")))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::FlipH)),
+                    button(text(self.i18n.tr("Flip V")))
+                        .style(secondary)
+                        .on_press(tag(OverlayAction::FlipV)),
+                ]
+                .spacing(6)
+                .wrap()
+            },
             row![
                 button(text(self.i18n.tr("Reset")))
                     .style(secondary)
@@ -2760,6 +2817,8 @@ impl Studio {
                     .filter(|(path, _)| path == asset)
                     .map(|(_, state)| state),
                 Message::StageOverlay,
+                // No slider here, so this is the only scale control on the tuning area.
+                true,
             ),
         );
         area.into()
