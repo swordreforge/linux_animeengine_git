@@ -102,6 +102,61 @@ fn danger(
     }
 }
 
+/// The selected state, carried by colour instead of a "▸" glyph in front of the text.
+///
+/// A filled accent with the text in `on_primary` is the literal inversion, and it is what the tab bar
+/// and single-line buttons use: the button widget colours its own label, so nothing else is needed.
+fn selected_fill(
+    theme: &iced_material::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    use iced::widget::button;
+    let colors = theme.colors();
+    let (background, text_color) = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            (colors.primary.container, colors.primary.container_text)
+        }
+        _ => (colors.primary.color, colors.primary.text),
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color,
+        border: iced::Border {
+            radius: 9999.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// The selected state for two-line rows, which is *tonal* rather than filled, and not for want of
+/// trying: a widget's style colours the widget, not the `text` children inside it, so a filled row would
+/// leave its second line in the on-surface colour and unreadable on the accent. `secondary_container`
+/// with its own text colour is what Material 3 uses for a selected list item anyway, and it stays
+/// legible in every palette because both halves come from the same role.
+fn selected_row(
+    theme: &iced_material::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    use iced::widget::button;
+    let colors = theme.colors();
+    let (background, _) = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            (colors.secondary.container, colors.secondary.container_text)
+        }
+        _ => (colors.secondary.container, colors.secondary.container_text),
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color: colors.secondary.container_text,
+        border: iced::Border {
+            radius: 10.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 /// A round Material 3 floating-action button: primary container, full radius. Used for refresh,
 /// where the action is an affordance rather than a word.
 fn fab(
@@ -2092,14 +2147,10 @@ impl Studio {
                 // in the tuning area below, where the play button and the parameters live.
                 for asset in &item.assets {
                     if is_playable(asset) {
-                        let marker = if self.previewed_asset.as_ref() == Some(asset) {
-                            "▸ "
-                        } else {
-                            ""
-                        };
+                        let selected = self.previewed_asset.as_ref() == Some(asset);
                         pane = pane.push(
-                            button(text(format!("{marker}{}", file_name(asset))))
-                                .style(text_button)
+                            button(text(file_name(asset)))
+                                .style(if selected { selected_fill } else { text_button })
                                 .on_press(Message::SelectAsset(asset.clone())),
                         );
                     } else {
@@ -2337,7 +2388,7 @@ impl Studio {
         for (tab, key) in tabs {
             let tab_button = button(text(self.i18n.tr(key)))
                 .style(if self.tab == tab {
-                    primary
+                    selected_fill
                 } else {
                     text_button
                 })
@@ -2690,17 +2741,15 @@ impl Studio {
                         .map(|name| name.to_string_lossy().into_owned())
                 })
                 .unwrap_or_else(|| self.i18n.tr("Workshop"));
-            // Two lines per row, and the accent colour is reserved for the primary action, so
-            // selection is shown with a marker instead.
-            let marker = if self.selected_item == Some(*id) {
-                "▸ "
-            } else {
-                ""
-            };
+            let selected = self.selected_item == Some(*id);
             list = list.push(
                 button(
                     column![
-                        text(format!("{marker}{name}")).size(14),
+                        text(name).size(14).style(if selected {
+                            iced_material::text::secondary_container
+                        } else {
+                            iced_material::text::surface
+                        }),
                         text(format!(
                             "{id} · {} {}",
                             item.assets.len(),
@@ -2710,22 +2759,24 @@ impl Studio {
                     ]
                     .spacing(2),
                 )
-                .style(secondary)
+                .style(if selected { selected_row } else { secondary })
                 .on_press(Message::Select(*id))
                 .width(Length::Fill),
             );
         }
         if let Some(rows) = &self.remote {
             for row in rows {
-                let marker = if self.selected_item == Some(row.id) {
-                    "▸ "
-                } else {
-                    ""
-                };
+                let selected = self.selected_item == Some(row.id);
                 list = list.push(
                     button(
                         column![
-                            text(format!("{marker}☁ {}", row.title)).size(14),
+                            text(format!("☁ {}", row.title))
+                                .size(14)
+                                .style(if selected {
+                                    iced_material::text::secondary_container
+                                } else {
+                                    iced_material::text::surface
+                                }),
                             text(format!(
                                 "{} · {} {}",
                                 row.id,
