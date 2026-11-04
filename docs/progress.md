@@ -464,9 +464,14 @@ Interaction and control:
       those rules `zh-CN`/`zh-TW` are complete; `ja` was missing four real strings,
       which `packaging/i18n-additions.json` supplies and `anima-i18n merge` applies.
       After the merge all four primary languages verify clean (exit 0)
-- [ ] AppImage / Flatpak: a Flatpak needs the sandbox decisions for `~/.steam` and
-      steamcmd. `libsteam_api.so` stays out until the callback path is used (the
-      download path is SteamCMD-only, no SDK)
+- [ ] AppImage / Flatpak: `packaging/flatpak/` has the manifest and a README with
+      the access decisions (wayland + dri, network for SteamCMD, tray talk-name,
+      read-only `~/.local/share/Steam`/`~/.steam`/`home`, and the consequence that
+      `anima-overlay-ctl` must run via `flatpak run` because the sandbox has its own
+      data dir). **Not built here**: this machine lacks `flatpak-builder` and
+      `org.freedesktop.Sdk//26.08`, so the manifest is reviewed-by-inspection only.
+      A Flatpak also cannot reach the host `steamcmd` (documented: download on the
+      host, or add a SteamCMD module with a checksum)
 
 ### Main UI (optional)
 
