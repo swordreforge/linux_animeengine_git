@@ -785,7 +785,7 @@ enum Message {
     ClearSearch,
     /// Search the Workshop itself (needs `STEAM_WEB_API_KEY`).
     SearchSteam,
-    RemoteResults(u32, Result<RemotePage, String>),
+    RemoteResults(u64, u32, Result<RemotePage, String>),
     /// Ask for another page of the same search.
     RemotePage(u32),
     ShowInstalled,
@@ -1089,6 +1089,10 @@ struct Studio {
     /// page" means.
     remote_query: Option<String>,
     remote_loading: bool,
+    /// Bumped for every Steam request. A reply that belongs to an older one is dropped: leaving
+    /// the results while a search is in flight used to let the answer arrive later and switch the
+    /// list back to Steam, over whatever the user had moved on to.
+    remote_request: u64,
     /// Whether the floating picker is up. The workshop list used to be a permanent region of
     /// the left column, where it squeezed the overlay panel; now it floats over the left half
     /// and the panel owns the column.
@@ -1154,6 +1158,7 @@ impl Studio {
             remote_next: None,
             remote_query: None,
             remote_loading: false,
+            remote_request: 0,
             picker: false,
             note: String::new(),
             meta: HashMap::new(),
@@ -1205,6 +1210,22 @@ impl Studio {
         self.snapshot.items.get(&id)
     }
 
+    /// Leave the Steam results: forget the page, the cursor history and the note, and make any
+    /// reply still in flight stale. It deliberately does **not** touch whether the picker is open —
+    /// "show the local list" and "open the list" are different questions, and conflating them is how
+    /// the two buttons that both mean "installed" came to mean different things.
+    fn leave_remote(&mut self) {
+        self.remote = None;
+        self.remote_note.clear();
+        self.remote_query = None;
+        self.remote_page = 1;
+        self.remote_cursors = vec![None];
+        self.remote_next = None;
+        self.remote_total = 0;
+        self.remote_loading = false;
+        self.remote_request = self.remote_request.wrapping_add(1);
+    }
+
     /// Load one page of the Workshop search. Page 1 starts at the beginning; any other page needs
     /// the cursor that identifies it, which is remembered in `remote_cursors` — or, for a page we
     /// have not been to, the cursor Steam gave us for the page after this one.
@@ -1228,9 +1249,13 @@ impl Studio {
 
         let query = self.remote_query.clone();
         self.remote_loading = true;
+        // Every request carries the number it belongs to, so a reply to a search the user has left
+        // can be recognised and dropped instead of landing on top of whatever is on screen now.
+        self.remote_request = self.remote_request.wrapping_add(1);
+        let request = self.remote_request;
         self.remote_note = format!("searching the Workshop… (page {page})");
         Task::perform(async move { fetch_remote(query, cursor) }, move |result| {
-            Message::RemoteResults(page, result)
+            Message::RemoteResults(request, page, result)
         })
     }
 
@@ -1386,7 +1411,14 @@ impl Studio {
                 // Enter, or the button next to the field, is what opens it.
                 self.query = query;
             }
-            Message::ClearSearch => self.query.clear(),
+            Message::ClearSearch => {
+                self.query.clear();
+                // The box and the list have to agree: with the box empty, Steam results for the
+                // query that was just deleted have no business being on screen.
+                if self.remote.is_some() {
+                    self.leave_remote();
+                }
+            }
             Message::SearchSteam => {
                 // A new search starts at the first page, with no cursor history behind it.
                 self.remote_query = search_text(&self.query);
@@ -1398,7 +1430,12 @@ impl Studio {
                 return self.goto_remote_page(1);
             }
             Message::RemotePage(page) => return self.goto_remote_page(page),
-            Message::RemoteResults(page, Ok(loaded)) => {
+            Message::RemoteResults(request, page, Ok(loaded)) => {
+                if request != self.remote_request {
+                    // A reply to a search the user has already left.
+                    eprintln!("[studio] dropping a stale Workshop reply (page {page})");
+                    return Task::none();
+                }
                 self.remote_page = page;
                 self.remote_total = loaded.total;
                 self.remote_next = loaded.next_cursor;
@@ -1418,22 +1455,22 @@ impl Studio {
                 self.remote = Some(loaded.rows);
                 self.open_picker();
             }
-            Message::RemoteResults(_, Err(error)) => {
+            Message::RemoteResults(request, _, Err(error)) => {
+                if request != self.remote_request {
+                    return Task::none();
+                }
                 self.remote_loading = false;
                 self.remote = None;
                 self.remote_note = error;
             }
-            Message::ShowInstalled => {
-                self.remote = None;
-                self.remote_note.clear();
-                self.remote_query = None;
-                self.remote_page = 1;
-                self.remote_cursors = vec![None];
-                self.remote_next = None;
-                self.remote_total = 0;
+            // The button that opens the list and the button that comes back from Steam results mean
+            // the same thing: the installed list. They went through different code, so "installed"
+            // meant one of two things depending on which one you pressed.
+            Message::ShowInstalled => self.leave_remote(),
+            Message::OpenPicker => {
+                self.leave_remote();
                 self.open_picker();
             }
-            Message::OpenPicker => self.open_picker(),
             Message::ClosePicker => self.picker = false,
             Message::Select(id) => {
                 // A different item means a different set of assets: the one on show, and the
@@ -2763,6 +2800,55 @@ mod tests {
         let _ = studio.update(Message::Select(2));
         assert!(studio.previewed_asset.is_none());
         assert!(studio.staged.is_none());
+    }
+
+    #[test]
+    fn the_installed_path_always_shows_installed() {
+        let mut studio = Studio::boot();
+        // Pretend a Steam search is on screen.
+        studio.remote = Some(vec![RemoteRow {
+            id: 1,
+            title: "from steam".to_string(),
+            subscriptions: 0,
+        }]);
+        studio.remote_query = Some("teto".to_string());
+        studio.remote_page = 3;
+        studio.remote_total = 70;
+        studio.remote_next = Some("cursor".to_string());
+
+        // Enter, and the button next to the field, both mean the installed list — they used to
+        // mean "whatever was on screen last", which with Steam results up was Steam results.
+        let _ = studio.update(Message::OpenPicker);
+        assert!(studio.picker);
+        assert!(
+            studio.remote.is_none(),
+            "the installed path kept showing Steam results"
+        );
+        assert_eq!(studio.remote_page, 1);
+        assert!(studio.remote_next.is_none());
+        assert!(studio.remote_query.is_none());
+    }
+
+    #[test]
+    fn a_reply_from_a_search_we_left_is_dropped() {
+        let mut studio = Studio::boot();
+        studio.remote_request = 7;
+        let stale = RemotePage {
+            total: 70,
+            next_cursor: None,
+            rows: vec![RemoteRow {
+                id: 2,
+                title: "stale".to_string(),
+                subscriptions: 0,
+            }],
+        };
+
+        let _ = studio.update(Message::RemoteResults(6, 1, Ok(stale)));
+        assert!(
+            studio.remote.is_none(),
+            "a reply to an abandoned search hijacked the list"
+        );
+        assert!(!studio.picker);
     }
 
     #[test]

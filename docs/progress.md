@@ -857,6 +857,22 @@ search field with IME, and Workshop browse/search.
       is exactly why it read as "a Workshop search just fired". It says `Installed` now — in the
       picker's title, the button that opens it, and the button that comes back from Steam results.
       One i18n key, 820 source strings.
+- [x] Reviewing the two call chains that both mean "installed" found **two real bugs**, and they were
+      the same mistake twice — state that belonged together was kept apart:
+      1. `Message::OpenPicker` (Enter, and the button next to the field) only set `picker = true` and
+         never touched `remote`, so with Steam results on screen it re-opened the *Steam* list under a
+         button labelled `Installed`. `ShowInstalled` had its own seven-line copy of the reset, which
+         is exactly how the two drifted apart. Both go through one `leave_remote()` now.
+      2. `RemoteResults` landed unconditionally, so a slow search answering *after* the user had left
+         the results switched the list back to Steam, over whatever they had moved on to. Replies now
+         carry the request number they belong to and are dropped when it is stale.
+      Also fixed while in there: `ClearSearch` emptied the box but left Steam results for the query
+      that had just been deleted on screen — the box and the list have to agree.
+      Kept deliberately: the selection survives the switch (a remote row stays selected when you come
+      back to Steam), and choosing a row closes the picker in both modes, because both send the same
+      `Message::Select`.
+      Verified: 0 warnings, clippy 0, 162 lib + 28 studio tests (4 ignored), two of them new — one for
+      each bug above.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).
