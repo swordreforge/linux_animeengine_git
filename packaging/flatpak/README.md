@@ -13,9 +13,20 @@ The overlay itself exits with:
 Error: "binding zwlr_layer_shell_v1: the requested global was not found in the registry"
 ```
 
-i.e. the sandboxed client is **not offered `zwlr_layer_shell_v1`**, while the same
-binary on the host binds it and renders. Until that is understood, run the overlay
-from the portable install and keep the Flatpak for the CLI tools.
+Running with `ANIMA_DUMP_GLOBALS=1` explains it: the sandbox was offered a
+**Mutter/GNOME** registry (`mutter_x11_interop`, `ext_background_effect_manager_v1`,
+`xdg_wm_base v7`, no `zwlr_*`) while the host registry has `zwlr_layer_shell_v1 v5`.
+So the sandboxed app connected to a different compositor's socket — pick niri's
+explicitly and re-check with the same dump:
+
+```bash
+ANIMA_DUMP_GLOBALS=1 anima-overlay /path/to/animation.apng          # host: expect zwlr_layer_shell_v1
+flatpak run --env=ANIMA_DUMP_GLOBALS=1 --env=WAYLAND_DISPLAY=<niri-socket> \
+    io.github.swordreforge.AnimaEngine /path/to/animation.apng      # sandbox: same list?
+```
+
+Until that matches, run the overlay from the portable install and keep the Flatpak
+for the CLI tools.
 
 Build steps (already executed here, kept for reference): see the previous section.
 

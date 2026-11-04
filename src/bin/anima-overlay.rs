@@ -2026,6 +2026,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let qh = event_queue.handle();
     let (globals, _) = registry_queue_init::<OverlayState>(&conn)?;
 
+    // Diagnostic for sandboxed runs (e.g. a Flatpak that does not offer a global):
+    // print what the compositor actually announced, then continue as usual.
+    if std::env::var_os("ANIMA_DUMP_GLOBALS").is_some() {
+        let mut offered = globals.contents().clone_list();
+        offered.sort_by(|left, right| left.interface.cmp(&right.interface));
+        for global in &offered {
+            eprintln!(
+                "[overlay] global {} v{} (name {})",
+                global.interface, global.version, global.name
+            );
+        }
+        eprintln!("[overlay] {} global(s) offered", offered.len());
+    }
+
     let compositor: wl_compositor::WlCompositor = globals
         .bind(&qh, 1..=4, ())
         .map_err(|err| format!("binding wl_compositor: {err}"))?;

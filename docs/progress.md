@@ -268,6 +268,12 @@ Interaction and control:
   `Error: "binding zwlr_layer_shell_v1: the requested global was not found in the registry"`
   while the same binary on the host logs `gpu … | bc7 blocks: supported` and
   renders — so layer-shell is not exposed to the sandbox in this setup.
+- Flatpak globals, the decisive measurement: `ANIMA_DUMP_GLOBALS=1` on the host
+  lists `wl_compositor v6`, `wl_seat v9`, `zwlr_layer_shell_v1 v5` (niri), while
+  the same flag inside the sandbox lists a Mutter/GNOME set
+  (`mutter_x11_interop`, `ext_background_effect_manager_v1`, `xdg_wm_base v7`,
+  `wp_fractional_scale_manager_v1`, …) with **no `zwlr_*`**) — the sandbox attached
+  to a different compositor, so layer-shell was legitimately absent.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -480,13 +486,14 @@ Interaction and control:
       sandbox, and the manifest installs that staging tree. The sandboxed CLI works
       (`flatpak run --command=anima-overlay-ctl … status` reads the sandbox control
       file).
-- [ ] **The overlay itself cannot run inside the Flatpak here**: the sandboxed
-      client is not offered `zwlr_layer_shell_v1` — the app exits with
-      `binding zwlr_layer_shell_v1: the requested global was not found in the
-      registry`, while the same binary on the host binds it fine. So keep the
-      overlay on the portable install and treat the Flatpak as CLI-only until this
-      is understood (niri/libwayland/flatpak-version specifics). The manifest stays
-      as the basis for that work
+- [ ] **The overlay does not start inside the Flatpak here.** `ANIMA_DUMP_GLOBALS=1`
+      showed the cause: the sandbox was offered a **Mutter/GNOME** registry
+      (`mutter_x11_interop`, `ext_background_effect_manager_v1`, `xdg_wm_base v7`,
+      no `zwlr_*` at all) while the host registry has `zwlr_layer_shell_v1 v5` — so
+      the sandboxed app connected to a different compositor's socket, not niri's.
+      That is why `zwlr_layer_shell_v1` was missing. Next: launch the Flatpak with
+      `--env=WAYLAND_DISPLAY=<niri socket>` and confirm with the same dump. The
+      overlay stays on the portable install until then
 
 ### Main UI (optional)
 
@@ -541,6 +548,8 @@ cargo test --features bc7                         # + BC7 encode/decode (133)
 cargo run --release --features bc7 --example bc7_bench -- <animation>
 cargo run --bin anima-i18n -- verify <catalog.json>   # per-language health
 bash packaging/install.sh --catalog <catalog.json>    # portable user-local install
+curl -fsSL <url> | sh -s -- --repo <git-url>          # build + install one-liner
+ANIMA_DUMP_GLOBALS=1 anima-overlay <anim>             # print the compositor globals
 cargo run --release --example cache_bench -- <animation>   # zstd vs PNG cache
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
