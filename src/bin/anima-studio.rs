@@ -212,6 +212,47 @@ enum OverlayAction {
     Quit,
 }
 
+/// One result from the Steam Workshop search. It is not necessarily installed — that is the
+/// point of the search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteRow {
+    id: u64,
+    title: String,
+    subscriptions: u64,
+}
+
+/// What to send Steam as `search_text`: trimmed, or nothing to browse with.
+fn search_text(query: &str) -> Option<String> {
+    let text = query.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Ask Steam for Workshop items. Needs `STEAM_WEB_API_KEY`; a missing key is reported by name
+/// so the caller can say exactly what is wrong instead of showing an empty list.
+fn fetch_remote(query: Option<String>) -> Result<Vec<RemoteRow>, String> {
+    let web = WorkshopWeb::new().map_err(|error| error.to_string())?;
+    if !web.has_api_key() {
+        return Err(format!(
+            "{} is not set — a Steam Web API key is needed for browsing; installed items work without one",
+            anima_engine_rs::workshop_web::API_KEY_ENV
+        ));
+    }
+    let details = web
+        .query_files(anima_engine_rs::workshop::APP_ID, 1, 50, query.as_deref())
+        .map_err(|error| error.to_string())?;
+    Ok(details
+        .into_iter()
+        .filter_map(|details| {
+            let id = details.id()?;
+            Some(RemoteRow {
+                id,
+                title: details.title,
+                subscriptions: details.subscriptions,
+            })
+        })
+        .collect())
+}
+
 /// Does `item` match `query`? The id, the Steam title and the asset file names are searched,
 /// case-insensitively; an empty query matches everything. Pure, so list filtering is tested
 /// without a window.
@@ -367,6 +408,10 @@ enum Message {
     Refresh,
     Search(String),
     ClearSearch,
+    /// Search the Workshop itself (needs `STEAM_WEB_API_KEY`).
+    SearchSteam,
+    RemoteResults(Result<Vec<RemoteRow>, String>),
+    ShowInstalled,
     Select(u64),
     Loaded(u64, Option<Meta>, Result<(u32, u32, Vec<u8>), String>),
     CopyPath(String),
@@ -508,6 +553,10 @@ struct Studio {
     selected_item: Option<u64>,
     /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
     query: String,
+    /// Steam search results, when the list is showing them instead of what is installed.
+    remote: Option<Vec<RemoteRow>>,
+    /// Why a Steam search produced nothing (missing key, offline), shown in the status line.
+    remote_note: String,
     note: String,
     meta: HashMap<u64, Meta>,
     thumbs: HashMap<u64, Thumb>,
@@ -533,6 +582,8 @@ impl Studio {
             snapshot: WorkshopSnapshot::default(),
             selected_item: None,
             query: String::new(),
+            remote: None,
+            remote_note: String::new(),
             note: String::new(),
             meta: HashMap::new(),
             thumbs: HashMap::new(),
@@ -698,13 +749,35 @@ impl Studio {
             Message::Refresh => self.refresh(),
             Message::Search(query) => self.query = query,
             Message::ClearSearch => self.query.clear(),
+            Message::SearchSteam => {
+                let query = search_text(&self.query);
+                self.remote_note = "searching the Workshop…".to_string();
+                return Task::perform(async move { fetch_remote(query) }, Message::RemoteResults);
+            }
+            Message::RemoteResults(Ok(rows)) => {
+                self.remote_note = match rows.len() {
+                    0 => "no Workshop results".to_string(),
+                    count => format!("{count} Workshop result(s)"),
+                };
+                self.remote = Some(rows);
+            }
+            Message::RemoteResults(Err(error)) => {
+                self.remote = None;
+                self.remote_note = error;
+            }
+            Message::ShowInstalled => {
+                self.remote = None;
+                self.remote_note.clear();
+            }
             Message::Select(id) => {
                 self.selected_item = Some(id);
-                if let Some(item) = self.item(id) {
-                    let dir = item.path.clone();
-                    if !self.thumbs.contains_key(&id) {
-                        return self.load_thumb_task(id, dir);
-                    }
+                // A remote result has no directory yet; its preview comes from the CDN.
+                let dir = self
+                    .item(id)
+                    .map(|item| item.path.clone())
+                    .unwrap_or_default();
+                if !self.thumbs.contains_key(&id) {
+                    return self.load_thumb_task(id, dir);
                 }
             }
             Message::Loaded(id, meta, thumb) => {
@@ -813,14 +886,23 @@ impl Studio {
 
         let mut list = column![].spacing(4);
         let mut shown = 0usize;
-        for (id, item) in &self.snapshot.items {
-            if !matches(
-                item,
-                self.meta.get(id).map(|meta| meta.title.as_str()),
-                &self.query,
-            ) {
-                continue;
-            }
+        // The list shows either what is installed (filtered) or the Steam search results.
+        let installed: Vec<(&u64, &WorkshopItem)> = if self.remote.is_none() {
+            self.snapshot
+                .items
+                .iter()
+                .filter(|(id, item)| {
+                    matches(
+                        item,
+                        self.meta.get(id).map(|meta| meta.title.as_str()),
+                        &self.query,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (id, item) in installed {
             shown += 1;
             let name = self
                 .meta
@@ -860,8 +942,16 @@ impl Studio {
             );
         }
 
-        let details: Element<'_, Message> = match self.selected_item.and_then(|id| self.item(id)) {
-            Some(item) => {
+        let selected_item = self.selected_item.and_then(|id| self.item(id).cloned());
+        let selected_remote = self.selected_item.and_then(|id| {
+            self.remote
+                .iter()
+                .flatten()
+                .find(|row| row.id == id)
+                .cloned()
+        });
+        let details: Element<'_, Message> = match (selected_item, selected_remote) {
+            (Some(item), _) => {
                 let id = item.id;
                 // The pane reads: where it lives → what it looks like → what it is →
                 // what you can do → what it contains. Raw paths and the CDN URL are not
@@ -976,8 +1066,90 @@ impl Studio {
                 }
                 scrollable(pane).into()
             }
-            None => text(self.note.clone()).into(),
+            (None, Some(row)) => {
+                let id = row.id;
+                let mut pane = column![
+                    text(format!("☁ {}", row.title)).size(20),
+                    text(format!(
+                        "{} · {} {}",
+                        id,
+                        row.subscriptions,
+                        self.i18n.tr("subscriptions")
+                    ))
+                    .size(12),
+                ]
+                .spacing(10);
+
+                match self.thumbs.get(&id) {
+                    Some(Thumb::Ready(handle)) => {
+                        pane = pane.push(
+                            container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
+                                .width(Length::Fill)
+                                .height(Length::Fixed(PREVIEW_HEIGHT)),
+                        );
+                    }
+                    Some(Thumb::Loading) => {
+                        pane = pane.push(
+                            container(text("…").size(12)).height(Length::Fixed(PREVIEW_HEIGHT)),
+                        );
+                    }
+                    Some(Thumb::Failed(error)) => {
+                        pane = pane.push(
+                            container(
+                                text(format!("{} · {error}", self.i18n.tr("No preview"))).size(12),
+                            )
+                            .height(Length::Fixed(PREVIEW_HEIGHT)),
+                        );
+                    }
+                    None => {}
+                }
+
+                pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
+                pane = pane.push(
+                    row![
+                        button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
+                            .style(primary)
+                            .on_press(Message::Download(id)),
+                        button(text(self.i18n.tr("Subscribe")))
+                            .style(secondary)
+                            .on_press(Message::OpenPage(id)),
+                    ]
+                    .spacing(8),
+                );
+                pane = pane.push(text("(not installed)".to_string()).size(11));
+                scrollable(pane).into()
+            }
+            (None, None) => text(self.note.clone()).into(),
         };
+
+        if let Some(rows) = &self.remote {
+            for row in rows {
+                shown += 1;
+                let marker = if self.selected_item == Some(row.id) {
+                    "▸ "
+                } else {
+                    ""
+                };
+                list = list.push(
+                    button(
+                        column![
+                            text(format!("{marker}☁ {}", row.title)).size(14),
+                            text(format!(
+                                "{} · {} {}",
+                                row.id,
+                                row.subscriptions,
+                                self.i18n.tr("subscriptions")
+                            ))
+                            .size(11),
+                        ]
+                        .spacing(2),
+                    )
+                    .style(secondary)
+                    .on_press(Message::Select(row.id))
+                    .width(Length::Fill),
+                );
+            }
+        }
 
         if shown == 0 && !self.snapshot.is_empty() {
             list = list.push(text("—").size(12));
@@ -999,6 +1171,18 @@ impl Studio {
             );
             search = search.push(text(format!("{shown}/{}", self.snapshot.len())).size(11));
         }
+        search = search.push(
+            button(text(format!("{} Steam", self.i18n.tr("Search"))))
+                .style(secondary)
+                .on_press(Message::SearchSteam),
+        );
+        if self.remote.is_some() {
+            search = search.push(
+                button(text(self.i18n.tr("Workshop")))
+                    .style(secondary)
+                    .on_press(Message::ShowInstalled),
+            );
+        }
 
         let left = column![
             search,
@@ -1017,11 +1201,23 @@ impl Studio {
         .spacing(16)
         .height(Length::Fill);
 
-        container(column![header, bodies, text(self.note.clone()).size(11)].spacing(12))
-            .padding(16)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        container(
+            column![
+                header,
+                bodies,
+                text(if self.remote_note.is_empty() {
+                    self.note.clone()
+                } else {
+                    self.remote_note.clone()
+                })
+                .size(11)
+            ]
+            .spacing(12),
+        )
+        .padding(16)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     /// The overlay control panel. Same channel as the tray, the portal and the CLI:
@@ -1275,6 +1471,23 @@ mod tests {
             assert!(!instance.label.is_empty());
         }
         eprintln!("[studio] {} overlay control file(s)", instances.len());
+    }
+
+    #[test]
+    fn the_query_is_trimmed_and_empty_means_browse() {
+        assert_eq!(search_text("  miku  ").as_deref(), Some("miku"));
+        assert_eq!(search_text("   "), None);
+        assert_eq!(search_text(""), None);
+    }
+
+    #[test]
+    fn a_missing_api_key_is_explained() {
+        if std::env::var(anima_engine_rs::workshop_web::API_KEY_ENV).is_ok() {
+            return; // this machine has a key; nothing to assert
+        }
+        let error = fetch_remote(None).expect_err("no key means an error, not an empty list");
+        assert!(error.contains("STEAM_WEB_API_KEY"), "{error}");
+        eprintln!("[studio] no key: {error}");
     }
 
     #[test]

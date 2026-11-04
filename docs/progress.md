@@ -552,7 +552,16 @@ search field with IME, and Workshop browse/search.
       query, the whitespace-only query, id, title in either case and an asset name. The
       selection is kept by id, so filtering the selected row away does not lose it — the pane
       keeps showing it. The placeholder reuses the catalog's `Search`, so it is translated.
-- [ ] Not yet: API-key browse/search, and list-row thumbnails once the library is big.
+- [x] Workshop search through `IPublishedFileService/QueryFiles`, which needs
+      `STEAM_WEB_API_KEY`. The search row gained `Search Steam` — and `Workshop` to go back to
+      what is installed — and results are listed with a `☁` marker as selectable rows whose
+      pane shows the title, the subscription count, the CDN preview through the same thumbnail
+      cache, and the Download / subscribe actions. Without a key the status line says exactly
+      `STEAM_WEB_API_KEY is not set — a Steam Web API key is needed for browsing; installed
+      items work without one`, and a unit test pins that wording (skipping itself when a key
+      is present). `search_text` — trimmed, or nothing for a plain browse — is unit-tested.
+- [ ] Not yet: list-row thumbnails once the library is big, plus the small items in
+      `next-steps.md` (follow lock, notify-based refresh, distinct icon, shortcuts).
 
 ### Overlay lifecycle (`anima-shepherd`)
 
