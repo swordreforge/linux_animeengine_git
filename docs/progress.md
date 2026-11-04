@@ -953,6 +953,21 @@ search field with IME, and Workshop browse/search.
       What it looks like: the rows read as Steam titles — `Kipfel touch the screen`, `Cute Dancing GIFs`,
       `kasane teto hooked trend` — instead of file names, which is the metadata batch from earlier doing
       its job somewhere visible.
+- [x] The panel really is instant now: the studio watches `overlay_control/` and the data directory with
+      `notify`, so a write from the tray, the CLI, the portal or another instance arrives as an event. The
+      event only says "something moved" — the fingerprint check that already existed decides whether
+      anything changed, so a burst costs one rebuild. The watcher sits on its own thread (it is blocking
+      and must outlive the stream) and feeds an unbounded channel that `futures_util::stream::unfold`
+      turns into a subscription; a watcher that cannot be created logs and leaves the poll in charge.
+      The poll stays, slower: **2000ms** instead of 250, as the safety net for the events a watcher can
+      miss (an overflowed inotify queue, a directory replaced under it).
+      Cost, stated rather than implied: this time it **is** a new dependency — nothing in the tree spoke
+      inotify — `notify 8.2.1` with `notify-types`, `inotify` and `walkdir` (mio was already there for
+      tokio). The `studio` feature now also declares `futures-util` and `tokio`, both already compiled
+      for the overlay build.
+      Verified: the watcher logs `watching …/overlay_control for control changes`, and touching one
+      control file produced exactly one `overlay panel refreshed` within the second — with the poll at
+      2000ms, so that was the event path and not the timer.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).
