@@ -74,6 +74,12 @@ pub fn normalize_region_step(value: &str) -> String {
     }
 }
 
+/// Normalize a rotation to the nearest quarter turn (0/90/180/270).
+pub fn normalize_rotation(degrees: i32) -> i32 {
+    let normalized = degrees.rem_euclid(360);
+    ((normalized + 45) / 90 % 4) * 90
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -110,6 +116,15 @@ pub struct ControlState {
     /// Whether the overlay is hidden (kept alive as a 1x1 surface).
     #[serde(default)]
     pub hidden: bool,
+    /// Clockwise rotation in degrees, normalized to 0/90/180/270.
+    #[serde(default)]
+    pub rotation: i32,
+    /// Mirror horizontally.
+    #[serde(default)]
+    pub flip_h: bool,
+    /// Mirror vertically.
+    #[serde(default)]
+    pub flip_v: bool,
     /// Input-region sampling policy: `off`, `auto`, or a fixed grid `1..=32`.
     #[serde(default = "default_region_step")]
     pub region_step: String,
@@ -137,6 +152,9 @@ impl Default for ControlState {
             scale_percent: MAX_SCALE_PERCENT,
             locked: false,
             hidden: false,
+            rotation: 0,
+            flip_h: false,
+            flip_v: false,
             region_step: default_region_step(),
             region_soft_rects: DEFAULT_REGION_SOFT_RECTS,
             region_max_rects: DEFAULT_REGION_MAX_RECTS,
@@ -256,6 +274,34 @@ impl ControlState {
         self.set_hidden(hidden)
     }
 
+    /// Set the rotation, normalized to 0/90/180/270.
+    #[must_use]
+    pub fn set_rotation(mut self, degrees: i32) -> Self {
+        self.rotation = normalize_rotation(degrees);
+        self.touched()
+    }
+
+    /// Rotate clockwise by `delta` degrees (typically ±90).
+    #[must_use]
+    pub fn rotate_by(self, delta: i32) -> Self {
+        let degrees = self.rotation + delta;
+        self.set_rotation(degrees)
+    }
+
+    /// Flip horizontally.
+    #[must_use]
+    pub fn toggle_flip_h(mut self) -> Self {
+        self.flip_h = !self.flip_h;
+        self.touched()
+    }
+
+    /// Flip vertically.
+    #[must_use]
+    pub fn toggle_flip_v(mut self) -> Self {
+        self.flip_v = !self.flip_v;
+        self.touched()
+    }
+
     /// Set the input-region sampling policy (`off`, `auto`, or `1..=32`).
     #[must_use]
     pub fn set_region_step(mut self, step: &str) -> Self {
@@ -358,6 +404,9 @@ mod tests {
             scale_percent: 50,
             locked: true,
             hidden: true,
+            rotation: 90,
+            flip_h: true,
+            flip_v: false,
             region_step: "auto".to_string(),
             region_soft_rects: 512,
             region_max_rects: 2048,
@@ -378,6 +427,22 @@ mod tests {
             serde_json::from_str::<InputMode>("\"opaque\"").unwrap(),
             InputMode::Opaque
         );
+    }
+
+    #[test]
+    fn rotation_and_flips_normalize() {
+        let state = ControlState::fresh();
+        assert_eq!(state.rotation, 0);
+        assert!(!state.flip_h && !state.flip_v);
+
+        assert_eq!(state.clone().set_rotation(90).rotation, 90);
+        assert_eq!(state.clone().set_rotation(-90).rotation, 270);
+        assert_eq!(state.clone().set_rotation(350).rotation, 0);
+        assert_eq!(state.clone().rotate_by(90).rotation, 90);
+        assert_eq!(state.clone().rotate_by(-90).rotation, 270);
+
+        let flipped = state.clone().toggle_flip_h().toggle_flip_v();
+        assert!(flipped.flip_h && flipped.flip_v);
     }
 
     #[test]

@@ -86,6 +86,20 @@ fn main() -> ExitCode {
             },
             _ => return usage("[--instance <path>] region <step|soft|max> <value>"),
         },
+        Some("rotate") => match words.next().as_deref() {
+            Some("cw") => apply_all(&paths, |state| state.rotate_by(90)),
+            Some("ccw") => apply_all(&paths, |state| state.rotate_by(-90)),
+            Some(value) => match value.trim_end_matches('°').parse::<i32>() {
+                Ok(degrees) => apply_all(&paths, move |state| state.set_rotation(degrees)),
+                Err(_) => return usage("[--instance <path>] rotate <deg|cw|ccw>"),
+            },
+            None => return usage("[--instance <path>] rotate <deg|cw|ccw>"),
+        },
+        Some("flip") => match words.next().as_deref() {
+            Some("h") => apply_all(&paths, |state| state.toggle_flip_h()),
+            Some("v") => apply_all(&paths, |state| state.toggle_flip_v()),
+            _ => return usage("[--instance <path>] flip <h|v>"),
+        },
         Some("status") | Some("--list") => {
             status(&paths);
             Ok(())
@@ -158,6 +172,11 @@ fn status(paths: &[PathBuf]) {
         let _ = writeln!(out, "  mode:   {mode}");
         let _ = writeln!(out, "  scale:  {}%", state.scale_percent);
         let _ = writeln!(out, "  locked: {}  hidden: {}", state.locked, state.hidden);
+        let _ = writeln!(
+            out,
+            "  transform: {}°  flip_h {}  flip_v {}",
+            state.rotation, state.flip_h, state.flip_v
+        );
         let _ = writeln!(
             out,
             "  region: step {}  soft {}  max {}",

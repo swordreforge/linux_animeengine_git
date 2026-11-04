@@ -25,7 +25,7 @@ A Rust rewrite of the AnimaEngine app, split into two goals:
 | `input_map` | `deteccionDeTeclas.py` / `funciones.py` | `configTeclas.json` bindings, activation modes, function catalog |
 | `cache` | `monoModule.py` | `FrameCache`: sha256 key, ZIP+PNG frames, LRU eviction |
 | `anim` | `nuevoMotor.py` | GIF/APNG/WebP decode → composited RGBA frames (via `image`), plus `alpha_at` / `alpha_hit` / `alpha_rects` and `Orientation` (quarter turns + mirrors) |
-| `control` | — (new) | cross-process overlay control file (`overlay_control.json`): `InputMode` (full / opaque / pass-through), `scale_percent` (10–100), reset / quit + generation |
+| `control` | — (new) | cross-process overlay control file (`overlay_control.json`): `InputMode` (full / opaque / pass-through), `scale_percent` (10–100), `rotation` / `flip_h` / `flip_v`, reset / quit + generation |
 | `error` | — | shared error type |
 
 ### Workshop
@@ -147,7 +147,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **115** default (112 lib + 3 CLI), **118** with
+- `cargo test`: **116** default (113 lib + 3 CLI), **119** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -166,6 +166,11 @@ Interaction and control:
 - `anima-workshop sync` reads the Steam client's `appworkshop_3474900.acf`
   subscriptions and returns the installed item (`3828587753`, 6 assets) without
   downloading; any missing item would be fetched through SteamCMD.
+- Runtime rotate/mirror: `anima-overlay-ctl --instance <path> rotate 90` logged
+  `transform 90° flip_h false flip_v false` and `flip h` produced
+  `transform 0° flip_h true`; the surface is resized to the rotated size
+  (output-fit, aspect preserved) and the transform is written back to
+  `secondary_instances.json`.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -353,8 +358,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (115 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (118)
+cargo test                                        # pure logic (116 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (119)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -391,4 +396,4 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   frame-count region throttling/coarsening (+ optional auto step and configurable,
   runtime-tunable rectangle budgets) → in-surface right-click menu →
   Steam root/library discovery + `anima-workshop` CLI → SteamCMD download path →
-  SteamCmd as a `WorkshopSource` (sync).
+  SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray).

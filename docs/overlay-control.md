@@ -63,6 +63,9 @@ anima-overlay-ctl mode opaque
 anima-overlay-ctl mode pass-through
 anima-overlay-ctl scale 50           # shrink to 50% (never above 100%)
 anima-overlay-ctl scale up            # +10%
+anima-overlay-ctl rotate 90           # clockwise, normalized to 0/90/180/270
+anima-overlay-ctl rotate cw           # +90° (ccw for -90°)
+anima-overlay-ctl flip h              # mirror horizontally (v = vertical)
 anima-overlay-ctl scale down          # -10%
 anima-overlay-ctl lock                # disable dragging (persisted)
 anima-overlay-ctl unlock

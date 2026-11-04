@@ -84,6 +84,11 @@ impl Orientation {
         }
     }
 
+    /// Rotation in degrees (0/90/180/270).
+    pub fn degrees(&self) -> i32 {
+        i32::from(self.quarter_turns) * 90
+    }
+
     /// Native unit coordinates (origin top-left) -> display unit coordinates.
     pub fn native_to_display(&self, u: f64, v: f64) -> (f64, f64) {
         let (mut x, mut y) = match self.quarter_turns % 4 {

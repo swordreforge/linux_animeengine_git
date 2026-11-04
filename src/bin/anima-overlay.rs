@@ -899,16 +899,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for OverlayState {
                 // niri shrinks layer surfaces pushed past a screen edge; taking
                 // that size would stretch the frame. Shrink our pinned size only
                 // if it cannot fit the output (aspect preserved), then bounce.
-                if let Some((out_w, out_h)) = output_size(state)
-                    && (state.desired_size.0 > out_w || state.desired_size.1 > out_h)
-                {
-                    let scale = (f64::from(out_w) / f64::from(state.desired_size.0))
-                        .min(f64::from(out_h) / f64::from(state.desired_size.1));
-                    state.desired_size = (
-                        ((f64::from(state.desired_size.0) * scale).floor() as u32).max(1),
-                        ((f64::from(state.desired_size.1) * scale).floor() as u32).max(1),
-                    );
-                }
+                state.desired_size = fit_to_output(state, state.desired_size);
                 if width > 0 && height > 0 && (width, height) != state.desired_size {
                     state
                         .layer_surface
@@ -1323,7 +1314,7 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
     if state.hidden {
         eprintln!("[overlay] scale {percent}% (hidden)");
     } else {
-        let (width, height) = scaled_size(state);
+        let (width, height) = fit_to_output(state, scaled_size(state));
         state.desired_size = (width, height);
         state.layer_surface.set_size(width, height);
         state.surface.commit();
@@ -1345,7 +1336,11 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
     state.hidden = hidden;
     state.visual_dirty = true;
     state.region_dirty = true;
-    let (width, height) = if hidden { (1, 1) } else { scaled_size(state) };
+    let (width, height) = if hidden {
+        (1, 1)
+    } else {
+        fit_to_output(state, scaled_size(state))
+    };
     state.desired_size = (width, height);
     state.layer_surface.set_size(width, height);
     state.surface.commit();
@@ -1361,13 +1356,56 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
     reapply_clamp(state);
 }
 
-/// Persist position, display size, click-through, lock and hover-hide for this
-/// instance, preserving other instances and fields in `secondary_instances.json`.
+/// Apply a new rotation/mirror at runtime: resize to the rotated size (fit to
+/// the output, aspect preserved), rebuild regions and redraw.
+fn apply_orientation(state: &mut OverlayState, orientation: Orientation) {
+    if orientation == state.orientation {
+        return;
+    }
+    state.orientation = orientation;
+    state.region_dirty = true;
+    state.visual_dirty = true;
+    state.applied_rects.clear();
+    eprintln!(
+        "[overlay] transform {}° flip_h {} flip_v {}",
+        orientation.degrees(),
+        orientation.flip_h,
+        orientation.flip_v
+    );
+    if state.hidden {
+        return;
+    }
+    let (width, height) = fit_to_output(state, scaled_size(state));
+    state.desired_size = (width, height);
+    state.layer_surface.set_size(width, height);
+    state.surface.commit();
+    reapply_clamp(state);
+    persist_geometry(state);
+}
+
+/// Shrink `size` to fit the output, preserving its aspect ratio.
+fn fit_to_output(state: &OverlayState, size: (u32, u32)) -> (u32, u32) {
+    let Some((out_w, out_h)) = output_size(state) else {
+        return size;
+    };
+    if size.0 <= out_w && size.1 <= out_h {
+        return size;
+    }
+    let scale = (f64::from(out_w) / f64::from(size.0)).min(f64::from(out_h) / f64::from(size.1));
+    (
+        ((f64::from(size.0) * scale).floor() as u32).max(1),
+        ((f64::from(size.1) * scale).floor() as u32).max(1),
+    )
+}
+
+/// Persist position, display size, transform, click-through, lock and hover-hide
+/// for this instance, preserving other instances and fields in the document.
 fn persist_geometry(state: &OverlayState) {
     let Some(key) = state.instance_key.as_deref() else {
         return;
     };
     let click_through = state.input_mode == InputMode::PassThrough;
+    let rotation = state.orientation.degrees();
     let mut document = SecondaryState::load(&state.state_path);
     let changed = {
         let instance = document.entry(key);
@@ -1376,7 +1414,10 @@ fn persist_geometry(state: &OverlayState) {
             || instance.scale_percent != state.scale_percent
             || instance.click_through != click_through
             || instance.locked != state.locked
-            || instance.hover_hide != state.hover_hide;
+            || instance.hover_hide != state.hover_hide
+            || instance.rotation != rotation
+            || instance.flip_h != state.orientation.flip_h
+            || instance.flip_v != state.orientation.flip_v;
         if changed {
             instance.x = state.margin_left;
             instance.y = state.margin_top;
@@ -1384,6 +1425,9 @@ fn persist_geometry(state: &OverlayState) {
             instance.click_through = click_through;
             instance.locked = state.locked;
             instance.hover_hide = state.hover_hide;
+            instance.rotation = rotation;
+            instance.flip_h = state.orientation.flip_h;
+            instance.flip_v = state.orientation.flip_v;
         }
         changed
     };
@@ -1484,6 +1528,35 @@ impl ksni::Tray for OverlayTray {
                     size_item("75%", 75),
                     size_item("50%", 50),
                     size_item("25%", 25),
+                ],
+                ..Default::default()
+            }),
+            MenuItem::SubMenu(SubMenu {
+                label: "Transform".into(),
+                submenu: vec![
+                    MenuItem::Standard(StandardItem {
+                        label: "Rotate 90°".into(),
+                        activate: Box::new(|tray: &mut Self| {
+                            write_control(&tray.control_path, |state| state.rotate_by(90));
+                        }),
+                        ..Default::default()
+                    }),
+                    MenuItem::Checkmark(CheckmarkItem {
+                        label: "Flip horizontal".into(),
+                        checked: state.flip_h,
+                        activate: Box::new(|tray: &mut Self| {
+                            write_control(&tray.control_path, ControlState::toggle_flip_h);
+                        }),
+                        ..Default::default()
+                    }),
+                    MenuItem::Checkmark(CheckmarkItem {
+                        label: "Flip vertical".into(),
+                        checked: state.flip_v,
+                        activate: Box::new(|tray: &mut Self| {
+                            write_control(&tray.control_path, ControlState::toggle_flip_v);
+                        }),
+                        ..Default::default()
+                    }),
                 ],
                 ..Default::default()
             }),
@@ -1815,6 +1888,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     control.scale_percent = initial_scale;
     control.input_mode = initial_mode;
     control.locked = initial_locked;
+    control.rotation = orientation.degrees();
+    control.flip_h = orientation.flip_h;
+    control.flip_v = orientation.flip_v;
     control.region_step = region_tuning.step.label();
     control.region_soft_rects = region_tuning.soft_rects;
     control.region_max_rects = region_tuning.max_rects;
@@ -2122,7 +2198,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // --- playback loop -----------------------------------------------------
-    let (uv_mat, uv_off) = uv_transform(state.orientation);
     let mut index = 0usize;
     let mut next_change = Instant::now();
     let mut uploaded_layer0 = 0usize;
@@ -2169,6 +2244,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if control.hidden != state.hidden {
                     apply_hidden(&mut state, control.hidden);
+                }
+                let orientation =
+                    Orientation::from_degrees(control.rotation, control.flip_h, control.flip_v);
+                if orientation != state.orientation {
+                    apply_orientation(&mut state, orientation);
                 }
                 let tuning = RegionTuning::from_control(&control);
                 if tuning != state.region_tuning {
@@ -2227,6 +2307,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let present_now = !state.hidden
             && (state.visual_dirty || last_presented != Some(index) || hide_now != last_hide);
         if present_now {
+            // Rotation/mirror can change at runtime through the control channel.
+            let (uv_mat, uv_off) = uv_transform(state.orientation);
             queue.write_buffer(
                 &uniform,
                 0,
