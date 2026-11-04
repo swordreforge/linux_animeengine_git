@@ -658,10 +658,11 @@ search field with IME, and Workshop browse/search.
       widgets would mean switching the theme type to `iced_material::Theme` and adopting its
       widget modules (1.2 MB of crate we only take the palettes from today). Light mode and
       following the system preference are also open — the palette is fixed to `Theme::Dark`.
-- [ ] Not done, in the order they would be done: switch the theme type to
-      `iced_material::Theme` (and its widgets) if the look warrants it; light/dark by
-      `prefers-color-scheme`; pseudo-glass containers (translucent surface + gradient border,
-      explicitly without blur, which a Wayland client cannot do).
+- [x] The theme type **is** `iced_material::Theme` — palette, container and button styles, text roles —
+      and the look did warrant it. What is still open from that list: **light/dark by
+      `prefers-color-scheme`** (fixed to `Theme::Dark`, and the palette's own value comes from noctalia's
+      file) and **pseudo-glass containers** (translucent surface + gradient border, explicitly without
+      blur, which a Wayland client cannot do).
 - [x] The palette comes from **noctalia**. Its own "single source of truth for downstream
       tools" — `$XDG_CACHE_HOME/nyxuri/palette.toml`, `key = "#rrggbb"` — is parsed for the roles
       iced can use (primary, surface, on_surface, error, with secondary/tertiary as
@@ -787,10 +788,10 @@ search field with IME, and Workshop browse/search.
       measuring. Measured anyway: the window runs 2 scheduler ticks in 3s with the switch set, which
       is the one-second overlay poll and nothing more. iced does not expose the desktop's own
       reduced-motion setting, so this environment variable is the switch we have.
-- [ ] Not done, and why: the status line still does not fade when the note changes. `note` is
-      assigned in about twenty places, and a fade has to start in the same message as the assignment
-      that changed it, so those writes need to go through one setter first. That is its own small
-      change, not a rider on this one.
+- [x] The status line **does** fade when the note changes, and the setter is what unblocked it: `say()` sets
+      the text and restarts `note_fade` in the same call, which was exactly why the twenty-odd assignment
+      sites had to be collected first. The view reads the fade's value, and `animating()` keeps the frame
+      clock running while it interpolates.
 - [x] The flake is fixed, and it was exactly what it looked like: `live_instances_cover_every_control_file`
       compares two scans of the **real** control directory, and `an_intentional_quit_stops_supervision`
       creates and removes a control file in the same process — a directory scan is not atomic, so a
@@ -1088,12 +1089,11 @@ search field with IME, and Workshop browse/search.
       Caught while writing it: the remote pane's condition went in **inverted** — live when *not*
       subscribed — which the tooltip ("subscribe in Steam first") made obvious the moment I read the two
       lines together.
-- [ ] **What the button triggers is still ours, not Steam's.** The flow the user describes — subscribe in
-      Steam, Steam downloads it there — is the client's own loop and cannot be started from outside it. Our
-      button runs `steamcmd` and puts a second copy under our root, which is a *different* mechanism that
-      happens to produce the same files. Worth deciding deliberately: keep both (greyed as it is now, which
-      makes the order honest), or drop the SteamCMD copy entirely and let the client own every download,
-      leaving this window only reporting `pending`.
+- [x] **Decided the other way round: the button is gone and the client owns the download.** Keeping a second
+      mechanism that merely produced the same files was the option I leaned toward and the wrong one — the
+      cell reports what Steam is doing and nothing is pressable. `Message::Download` and its SteamCMD thread
+      were removed, and the compiler said they had become unreachable before I did (see the three-state entry
+      above). This window's job is to show the download, not to be a second way to perform it.
 - [x] The download cell has three states and exists in two of them. **Not subscribed: nothing** — no
       button to grey, because there is nothing to download and the subscribe button is the whole story.
       **Subscribed and Steam still working: "downloads…", disabled.** **Done: "downloaded", disabled.**
