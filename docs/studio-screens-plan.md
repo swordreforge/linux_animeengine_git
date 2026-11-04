@@ -1,9 +1,9 @@
 # The studio's tabs: a header strip, one column per screen
 
-Status: **step 1 done; step 2 next.** The strip, the `Tab` field, the `Message::Tab` arm, the shared
-`frame()` and the picker gate are in. 工坊 is untouched (the strip was added above it, nothing inside
-it changed); 浮层 / 设置 / 诊断 are honest placeholders — a glyph and a sentence saying what will live
-there — rather than blank panes that read as bugs.
+Status: **steps 1 and 2 done.** The strip, the `Tab` field, the `Message::Tab` arm, the shared
+`frame()` and the picker gate are in, and 设置 / 诊断 carry their content. 工坊 is untouched — checked
+by screenshot after the change: the same two panes, the same search row, the same panel, the same
+empty state. 浮层 is still a placeholder.
 
 Revised on purpose, and the revision is the interesting part. The first draft of this file proposed a
 navigation rail with four destinations and a table of per-screen state — heavier than the idea needs,

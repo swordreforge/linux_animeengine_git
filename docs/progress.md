@@ -934,11 +934,15 @@ search field with IME, and Workshop browse/search.
       `overlay,dbus` now (plus `bc7`/`studio` as before) and both build hints in `install.sh` name
       `dbus` — otherwise a shipped shepherd would have been built without the interface and the
       feature would exist only on a developer's machine.
-- [ ] The tabs plan lives in `docs/studio-screens-plan.md`: a **tab strip under the header** (like
-      Steam's), one state field and a `match`, with 工坊 keeping today's two panes and 设置 / 诊断 /
-      浮层 as single columns. It also records why "despawn" is not a problem to solve in iced — an
-      unselected `match` branch is never built, so there is no old layout to dispose of — and one open
-      question worth settling first: whether the workshop picker stays a float or becomes an inline list.
+- [x] The tabs are in (`docs/studio-screens-plan.md`, steps 1–2): 工坊 / 浮层 / 设置 / 诊断 — one
+      `Tab` field, one `Message::Tab`, one `match`. 工坊 is pixel-for-pixel what it was (checked by
+      screenshot afterwards), the picker float is gated to it, and 浮层 is still an honest placeholder.
+      设置 writes `studio.json` immediately: the Steam key — which is **never rendered**, since the tab
+      says "stored" or "not set" and the field clears after saving, so a screenshot cannot leak it — and
+      `reduce_motion`, which is where the motion preference lives now, with `ANIMA_NO_MOTION` kept as the
+      override and the note saying so when it is set. 診断 (诊断) prints version, roots, installed count,
+      catalog, shepherd state, the D-Bus name, the thumbnail directory and the palette path, with a
+      `Copy all` for bug reports. 823 source strings, four languages.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

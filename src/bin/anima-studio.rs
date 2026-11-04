@@ -646,11 +646,32 @@ fn spinner_frame(elapsed_ms: u64) -> &'static str {
     FRAMES[(elapsed_ms / SPINNER_STEP_MS % FRAMES.len() as u64) as usize]
 }
 
-/// Motion is decoration, and not everyone can use it. `ANIMA_NO_MOTION=1` turns all of it off:
-/// the fades resolve immediately, the spinner holds still and the picker does not slide. iced
-/// does not expose the desktop's own setting, so this is the switch we have.
+/// Motion is decoration, and not everyone can use it. The preference is stored in `studio.json` and
+/// shown on the settings tab; `ANIMA_NO_MOTION` overrides it, exactly like the environment overrides
+/// the Steam key (a deliberate, temporary override beats a saved preference).
 fn motion_enabled() -> bool {
-    std::env::var_os("ANIMA_NO_MOTION").is_none()
+    !reduce_motion()
+}
+
+/// Whether motion should be off. Pure parts are split out so the precedence can be tested without
+/// touching the environment or the disk.
+fn reduce_motion() -> bool {
+    use anima_engine_rs::settings::{ConfigFile, StudioSettings};
+
+    let stored = StudioSettings::load(&anima_engine_rs::workshop_web::studio_settings_path());
+    resolve_reduce_motion(
+        std::env::var("ANIMA_NO_MOTION").ok().as_deref(),
+        stored.reduce_motion,
+    )
+}
+
+/// `ANIMA_NO_MOTION` wins when it says anything but `0`; blank means "not set"; otherwise the stored
+/// preference decides.
+fn resolve_reduce_motion(env: Option<&str>, stored: bool) -> bool {
+    match env.map(str::trim) {
+        Some(value) if !value.is_empty() => value != "0",
+        _ => stored,
+    }
 }
 
 /// The spinner's phase and the preview fades both need a frame, and nothing else does: when
@@ -836,6 +857,14 @@ enum Message {
     Frame(Instant),
     /// Show another tab. Nothing is cleared: coming back shows what you left.
     Tab(Tab),
+    /// What is in the settings tab's key field.
+    KeyDraft(String),
+    /// Write the key field to `studio.json`.
+    SaveKey,
+    /// Flip the motion preference in `studio.json` and re-resolve it.
+    ToggleReduceMotion,
+    /// Put the diagnostics on the clipboard, for a bug report.
+    CopyDiagnostics,
     RefreshOverlay,
     SelectOverlay(PathBuf),
     Overlay(OverlayAction),
@@ -1260,6 +1289,9 @@ struct Studio {
     motion: bool,
     /// Which screen is showing.
     tab: Tab,
+    /// The settings tab's key field. Deliberately starts empty and is cleared after a save: the stored
+    /// key is never rendered, only whether one is stored.
+    key_draft: String,
     pending_remove: Option<u64>,
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
@@ -1311,6 +1343,7 @@ impl Studio {
             shown_seen: String::new(),
             motion: motion_enabled(),
             tab: Tab::default(),
+            key_draft: String::new(),
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
@@ -1561,6 +1594,43 @@ impl Studio {
                 self.now = at;
             }
             Message::Tab(tab) => self.tab = tab,
+            Message::KeyDraft(draft) => self.key_draft = draft,
+            Message::SaveKey => {
+                use anima_engine_rs::settings::{ConfigFile, StudioSettings};
+
+                let path = anima_engine_rs::workshop_web::studio_settings_path();
+                let mut stored = StudioSettings::load(&path);
+                stored.steam_api_key = self.key_draft.trim().to_string();
+                self.note = match stored.save(&path) {
+                    Ok(()) => {
+                        // Never leave the key sitting in a text field.
+                        self.key_draft.clear();
+                        "Steam API key saved".to_string()
+                    }
+                    Err(error) => format!("could not save the key: {error}"),
+                };
+            }
+            Message::ToggleReduceMotion => {
+                use anima_engine_rs::settings::{ConfigFile, StudioSettings};
+
+                let path = anima_engine_rs::workshop_web::studio_settings_path();
+                let mut stored = StudioSettings::load(&path);
+                stored.reduce_motion = !stored.reduce_motion;
+                self.note = match stored.save(&path) {
+                    Ok(()) => "motion preference saved".to_string(),
+                    Err(error) => format!("could not save the motion preference: {error}"),
+                };
+                // Re-resolve instead of flipping in memory: the environment may override the file, and
+                // the UI must not claim a change that will not happen.
+                self.motion = motion_enabled();
+                if std::env::var_os("ANIMA_NO_MOTION").is_some() {
+                    self.note
+                        .push_str(" — ANIMA_NO_MOTION is set and overrides it");
+                }
+            }
+            Message::CopyDiagnostics => {
+                return iced::clipboard::write(self.diagnostics_lines().join("\n"));
+            }
             Message::Language(code) => {
                 if let Err(error) = self.i18n.set_language(&code) {
                     self.note = format!("language not saved: {error}");
@@ -2166,17 +2236,118 @@ impl Studio {
         placeholder("▤", note.to_string(), Length::Fill).into()
     }
 
-    /// The Steam key and the motion switch. Filled in next; the placeholder says what is coming
-    /// rather than leaving a pane that looks broken.
+    /// The Steam key and the motion switch, writing `studio.json` immediately. The stored key is never
+    /// rendered — only whether one is stored — so a screenshot of this tab cannot leak it.
     fn tab_settings(&self) -> El<'_> {
-        self.tab_placeholder(
-            "The Steam API key and the motion switch live here — until then, both are in studio.json.",
-        )
+        use anima_engine_rs::settings::{ConfigFile, StudioSettings};
+
+        let stored = StudioSettings::load(&anima_engine_rs::workshop_web::studio_settings_path());
+        let key_state = if stored.steam_api_key.trim().is_empty() {
+            "not set"
+        } else {
+            "stored"
+        };
+        column![
+            text(self.i18n.tr("Settings")).size(20),
+            text(format!("Steam API key · {key_state}")).size(12),
+            text_input("paste the key and press Enter", &self.key_draft)
+                .on_input(Message::KeyDraft)
+                .on_submit(Message::SaveKey)
+                .style(iced_material::text_input::default)
+                .width(Length::Fill),
+            row![
+                button(text(self.i18n.tr("Save")))
+                    .style(primary)
+                    .on_press(Message::SaveKey),
+                text("get one at steamcommunity.com/dev/apikey").size(11),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            divider(Length::Fill, Length::Fixed(1.0)),
+            row![
+                text(self.i18n.tr("Reduce motion")).size(14),
+                button(text(if self.motion {
+                    "motion on"
+                } else {
+                    "motion off"
+                }))
+                .style(if self.motion { secondary } else { primary })
+                .on_press(Message::ToggleReduceMotion),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            text("Stored in studio.json; ANIMA_NO_MOTION overrides it.").size(11),
+            divider(Length::Fill, Length::Fixed(1.0)),
+            text(format!(
+                "Palette: {}",
+                palette_path()
+                    .map(|path| shorten(&path))
+                    .unwrap_or_else(|| "-".to_string())
+            ))
+            .size(11),
+            text("A wallpaper change needs this window restarted.").size(11),
+        ]
+        .spacing(10)
+        .into()
     }
 
     /// What the status line knows, laid out so it can be pasted into a bug report.
     fn tab_diagnostics(&self) -> El<'_> {
-        self.tab_placeholder("Version, roots, catalog and shepherd state live here.")
+        let mut lines = column![text(self.i18n.tr("Diagnostics")).size(20)].spacing(6);
+        for line in self.diagnostics_lines() {
+            lines = lines.push(text(line).size(12));
+        }
+        lines = lines.push(
+            button(text(self.i18n.tr("Copy all")))
+                .style(secondary)
+                .on_press(Message::CopyDiagnostics),
+        );
+        scrollable(lines.spacing(10))
+            .style(iced_material::scrollable::default)
+            .into()
+    }
+
+    /// One `key: value` per line — plain text on purpose, for pasting into an issue.
+    fn diagnostics_lines(&self) -> Vec<String> {
+        let watcher = WorkshopWatcher::discover();
+        let roots = watcher.roots();
+        let catalog = self
+            .i18n
+            .catalog_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "-".to_string());
+        vec![
+            format!("version:    {}", env!("CARGO_PKG_VERSION")),
+            format!(
+                "roots:      {} · {}",
+                roots.len(),
+                roots
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            format!("installed:  {} item(s)", self.snapshot.len()),
+            format!("catalog:    {catalog} · {} entries", self.i18n.entries()),
+            format!(
+                "shepherd:   {}",
+                if anima_engine_rs::shepherd::is_up() {
+                    "running"
+                } else {
+                    "not running"
+                }
+            ),
+            // The name is spelled out rather than poked out of `dbus_intent`, which only exists when
+            // this crate is built with the `dbus` feature — the shepherd is what serves it.
+            "dbus:       dev.AnimaEngine.Shepherd (served by the shepherd)".to_string(),
+            format!("thumbnails: {}", thumb_dir().display()),
+            format!(
+                "palette:    {}",
+                palette_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+        ]
     }
 
     /// The installed items whose title, id or asset names match the query.
@@ -3244,6 +3415,17 @@ mod tests {
         assert_eq!(spinner_frame(4 * SPINNER_STEP_MS), "◐");
         // Long uptimes must not panic or divide by zero.
         let _ = spinner_frame(u64::MAX);
+    }
+
+    #[test]
+    fn the_motion_precedence_is_the_keys() {
+        assert!(resolve_reduce_motion(Some("1"), false));
+        assert!(resolve_reduce_motion(Some("yes"), false));
+        assert!(!resolve_reduce_motion(Some("0"), true));
+        assert!(resolve_reduce_motion(None, true));
+        assert!(!resolve_reduce_motion(None, false));
+        // Blank is "not set", so it must not override a stored preference.
+        assert!(resolve_reduce_motion(Some("  "), true));
     }
 
     #[test]

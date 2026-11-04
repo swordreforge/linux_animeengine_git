@@ -141,6 +141,10 @@ pub struct StudioSettings {
     /// Get one at <https://steamcommunity.com/dev/apikey>; only browsing the Workshop needs it.
     #[serde(default)]
     pub steam_api_key: String,
+    /// Turn off every animation, the spinner's motion and the picker's entrance. `ANIMA_NO_MOTION`
+    /// overrides it, the same way the environment overrides the key.
+    #[serde(default)]
+    pub reduce_motion: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -340,10 +344,11 @@ mod tests {
         let path = write(
             dir.path(),
             STUDIO_SETTINGS_FILE,
-            r#"{"steam_api_key":"K","later":7}"#,
+            r#"{"steam_api_key":"K","reduce_motion":true,"later":7}"#,
         );
         let loaded = StudioSettings::load(&path);
         assert_eq!(loaded.steam_api_key, "K");
+        assert!(loaded.reduce_motion);
         loaded.save(&path).unwrap();
         assert_eq!(
             StudioSettings::load(&path).extra["later"],

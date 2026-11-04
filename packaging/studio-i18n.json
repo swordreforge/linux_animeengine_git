@@ -29,7 +29,10 @@
     "Pick an item to see its details": "Pick an item to see its details",
     "Installed": "Installed",
     "Settings": "Settings",
-    "Diagnostics": "Diagnostics"
+    "Diagnostics": "Diagnostics",
+    "Save": "Save",
+    "Reduce motion": "Reduce motion",
+    "Copy all": "Copy all"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -61,7 +64,10 @@
     "Pick an item to see its details": "选择一个条目查看详情",
     "Installed": "已安装",
     "Settings": "设置",
-    "Diagnostics": "诊断"
+    "Diagnostics": "诊断",
+    "Save": "保存",
+    "Reduce motion": "减少动态效果",
+    "Copy all": "全部复制"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -93,7 +99,10 @@
     "Pick an item to see its details": "選擇一個項目查看詳情",
     "Installed": "已安裝",
     "Settings": "設定",
-    "Diagnostics": "診斷"
+    "Diagnostics": "診斷",
+    "Save": "儲存",
+    "Reduce motion": "減少動態效果",
+    "Copy all": "全部複製"
   },
   "ja": {
     "Refresh": "更新",
@@ -125,6 +134,9 @@
     "Pick an item to see its details": "項目を選ぶと詳細が表示されます",
     "Installed": "インストール済み",
     "Settings": "設定",
-    "Diagnostics": "診断"
+    "Diagnostics": "診断",
+    "Save": "保存",
+    "Reduce motion": "視差効果を減らす",
+    "Copy all": "すべてコピー"
   }
 }
