@@ -16,14 +16,15 @@ steamworks = ["dep:libloading"]
 bc7 = []
 # Enables the `anima-overlay` binary (Wayland layer-shell + wgpu).
 overlay = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:pollster", "dep:bytemuck", "dep:wayland-client", "dep:ksni", "dep:ashpd", "dep:futures-util", "dep:tokio"]
-# Enables the `anima-studio` main window (Iced).
-studio = ["dep:iced"]
+# Enables the `anima-studio` main window (Iced). `workshop-web` brings the keyless
+# Steam metadata the previews come from.
+studio = ["dep:iced", "workshop-web"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-image = { version = "0.25", default-features = false, features = ["gif", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["gif", "png", "webp", "jpeg"] }
 sha2 = "0.10"
 zstd = "0.13"
 # Also used by `pack` for the Python `.mdaa` / pack archives.

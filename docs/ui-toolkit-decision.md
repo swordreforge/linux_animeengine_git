@@ -65,8 +65,12 @@ render path.
   繁體中文 / 日本語`) render correctly through `cosmic-text`'s system font fallback, so
   no font needs to be bundled yet (revisit if the window ever ships a font-less Flatpak
   runtime or a system without CJK fonts).
-- Still to do: workshop thumbnails (Steam preview images) via the `image` feature;
-  subscribe/repair/unsubscribe actions through `anima-workshop`; wiring the window's
-  controls to `ControlState` so it drives the overlay; keyboard/IME for the search
-  field; and a window icon + desktop entry (the packaging step already ships an
-  `anima-overlay` entry, not yet a studio one).
+- Previews and the Workshop actions are in place (see `progress.md`): local `preview.*`
+  → Steam CDN `preview_url` → cached and decoded with the tree's `image` crate;
+  `Download` through SteamCMD on a detached thread; subscribe/unsubscribe handed to the
+  Steam client via `steam://url/CommunityFilePage/<id>`; local removal restricted to our
+  own SteamCMD root behind a confirmation.
+- Still to do: wiring the window's controls to `ControlState` so it drives the overlay
+  (show/hide, scale, rotation, lock); a search field with IME; API-key browse/search;
+  and a window icon + desktop entry (the packaging step already ships an `anima-overlay`
+  entry, not yet a studio one).

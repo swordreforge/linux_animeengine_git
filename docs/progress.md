@@ -425,9 +425,21 @@ Interaction and control:
 - [x] CJK glyphs confirmed on screen: the language picker's native names
       (`English / 简体中文 / 繁體中文 / 日本語`) all render correctly, so
       `cosmic-text`'s system font fallback is enough and no font needs bundling yet.
-- [ ] Not yet: layout review in progress; then Workshop thumbnails,
-      subscribe/repair/unsubscribe, driving the overlay through `ControlState`, a
-      search field with IME, and a desktop entry for the window.
+- [x] Previews: a `preview.*` file inside the item directory when the author shipped
+      one, otherwise the Steam CDN image from `preview_url` (keyless
+      `GetPublishedFileDetails`), cached under `…/AnimaEngine/thumbnails/<id>.img` and
+      decoded with the tree's own `image` crate (the `jpeg` feature was added). Verified
+      end to end by an opt-in network test: `3828587753: Png 1283x751 decoded, cache
+      …/thumbnails/3828587753.img (685382 bytes)`, and the second load is served from
+      the cache without touching the network.
+- [x] Actions: `Download (SteamCMD)` on a detached thread (`anonymous` login, the
+      window stays responsive), `Subscribe… (Steam)` and `Unsubscribe… (Steam)` — both
+      open `steam://url/CommunityFilePage/<id>`, because the subscription itself is the
+      client's state and pretending otherwise would be a lie — and `Remove local copy`
+      for items under *our* SteamCMD root only, behind a confirmation click.
+- [ ] Not yet: layout review in progress; then driving the overlay through
+      `ControlState`, a search field with IME, API-key browse/search, and a desktop
+      entry for the window.
 
 ### Steam / Workshop
 
