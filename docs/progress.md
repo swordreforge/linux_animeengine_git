@@ -420,12 +420,12 @@ Interaction and control:
       `animation changed on disk; reloading`, the new process decoded again and
       logged `restored instance: (284, 296)` — i.e. `100 + 184`, `100 + 196`, the
       cropped offsets, so the placement was preserved
-      `libsteam_api.so`. Without it the fallback mirrors the Python build (Steamworks
-      primary, SteamCMD fallback): `WorkshopWatcher` polls the content roots and
-      reports changes, exposed as `anima-workshop watch`. `diff` now also reports
-      **updated** items (same id, new files) — without that a re-published item never
-      triggered a reload. `steam::FlatSteamApi::run_callbacks` can drive the same
-      diff once the `.so` is present
+- [ ] Steamworks callbacks (`ItemInstalled` / `DownloadItemResult`) still need
+      `libsteam_api.so`. The **fallback is already in place**: `WorkshopWatcher` plus
+      the overlay's hot reload (file stat + watcher, then a re-exec) cover the
+      "new or updated item becomes the animation" case without the SDK. When the
+      `.so` is available, `steam::FlatSteamApi::run_callbacks` can drive the same
+      diff, and `diff` reports **updated** items too (same id, new files)
 - [ ] Upload via SteamCMD (`workshop_build_item`) and/or the Steamworks worker,
   incl. legal-agreement handling
 - [ ] Browse UI using the three-tier fallback documented in the RE notes
