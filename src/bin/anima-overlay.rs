@@ -2220,7 +2220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_array = bc7_array || rgba_array;
     let layers = if use_array { frame_count as u32 } else { 1 };
     eprintln!(
-        "[overlay] {} frame(s) {}x{} — {:.1} MiB decoded, {:.1} MiB bc7, {}",
+        "[overlay] {} frame(s) {}x{} — {:.1} MiB decoded, {:.1} MiB bc7, {} (decode cap {:.0} MiB)",
         frame_count,
         width,
         height,
@@ -2234,7 +2234,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "rgba array texture"
         } else {
             "rgba just-in-time upload"
-        }
+        },
+        decode_limits.max_bytes as f64 / (1024.0 * 1024.0)
     );
 
     // BC textures are measured in pixels but stored in whole 4x4 blocks, so the
