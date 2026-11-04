@@ -680,7 +680,20 @@ search field with IME, and Workshop browse/search.
       the iced palette, so there is one parser. The UI does not consume the scheme yet, which is
       why this commit changes no behaviour; the test pins every role **and parses the live file**
       when it exists.
-- [ ] Turning the theme type over is the remaining Material step. What is now **verified** about
+- [x] The theme **type** is `iced_material::Theme`, so the window draws with Material 3's own
+      widget styles: `type El<'a> = Element<'a, Message, iced_material::Theme>` through the view
+      signatures, `divider` returns a container of that theme and takes its line colour from
+      `surface.container.high`, the buttons map onto `filled` (primary), `outlined` (secondary) and
+      `text` (quit), the two destructive ones use a `danger` style built from the error role, and
+      the search box carries its own `text_input` style because iced_material has no catalog for
+      it. `resolve_theme()` returns noctalia's `ColorScheme` through `Theme::new(…, scheme)` and
+      falls back to `Theme::Dark`; the now-unused iced-palette parser and its test went with it.
+      Verified: 0 warnings, 13 studio tests, clippy 0, and the window logs
+      `theme: Material You from …/palette.toml`.
+- [ ] The last Material step is the widgets themselves — `iced_material`'s `button`, `container`,
+      `pick_list`, `scrollable`, `text_input` — for its shapes, elevation and type scale; the theme
+      alone gives colours and Material's default styles, not those. What was verified while doing
+      the type switch, and why the code looks the way it does:
       `iced_material` 0.14.2, which decides the order:
       - it implements iced's `Catalog` for `Theme` on `button`, `container`, `pick_list`,
         `scrollable` and `text` — so those keep their default styles and the "every text call
