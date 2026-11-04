@@ -531,24 +531,40 @@ impl std::fmt::Display for InstanceChoice {
     }
 }
 
+/// The last path component of a control file's animation, or the label itself when it is not a
+/// path (an instance list from an older build).
+fn asset_file_name(label: &str) -> String {
+    Path::new(label)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| label.to_string())
+}
+
 /// The `pick_list` entry for one instance.
-fn instance_choice(instance: &OverlayInstance) -> InstanceChoice {
+fn instance_choice(instance: &OverlayInstance, disambiguate: bool) -> InstanceChoice {
     InstanceChoice {
         control: instance.path.clone(),
-        label: instance_label(instance),
+        label: instance_label(instance, disambiguate),
     }
 }
 
-/// `● running` / `○ stopped` in front of the label: the only thing that tells a live
-/// instance from one whose file is left over.
-fn instance_label(instance: &OverlayInstance) -> String {
-    format!(
-        "{} {}",
-        if instance.running { "●" } else { "○" },
-        // A control-file slug says nothing, and the animation path is long enough to push the
-        // row out of a narrow pane, so it is shortened here rather than at every use.
-        shorten(Path::new(&instance.label))
-    )
+/// `● running` / `○ stopped` in front of the animation's **file name**: a full Steam path is a
+/// mouthful in a closed drop-down, and the path is still in the item pane. Two instances can
+/// ship assets with the same name, and only then does the label need the directory in front.
+fn instance_label(instance: &OverlayInstance, disambiguate: bool) -> String {
+    let name = asset_file_name(&instance.label);
+    let name = if disambiguate {
+        match Path::new(&instance.label)
+            .parent()
+            .and_then(Path::file_name)
+        {
+            Some(directory) => format!("{}/{}", directory.to_string_lossy(), name),
+            None => name,
+        }
+    } else {
+        name
+    };
+    format!("{} {}", if instance.running { "●" } else { "○" }, name)
 }
 
 /// A cheap fingerprint of everything the panel shows: each control file and the persisted
@@ -1777,9 +1793,25 @@ impl Studio {
                 .into();
         }
 
+        // Two instances can ship assets with the same file name; the label only grows to include
+        // the directory when that actually happens.
+        let mut names: HashMap<String, usize> = HashMap::new();
+        for instance in &self.overlay {
+            *names.entry(asset_file_name(&instance.label)).or_insert(0) += 1;
+        }
+        let ambiguous = |instance: &OverlayInstance| {
+            names
+                .get(&asset_file_name(&instance.label))
+                .copied()
+                .unwrap_or(0)
+                > 1
+        };
         panel = panel.push(
             pick_list(
-                self.overlay.iter().map(instance_choice).collect::<Vec<_>>(),
+                self.overlay
+                    .iter()
+                    .map(|instance| instance_choice(instance, ambiguous(instance)))
+                    .collect::<Vec<_>>(),
                 self.overlay_selected
                     .as_ref()
                     .and_then(|selected| {
@@ -1787,7 +1819,7 @@ impl Studio {
                             .iter()
                             .find(|instance| instance.path == *selected)
                     })
-                    .map(instance_choice),
+                    .map(|instance| instance_choice(instance, ambiguous(instance))),
                 |choice: InstanceChoice| Message::SelectOverlay(choice.control),
             )
             .style(iced_material::pick_list::default),
@@ -2355,6 +2387,30 @@ mod tests {
 
     /// Selections are keyed by id / control path, so rebuilding the list or the instance set
     /// cannot move them to something else. Read-only against the real data dir.
+    #[test]
+    fn instance_labels_are_short_unless_the_name_collides() {
+        let instance = |label: &str| OverlayInstance {
+            label: label.to_string(),
+            path: PathBuf::from("/tmp/x.json"),
+            state: ControlState::default(),
+            running: false,
+        };
+
+        // The common case: just the file name, not half a Steam path.
+        assert_eq!(
+            instance_label(&instance("/w/3828587753/TETO12.apng"), false),
+            "○ TETO12.apng"
+        );
+        // The same file name in another item: the workshop id says which one this is.
+        assert_eq!(
+            instance_label(&instance("/w/3828587753/TETO12.apng"), true),
+            "○ 3828587753/TETO12.apng"
+        );
+        // Not a path at all: left alone.
+        assert_eq!(instance_label(&instance("TETO12"), false), "○ TETO12");
+        assert_eq!(instance_label(&instance("TETO12"), true), "○ TETO12");
+    }
+
     #[test]
     fn selection_identity_is_stable() {
         // The Workshop side: an id survives the list changing under it.

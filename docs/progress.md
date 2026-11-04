@@ -742,6 +742,11 @@ search field with IME, and Workshop browse/search.
       so does the `Workshop` button in the search row. Esc is still not available (0.14 removed the
       key API, see next-steps), so those are the ways out. No new i18n keys, and one new field
       (`picker: bool`) is the whole state.
+- [x] The overlay drop-down shows the animation's **file name** (`● TETO12.apng`) instead of a
+      shortened Steam path, which wrapped onto two lines in a closed pick list and said nothing
+      the file name did not. Two instances can ship assets with the same name, so the label grows
+      to `3828587753/TETO12.apng` only when that is actually true of the list in hand; the full
+      path stays in the item pane, one click away.
 - [ ] The known flake, disclosed rather than hidden: `shepherd::tests::live_instances_cover_every_control_file`
       reads the **real** control directory while other tests in the same process write it, so it
       fails roughly one run in three (it passes on its own). The fix is a test-side lock around
