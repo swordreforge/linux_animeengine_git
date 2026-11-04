@@ -58,12 +58,10 @@ const ASSET_PREVIEW_MAGIC: &[u8; 8] = b"ANIPREV1";
 
 /// One decoded still: width, height, straight RGBA.
 type Still = (u32, u32, Vec<u8>);
-/// How often the overlay panel checks whether the control files moved. Short enough that a tray
-/// action or a drag appears to be immediate, long enough that an idle window is doing almost nothing:
-/// each tick is a handful of `stat` calls, and iced only redraws when the fingerprint actually
-/// changed. (`notify` would make it truly instant, at the cost of a dependency, a watcher thread and
-/// a channel — say the word if the 250ms ever shows.)
-const OVERLAY_POLL_MS: u64 = 250;
+/// How often the panel falls back to asking, now that a watcher answers first. The watcher is what
+/// makes a tray action or a drag appear immediately; this is the safety net for the events a watcher
+/// can miss (an inotify queue that overflowed, a directory replaced under it), so it stays.
+const OVERLAY_POLL_MS: u64 = 2000;
 /// `preview.*` names an author may have shipped inside the content folder.
 const LOCAL_PREVIEWS: &[&str] = &[
     "preview.png",
@@ -302,6 +300,53 @@ fn resolve_theme() -> iced_material::Theme {
         return iced_material::Theme::new("Material You (noctalia)", scheme);
     }
     iced_material::Theme::Dark
+}
+
+/// 1px separator. 0.14 dropped the `vertical_rule`/`horizontal_rule` helpers, so a line
+/// is a zero-content container that only carries a background.
+/// Watches the control directory and the data directory, so a write from the tray, the CLI, the portal
+/// or another instance shows up as an event rather than at the next poll.
+///
+/// The watcher lives on its own thread (it is blocking and must outlive the stream), and the stream only
+/// carries "something moved" to the update loop; deciding whether anything actually changed stays with
+/// the fingerprint check that already existed.
+fn control_events() -> Subscription<Message> {
+    iced::Subscription::run(|| {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        std::thread::spawn(move || {
+            use notify::{RecursiveMode, Watcher};
+
+            let handler = move |event: notify::Result<notify::Event>| {
+                if event.is_ok() {
+                    let _ = tx.send(());
+                }
+            };
+            let Ok(mut watcher) = notify::recommended_watcher(handler) else {
+                eprintln!("[studio] no watcher available; the panel falls back to polling");
+                return;
+            };
+            let control = user_data_dir().join(anima_engine_rs::control::CONTROL_DIR);
+            // Non-recursive on both: recursive would also report every thumbnail written during a
+            // decode, which is a refresh nobody asked for.
+            if let Err(error) = watcher.watch(&control, RecursiveMode::NonRecursive) {
+                eprintln!("[studio] cannot watch {}: {error}", control.display());
+            }
+            if let Err(error) = watcher.watch(&user_data_dir(), RecursiveMode::NonRecursive) {
+                eprintln!("[studio] cannot watch the data dir: {error}");
+            }
+            eprintln!(
+                "[studio] watching {} for control changes",
+                control.display()
+            );
+            // The watcher stops when it is dropped, so this thread keeps it alive for the session.
+            loop {
+                std::thread::park();
+            }
+        });
+        futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|()| (Message::ControlChanged, rx))
+        })
+    })
 }
 
 /// 1px separator. 0.14 dropped the `vertical_rule`/`horizontal_rule` helpers, so a line
@@ -817,6 +862,9 @@ enum Message {
     StageOverlay(OverlayAction),
     /// One animation frame, while something is moving.
     Frame(Instant),
+    /// A control file or the instance list moved. The panel re-reads, but only if its fingerprint
+    /// actually changed, so a burst of events costs one rebuild.
+    ControlChanged,
     /// Show another tab. Nothing is cleared: coming back shows what you left.
     Tab(Tab),
     /// What is in the settings tab's key field.
@@ -1794,6 +1842,7 @@ impl Studio {
             Message::StageOverlay(action) => self.stage_overlay(action),
             Message::PlayAsset(asset) => self.play_on_overlay(&asset),
             Message::PollOverlay => self.poll_overlay(),
+            Message::ControlChanged => self.poll_overlay(),
             Message::Quit => return iced::exit(),
         }
         Task::none()
@@ -2834,6 +2883,8 @@ impl Studio {
         let mut subscriptions = vec![
             iced::time::every(std::time::Duration::from_millis(OVERLAY_POLL_MS))
                 .map(|_| Message::PollOverlay),
+            // The fast path: an event from the watcher, which is what makes a change look immediate.
+            control_events(),
         ];
         if self.animating() {
             subscriptions.push(
