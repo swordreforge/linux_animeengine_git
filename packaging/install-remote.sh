@@ -85,8 +85,8 @@ else
     SRC="$TMP/src"
 fi
 
-FEATURES="overlay"
-[ "$BC7" = 1 ] && FEATURES="overlay,bc7"
+FEATURES="overlay,dbus"
+[ "$BC7" = 1 ] && FEATURES="overlay,bc7,dbus"
 [ "$STUDIO" = 1 ] && FEATURES="$FEATURES,studio"
 
 if [ "$DRY" = 1 ]; then

@@ -930,6 +930,10 @@ search field with IME, and Workshop browse/search.
         Stop    → b true        (then `anima-shepherd forget` removed the test entry)
       The daemon was stopped afterwards, leaving the machine as found, and
       `the_bus_writes_the_same_registry_the_cli_would` covers the registry semantics in a test.
+      Packaging had to follow: the feature is off by default, so `install-remote.sh` builds with
+      `overlay,dbus` now (plus `bc7`/`studio` as before) and both build hints in `install.sh` name
+      `dbus` — otherwise a shipped shepherd would have been built without the interface and the
+      feature would exist only on a developer's machine.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

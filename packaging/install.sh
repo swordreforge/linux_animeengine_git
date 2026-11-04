@@ -60,7 +60,7 @@ fi
 for bin in "${BINS[@]}"; do
   source_binary="$BIN_SRC/$bin"
   if [ ! -x "$source_binary" ]; then
-    echo "missing $source_binary — build first, e.g. cargo build --release --features overlay,bc7" >&2
+    echo "missing $source_binary — build first, e.g. cargo build --release --features overlay,bc7,dbus" >&2
     exit 1
   fi
   install -Dm755 "$source_binary" "$PREFIX/bin/$bin"
@@ -75,7 +75,7 @@ for bin in "${OPTIONAL_BINS[@]}"; do
     echo "bin      $PREFIX/bin/$bin"
     INSTALLED_STUDIO=1
   else
-    echo "skipped  $bin — build with: cargo build --release --features overlay,bc7,studio"
+    echo "skipped  $bin — build with: cargo build --release --features overlay,bc7,dbus,studio"
   fi
 done
 
