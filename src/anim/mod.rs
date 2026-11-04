@@ -338,6 +338,115 @@ impl Animation {
     pub fn bytes(&self) -> u64 {
         self.frame_bytes() * self.frames.len() as u64
     }
+
+    /// Copy `bounds` (clamped to the canvas) out of every frame, keeping the frame
+    /// count and delays. The transparent padding disappears, so the overlay's
+    /// bounds, hit-testing space and GPU memory all shrink with it — and a frame
+    /// that moves inside the canvas keeps its motion because every frame is cropped
+    /// by the same box.
+    pub fn crop(&self, bounds: InkBox) -> Animation {
+        let min_x = bounds.min_x.min(self.width.saturating_sub(1));
+        let min_y = bounds.min_y.min(self.height.saturating_sub(1));
+        let max_x = bounds.max_x.clamp(min_x, self.width.saturating_sub(1));
+        let max_y = bounds.max_y.clamp(min_y, self.height.saturating_sub(1));
+        let width = max_x - min_x + 1;
+        let height = max_y - min_y + 1;
+
+        let frames = self
+            .frames
+            .iter()
+            .map(|frame| {
+                let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+                for y in min_y..=max_y {
+                    let start = ((y * self.width + min_x) * 4) as usize;
+                    rgba.extend_from_slice(&frame.rgba[start..start + (width * 4) as usize]);
+                }
+                Frame {
+                    rgba,
+                    delay_ms: frame.delay_ms,
+                }
+            })
+            .collect();
+
+        Animation {
+            width,
+            height,
+            frames,
+        }
+    }
+}
+
+/// Alpha at or above this counts as visible (the overlay's hit-test threshold).
+pub const VISIBLE_ALPHA: u8 = 25;
+
+/// Union of the visible pixels across frames, in canvas coordinates (inclusive).
+///
+/// Authors usually leave transparent padding around the art, and the overlay
+/// clamped against the whole canvas — so the art could not reach a screen edge.
+/// This box is what both the padded clamp (A) and the auto-crop (C) are built on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InkBox {
+    pub min_x: u32,
+    pub min_y: u32,
+    pub max_x: u32,
+    pub max_y: u32,
+}
+
+impl InkBox {
+    /// Scan `animation`, sampling every `step` frames (1 = every frame), for
+    /// pixels with alpha >= [`VISIBLE_ALPHA`]. `None` when nothing is visible.
+    pub fn scan(animation: &Animation, step: usize) -> Option<Self> {
+        let step = step.max(1);
+        let (width, height) = (animation.width, animation.height);
+        let mut found: Option<Self> = None;
+
+        let mut index = 0usize;
+        while index < animation.frames.len() {
+            let alpha = animation.frames[index].alpha_mask();
+            for y in 0..height {
+                for x in 0..width {
+                    if alpha[(y * width + x) as usize] < VISIBLE_ALPHA {
+                        continue;
+                    }
+                    found = Some(match found {
+                        None => Self {
+                            min_x: x,
+                            min_y: y,
+                            max_x: x,
+                            max_y: y,
+                        },
+                        Some(mut bounds) => {
+                            bounds.min_x = bounds.min_x.min(x);
+                            bounds.min_y = bounds.min_y.min(y);
+                            bounds.max_x = bounds.max_x.max(x);
+                            bounds.max_y = bounds.max_y.max(y);
+                            bounds
+                        }
+                    });
+                }
+            }
+            index += step;
+        }
+        found
+    }
+
+    pub fn width(&self) -> u32 {
+        self.max_x - self.min_x + 1
+    }
+
+    pub fn height(&self) -> u32 {
+        self.max_y - self.min_y + 1
+    }
+
+    /// Transparent padding around the box: `(left, top, right, bottom)`.
+    pub fn padding(&self, canvas: (u32, u32)) -> (u32, u32, u32, u32) {
+        (
+            self.min_x,
+            self.min_y,
+            canvas.0.saturating_sub(1 + self.max_x),
+            canvas.1.saturating_sub(1 + self.max_y),
+        )
+    }
 }
 
 /// Caps on how much of an animation is held in RAM at once.
@@ -748,6 +857,97 @@ mod tests {
             rgba: vec![0, 0, 0, 255],
             delay_ms,
         }
+    }
+
+    /// A canvas with the visible square `[min..=max]²` and clear padding around it.
+    fn padded_animation(size: u32, min: u32, max: u32) -> Animation {
+        let mut rgba = vec![0u8; (size * size * 4) as usize];
+        for y in min..=max {
+            for x in min..=max {
+                let index = ((y * size + x) * 4) as usize + 3;
+                rgba[index] = 255;
+            }
+        }
+        Animation {
+            width: size,
+            height: size,
+            frames: vec![
+                Frame { rgba, delay_ms: 30 },
+                Frame {
+                    rgba: vec![0u8; (size * size * 4) as usize],
+                    delay_ms: 70,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn ink_box_ignores_transparent_padding() {
+        let animation = padded_animation(8, 2, 5);
+        let ink = InkBox::scan(&animation, 1).unwrap();
+        assert_eq!((ink.min_x, ink.min_y, ink.max_x, ink.max_y), (2, 2, 5, 5));
+        assert_eq!((ink.width(), ink.height()), (4, 4));
+        assert_eq!(ink.padding((8, 8)), (2, 2, 2, 2));
+
+        let cropped = animation.crop(ink);
+        assert_eq!((cropped.width, cropped.height), (4, 4));
+        assert_eq!(cropped.frames.len(), 2);
+        assert_eq!(cropped.frames[1].delay_ms, 70);
+        assert_eq!(cropped.frames[0].rgba.len(), 4 * 4 * 4);
+        assert!(
+            cropped.frames[0]
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|px| px[3] == 255),
+            "the crop must keep only the visible square"
+        );
+        assert!(
+            cropped.frames[1].rgba.iter().all(|&byte| byte == 0),
+            "an empty frame stays empty, it does not become opaque"
+        );
+    }
+
+    #[test]
+    fn ink_box_unions_frames_and_handles_blanks() {
+        let mut animation = padded_animation(8, 2, 5);
+        animation.frames.push(Frame {
+            rgba: {
+                let mut rgba = vec![0u8; 8 * 8 * 4];
+                rgba[((6 * 8 + 6) * 4) as usize + 3] = 255;
+                rgba
+            },
+            delay_ms: 10,
+        });
+        let ink = InkBox::scan(&animation, 1).unwrap();
+        assert_eq!((ink.max_x, ink.max_y), (6, 6));
+
+        let blank = Animation {
+            width: 4,
+            height: 4,
+            frames: vec![Frame {
+                rgba: vec![0u8; 4 * 4 * 4],
+                delay_ms: 10,
+            }],
+        };
+        assert_eq!(InkBox::scan(&blank, 1), None);
+    }
+
+    #[test]
+    fn crop_is_a_single_row_window() {
+        let mut rgba = vec![0u8; 3 * 4];
+        rgba[4 + 3] = 255;
+        let animation = Animation {
+            width: 3,
+            height: 1,
+            frames: vec![Frame { rgba, delay_ms: 5 }],
+        };
+        let ink = InkBox::scan(&animation, 1).unwrap();
+        assert_eq!(ink.padding((3, 1)), (1, 0, 1, 0));
+        let cropped = animation.crop(ink);
+        assert_eq!((cropped.width, cropped.height), (1, 1));
+        assert_eq!(cropped.frames[0].rgba, vec![0, 0, 0, 255]);
     }
 
     #[test]
