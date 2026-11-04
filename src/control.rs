@@ -248,16 +248,53 @@ impl ControlState {
     /// Every liveness marker on disk, so a caller can notice an instance starting or
     /// stopping rather than only its control file changing.
     pub fn announcements() -> Vec<PathBuf> {
-        let Ok(entries) = std::fs::read_dir(paths::user_data_dir().join(CONTROL_DIR)) else {
-            return Vec::new();
-        };
-        let mut paths: Vec<PathBuf> = entries
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "pid"))
-            .collect();
-        paths.sort();
-        paths
+        markers_with_extension("pid")
+    }
+
+    /// Focus marker: `<slug>.focus`, rewritten whenever the user interacts with an instance.
+    ///
+    /// A UI cannot guess which of a dozen control files the user is looking at; the overlay
+    /// says so instead, and whoever wants to follow along picks the newest one.
+    pub fn focus_path(control: &Path) -> PathBuf {
+        control.with_extension("focus")
+    }
+
+    /// Claim the focus for `control` (called on drag start and on tray/portal actions).
+    pub fn claim_focus(control: &Path) -> std::io::Result<()> {
+        let path = Self::focus_path(control);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, format!("{}\n", now_millis()))
+    }
+
+    /// The most recently focused control file in `dir`, ignoring markers whose control file
+    /// is gone.
+    pub fn focused_in(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut newest: Option<(SystemTime, PathBuf)> = None;
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "focus") {
+                continue;
+            }
+            let control = path.with_extension("json");
+            if !control.is_file() {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            if newest.as_ref().is_none_or(|(time, _)| modified > *time) {
+                newest = Some((modified, control));
+            }
+        }
+        newest.map(|(_, control)| control)
+    }
+
+    /// Focus markers on disk, so a poll can notice a focus change.
+    pub fn focus_files() -> Vec<PathBuf> {
+        markers_with_extension("focus")
     }
 
     /// Fresh state with a current generation, used at overlay startup so stale
@@ -422,6 +459,20 @@ impl ControlState {
     fn bump(&mut self) {
         self.generation = now_millis().max(self.generation + 1);
     }
+}
+
+/// Everything in the control directory with `extension`, sorted.
+fn markers_with_extension(extension: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(paths::user_data_dir().join(CONTROL_DIR)) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == extension))
+        .collect();
+    paths.sort();
+    paths
 }
 
 /// Write a `<pid> <process name>` liveness marker.
@@ -614,6 +665,41 @@ mod tests {
 
         ControlState::clear_announce(&control);
         assert!(!ControlState::is_running(&control), "cleared");
+    }
+
+    #[test]
+    fn the_newest_focus_wins_and_a_stale_marker_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("aaaaaaaaaaaaaaaa.json");
+        let second = dir.path().join("bbbbbbbbbbbbbbbb.json");
+        std::fs::write(&first, "{}").unwrap();
+        std::fs::write(&second, "{}").unwrap();
+
+        assert!(
+            ControlState::focused_in(dir.path()).is_none(),
+            "no focus yet"
+        );
+
+        ControlState::claim_focus(&first).unwrap();
+        assert_eq!(
+            ControlState::focused_in(dir.path()).as_deref(),
+            Some(first.as_path())
+        );
+
+        // A later claim wins (mtime granularity is nanoseconds on Linux).
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        ControlState::claim_focus(&second).unwrap();
+        assert_eq!(
+            ControlState::focused_in(dir.path()).as_deref(),
+            Some(second.as_path())
+        );
+
+        // A focus marker whose control file is gone is not reported.
+        std::fs::remove_file(&second).unwrap();
+        assert_eq!(
+            ControlState::focused_in(dir.path()).as_deref(),
+            Some(first.as_path())
+        );
     }
 
     #[test]

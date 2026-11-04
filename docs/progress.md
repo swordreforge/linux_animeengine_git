@@ -517,6 +517,17 @@ search field with IME, and Workshop browse/search.
       (what the tray does) → **0 markers left** → open again → announced and decoded again
       (that step silently did nothing before the fix). The two new unit tests cover the
       round-trip and the recycled-pid case.
+- [x] The panel follows the overlay you actually touch, instead of asking you to pick from a
+      list of slug-named files (17 of them here). The overlay *claims focus* — `<slug>.focus`,
+      a timestamp — on drag start and on every tray/portal action, and the window polls those
+      markers and switches its selection when the newest one changes. It also defaults to a
+      **running** instance rather than the first file in slug order, which is how the panel
+      ended up pointing at a long-exited `conft.png` while the user dragged a live overlay:
+      every button wrote into a file nobody was reading, so "nothing could be adjusted". An
+      action on a stopped instance now says so instead of doing nothing silently, and the
+      state line carries `●`/`○`.
+      Verified: with two overlays up, a focus claim for the running one made the window log
+      `[studio] following overlay …/head spinning_0_20261022_034140.apng`.
 - [ ] Not yet: Workshop **metadata is not cached on disk**. `fetch_meta` hits the keyless
       Steam API once per item per session and only the preview image is persisted
       (`~/.local/share/AnimaEngine/thumbnails/<id>.img`), so titles and view counts vanish

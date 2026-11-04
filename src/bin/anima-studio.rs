@@ -223,6 +223,12 @@ fn overlay_signature() -> String {
             .iter()
             .filter_map(|path| stamp(path)),
     );
+    // …and focus markers, so touching an overlay switches the panel to it.
+    parts.extend(
+        ControlState::focus_files()
+            .iter()
+            .filter_map(|path| stamp(path)),
+    );
     parts.extend(stamp(&SecondaryState::user_path()));
     // The shepherd's own marker, so its indicator in the panel follows it too.
     parts.extend(stamp(&anima_engine_rs::shepherd::marker_path()));
@@ -393,6 +399,9 @@ struct Studio {
     children: Vec<std::process::Child>,
     /// Fingerprint of the control files as of the last read (see [`overlay_signature`]).
     overlay_signature: String,
+    /// Modification time of the focus marker this window already followed, so a new claim
+    /// switches the selection exactly once.
+    focus_seen: Option<std::time::SystemTime>,
 }
 
 impl Studio {
@@ -410,6 +419,7 @@ impl Studio {
             overlay_selected: None,
             children: Vec::new(),
             overlay_signature: String::new(),
+            focus_seen: None,
         };
         studio.refresh();
         studio.reload_overlay();
@@ -454,17 +464,46 @@ impl Studio {
             .and_then(|index| self.overlay.get(index))
             .map(|instance| instance.label.clone());
         self.overlay = overlay_instances();
+        // Prefer an instance that is actually running. The files are sorted by slug, so the
+        // first one is arbitrary — and if it belongs to an instance that exited, every
+        // button writes into a file nobody reads, which looks like "nothing happens" while
+        // the user drags a different, live overlay.
+        let fallback = self
+            .overlay
+            .iter()
+            .position(|instance| instance.running)
+            .or(if self.overlay.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
         self.overlay_selected = previous
             .and_then(|label| {
                 self.overlay
                     .iter()
                     .position(|instance| instance.label == label)
             })
-            .or(if self.overlay.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
+            .or(fallback);
+        // Follow the overlay the user last touched (a drag, the tray, a shortcuts portal).
+        // The files are sorted by slug, so nothing else tells this window which of a dozen
+        // instances they mean — and picking one by hand was the wrong interface.
+        let control_dir = user_data_dir().join(anima_engine_rs::control::CONTROL_DIR);
+        if let Some(focused) = ControlState::focused_in(&control_dir) {
+            let stamp = std::fs::metadata(ControlState::focus_path(&focused))
+                .and_then(|meta| meta.modified())
+                .ok();
+            if stamp.is_some() && stamp != self.focus_seen {
+                self.focus_seen = stamp;
+                if let Some(index) = self
+                    .overlay
+                    .iter()
+                    .position(|instance| instance.path == focused)
+                {
+                    self.overlay_selected = Some(index);
+                    eprintln!("[studio] following overlay {}", self.overlay[index].label);
+                }
+            }
+        }
         self.overlay_signature = overlay_signature();
     }
 
@@ -498,6 +537,14 @@ impl Studio {
         let Some(instance) = self.overlay.get(index) else {
             return;
         };
+        if !instance.running {
+            // Say so instead of writing into a file nobody reads.
+            self.note = format!(
+                "{} is not running — start it with Play, or `anima-shepherd enable`",
+                instance.label
+            );
+            return;
+        }
         let label = instance.label.clone();
         let next = match action {
             OverlayAction::ToggleHidden => instance.state.clone().toggle_hidden(),
@@ -879,7 +926,12 @@ impl Studio {
             InputMode::Opaque => "opaque",
             InputMode::PassThrough => "pass-through",
         };
-        let mut summary = format!("{}% · {}° · {mode}", state.scale_percent, state.rotation);
+        let mut summary = format!(
+            "{} {}% · {}° · {mode}",
+            if instance.running { "●" } else { "○" },
+            state.scale_percent,
+            state.rotation
+        );
         for (set, key) in [
             (state.hidden, "hidden"),
             (state.locked, "locked"),

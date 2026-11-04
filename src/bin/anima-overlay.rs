@@ -921,6 +921,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                                 "[overlay] drag start at ({:.0}, {:.0})",
                                 state.pointer_pos.0, state.pointer_pos.1
                             );
+                            // Anyone watching (the main window) can now follow along.
+                            if let Err(error) = ControlState::claim_focus(&state.control_path) {
+                                eprintln!("[overlay] could not claim focus: {error}");
+                            }
                         }
                     }
                     WEnum::Value(wl_pointer::ButtonState::Released) => {
@@ -1775,6 +1779,10 @@ fn write_control(path: &Path, action: impl FnOnce(ControlState) -> ControlState)
     let next = action(ControlState::load(path));
     if let Err(err) = next.save(path) {
         eprintln!("[overlay] control write failed: {err}");
+    }
+    // A tray or portal action means the user is looking at this instance.
+    if let Err(err) = ControlState::claim_focus(path) {
+        eprintln!("[overlay] could not claim focus: {err}");
     }
 }
 
