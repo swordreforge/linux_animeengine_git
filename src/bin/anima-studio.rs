@@ -31,7 +31,7 @@ use anima_engine_rs::steamcmd::SteamCmd;
 use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
 use iced::widget::{
-    button, column, container, image, pick_list, row, scrollable, space, text, text_input,
+    button, column, container, image, pick_list, row, scrollable, space, stack, text, text_input,
 };
 use iced::{Element, Length, Subscription, Task};
 use iced_material::button::{filled as primary, outlined as secondary, text as text_button};
@@ -337,6 +337,24 @@ fn placeholder<'a>(
     .align_y(iced::Alignment::Center)
 }
 
+/// The click-catcher behind the floating picker: a scrim that takes the press which dismisses
+/// it. Esc would be nicer, but iced 0.14 removed the key-press API (see docs/next-steps.md).
+fn scrim(
+    _theme: &iced_material::Theme,
+    _status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(
+            iced::Color {
+                a: 0.35,
+                ..iced::Color::BLACK
+            }
+            .into(),
+        ),
+        ..Default::default()
+    }
+}
+
 /// Newtype so `pick_list` shows the native name while carrying the catalog code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Language(String);
@@ -639,6 +657,10 @@ enum Message {
     SearchSteam,
     RemoteResults(Result<Vec<RemoteRow>, String>),
     ShowInstalled,
+    /// Open the floating picker: typing, or the button in the search row.
+    OpenPicker,
+    /// Dismiss it without choosing: the ×, or a press anywhere outside it.
+    ClosePicker,
     /// Turn "follow the overlay you touched" on or off.
     ToggleFollow,
     Select(u64),
@@ -922,6 +944,10 @@ struct Studio {
     remote: Option<Vec<RemoteRow>>,
     /// Why a Steam search produced nothing (missing key, offline), shown in the status line.
     remote_note: String,
+    /// Whether the floating picker is up. The workshop list used to be a permanent region of
+    /// the left column, where it squeezed the overlay panel; now it floats over the left half
+    /// and the panel owns the column.
+    picker: bool,
     note: String,
     meta: HashMap<u64, Meta>,
     thumbs: HashMap<u64, Thumb>,
@@ -959,6 +985,7 @@ impl Studio {
             theme: resolve_theme(),
             remote: None,
             remote_note: String::new(),
+            picker: false,
             note: String::new(),
             meta: HashMap::new(),
             thumbs: HashMap::new(),
@@ -1117,11 +1144,16 @@ impl Studio {
                 }
             }
             Message::Refresh => self.refresh(),
-            Message::Search(query) => self.query = query,
+            Message::Search(query) => {
+                self.query = query;
+                // Typing is how you look for something, so it brings the picker up.
+                self.picker = true;
+            }
             Message::ClearSearch => self.query.clear(),
             Message::SearchSteam => {
                 let query = search_text(&self.query);
                 self.remote_note = "searching the Workshop…".to_string();
+                self.picker = true;
                 return Task::perform(async move { fetch_remote(query) }, Message::RemoteResults);
             }
             Message::RemoteResults(Ok(rows)) => {
@@ -1130,6 +1162,7 @@ impl Studio {
                     count => format!("{count} Workshop result(s)"),
                 };
                 self.remote = Some(rows);
+                self.picker = true;
             }
             Message::RemoteResults(Err(error)) => {
                 self.remote = None;
@@ -1138,7 +1171,10 @@ impl Studio {
             Message::ShowInstalled => {
                 self.remote = None;
                 self.remote_note.clear();
+                self.picker = true;
             }
+            Message::OpenPicker => self.picker = true,
+            Message::ClosePicker => self.picker = false,
             Message::Select(id) => {
                 // A different item means a different set of assets: the one on show, and the
                 // parameters staged for it, belong to the old item and go with it.
@@ -1146,6 +1182,8 @@ impl Studio {
                     self.previewed_asset = None;
                     self.staged = None;
                 }
+                // Choosing is what the picker is for, so choosing closes it.
+                self.picker = false;
                 self.selected_item = Some(id);
                 // A remote result has no directory yet; its preview comes from the CDN.
                 let dir = self
@@ -1293,64 +1331,7 @@ impl Studio {
         .spacing(12)
         .align_y(iced::Alignment::Center);
 
-        let mut list = column![].spacing(4);
-        let mut shown = 0usize;
-        // The list shows either what is installed (filtered) or the Steam search results.
-        let installed: Vec<(&u64, &WorkshopItem)> = if self.remote.is_none() {
-            self.snapshot
-                .items
-                .iter()
-                .filter(|(id, item)| {
-                    matches(
-                        item,
-                        self.meta.get(id).map(|meta| meta.title.as_str()),
-                        &self.query,
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        for (id, item) in installed {
-            shown += 1;
-            let name = self
-                .meta
-                .get(id)
-                .map(|meta| meta.title.clone())
-                .filter(|title| !title.is_empty())
-                .or_else(|| {
-                    item.assets
-                        .first()
-                        .and_then(|asset| asset.file_name())
-                        .map(|name| name.to_string_lossy().into_owned())
-                })
-                .unwrap_or_else(|| self.i18n.tr("Workshop"));
-            // Two lines per row, and the accent colour is reserved for the primary
-            // action, so selection is shown with a marker instead.
-            let marker = if self.selected_item == Some(*id) {
-                "▸ "
-            } else {
-                ""
-            };
-            list = list.push(
-                button(
-                    column![
-                        text(format!("{marker}{name}")).size(14),
-                        text(format!(
-                            "{id} · {} {}",
-                            item.assets.len(),
-                            self.i18n.tr("assets")
-                        ))
-                        .size(11),
-                    ]
-                    .spacing(2),
-                )
-                .style(secondary)
-                .on_press(Message::Select(*id))
-                .width(Length::Fill),
-            );
-        }
-
+        // The rows live in the floating picker now: the left column is the overlay panel's.
         let selected_item = self.selected_item.and_then(|id| self.item(id).cloned());
         let selected_remote = self.selected_item.and_then(|id| {
             self.remote
@@ -1532,9 +1513,144 @@ impl Studio {
             (None, None) => text(self.note.clone()).into(),
         };
 
+        let placeholder = self.i18n.tr("Search");
+        let mut search = row![
+            text_input(&placeholder, &self.query)
+                .on_input(Message::Search)
+                // iced_material has no text_input catalog, but it does ship this style.
+                .style(iced_material::text_input::default)
+                .width(Length::Fill)
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        if !self.query.trim().is_empty() {
+            search = search.push(
+                button(text("×"))
+                    .style(secondary)
+                    .on_press(Message::ClearSearch),
+            );
+        }
+        search = search.push(
+            button(text(format!("{} Steam", self.i18n.tr("Search"))))
+                .style(secondary)
+                .on_press(Message::SearchSteam),
+        );
+        // The list lives in the floating picker now, so the search row is the way to it.
+        search = search.push(
+            button(text(self.i18n.tr("Workshop")))
+                .style(if self.picker { primary } else { secondary })
+                .on_press(Message::OpenPicker),
+        );
+
+        let left = column![search, self.overlay_panel()]
+            .width(Length::FillPortion(2))
+            .spacing(10);
+
+        let bodies = row![
+            left,
+            divider(Length::Fixed(1.0), Length::Fill),
+            container(details)
+                .style(iced_material::container::surface_container_low)
+                .width(Length::FillPortion(3)),
+        ]
+        .spacing(16)
+        .height(Length::Fill);
+
+        let scene = container(
+            column![
+                header,
+                bodies,
+                text(if self.remote_note.is_empty() {
+                    self.note.clone()
+                } else {
+                    self.remote_note.clone()
+                })
+                .size(11)
+            ]
+            .spacing(12),
+        )
+        .padding(16)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        let Some(picker) = self.picker_layer() else {
+            return scene.into();
+        };
+        // The picker floats over the left half: the scene behind it, then a scrim that takes
+        // the press that dismisses it, then the picker itself.
+        stack![
+            scene,
+            button(space())
+                .style(scrim)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .on_press(Message::ClosePicker),
+            container(row![picker, space().width(Length::FillPortion(1))])
+                .padding(16)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        ]
+        .into()
+    }
+
+    /// The installed items whose title, id or asset names match the query.
+    fn filtered_installed(&self) -> Vec<(&u64, &WorkshopItem)> {
+        self.snapshot
+            .items
+            .iter()
+            .filter(|(id, item)| {
+                matches(
+                    item,
+                    self.meta.get(id).map(|meta| meta.title.as_str()),
+                    &self.query,
+                )
+            })
+            .collect()
+    }
+
+    /// The picker's rows: whatever is installed (already filtered), or the Steam results.
+    fn result_rows(&self, installed: &[(&u64, &WorkshopItem)]) -> El<'_> {
+        let mut list = column![].spacing(4);
+        for &(id, item) in installed {
+            let name = self
+                .meta
+                .get(id)
+                .map(|meta| meta.title.clone())
+                .filter(|title| !title.is_empty())
+                .or_else(|| {
+                    item.assets
+                        .first()
+                        .and_then(|asset| asset.file_name())
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| self.i18n.tr("Workshop"));
+            // Two lines per row, and the accent colour is reserved for the primary action, so
+            // selection is shown with a marker instead.
+            let marker = if self.selected_item == Some(*id) {
+                "▸ "
+            } else {
+                ""
+            };
+            list = list.push(
+                button(
+                    column![
+                        text(format!("{marker}{name}")).size(14),
+                        text(format!(
+                            "{id} · {} {}",
+                            item.assets.len(),
+                            self.i18n.tr("assets")
+                        ))
+                        .size(11),
+                    ]
+                    .spacing(2),
+                )
+                .style(secondary)
+                .on_press(Message::Select(*id))
+                .width(Length::Fill),
+            );
+        }
         if let Some(rows) = &self.remote {
             for row in rows {
-                shown += 1;
                 let marker = if self.selected_item == Some(row.id) {
                     "▸ "
                 } else {
@@ -1560,80 +1676,66 @@ impl Studio {
                 );
             }
         }
-
-        if shown == 0 && !self.snapshot.is_empty() {
+        if installed.is_empty() && self.remote.is_none() && !self.snapshot.is_empty() {
             list = list.push(text("—").size(12));
         }
+        list.into()
+    }
 
-        let placeholder = self.i18n.tr("Search");
-        let mut search = row![
-            text_input(&placeholder, &self.query)
-                .on_input(Message::Search)
-                // iced_material has no text_input catalog, but it does ship this style.
-                .style(iced_material::text_input::default)
-                .width(Length::Fill)
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-        if !self.query.trim().is_empty() {
-            search = search.push(
-                button(text("×"))
-                    .style(secondary)
-                    .on_press(Message::ClearSearch),
-            );
-            search = search.push(text(format!("{shown}/{}", self.snapshot.len())).size(11));
+    /// The floating workspace: the workshop browser over the left half of the window. It exists
+    /// because the list used to be a permanent region of the left column, where it both squeezed
+    /// the overlay panel and had no height to show more than a row or two.
+    fn picker_layer(&self) -> Option<El<'_>> {
+        if !self.picker {
+            return None;
         }
-        search = search.push(
-            button(text(format!("{} Steam", self.i18n.tr("Search"))))
-                .style(secondary)
-                .on_press(Message::SearchSteam),
-        );
+        let installed = self.filtered_installed();
+        let count = match &self.remote {
+            Some(rows) => rows.len(),
+            None => installed.len(),
+        };
+        let title = if self.remote.is_some() {
+            format!("{} · {count}", self.i18n.tr("Search"))
+        } else {
+            format!(
+                "{} · {count}/{}",
+                self.i18n.tr("Workshop"),
+                self.snapshot.len()
+            )
+        };
+        let mut header = row![text(title).size(14), space().width(Length::Fill)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
         if self.remote.is_some() {
-            search = search.push(
+            header = header.push(
                 button(text(self.i18n.tr("Workshop")))
                     .style(secondary)
                     .on_press(Message::ShowInstalled),
             );
         }
+        header = header.push(
+            button(text("×"))
+                .style(secondary)
+                .on_press(Message::ClosePicker),
+        );
 
-        let left = column![
-            search,
-            scrollable(list)
+        let mut body = column![
+            scrollable(self.result_rows(&installed))
                 .style(iced_material::scrollable::default)
-                .height(Length::Fill),
-            divider(Length::Fill, Length::Fixed(1.0)),
-            self.overlay_panel(),
+                .height(Length::Fill)
         ]
-        .width(Length::FillPortion(2))
-        .spacing(10);
-
-        let bodies = row![
-            left,
-            divider(Length::Fixed(1.0), Length::Fill),
-            container(details)
+        .spacing(8);
+        if !self.remote_note.is_empty() {
+            body = body.push(text(self.remote_note.clone()).size(11));
+        }
+        Some(
+            container(column![header, divider(Length::Fill, Length::Fixed(1.0)), body].spacing(10))
                 .style(iced_material::container::surface_container_low)
-                .width(Length::FillPortion(3)),
-        ]
-        .spacing(16)
-        .height(Length::Fill);
-
-        container(
-            column![
-                header,
-                bodies,
-                text(if self.remote_note.is_empty() {
-                    self.note.clone()
-                } else {
-                    self.remote_note.clone()
-                })
-                .size(11)
-            ]
-            .spacing(12),
+                .padding(12)
+                .width(Length::FillPortion(1))
+                .height(Length::Fill)
+                .into(),
         )
-        .padding(16)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
     }
 
     /// The overlay control panel. Same channel as the tray, the portal and the CLI:
@@ -2169,6 +2271,25 @@ mod tests {
         let _ = studio.update(Message::Select(2));
         assert!(studio.previewed_asset.is_none());
         assert!(studio.staged.is_none());
+    }
+
+    #[test]
+    fn typing_opens_the_picker_and_choosing_closes_it() {
+        let mut studio = Studio::boot();
+        assert!(!studio.picker);
+
+        // Looking for something is what the picker is for, so typing brings it up.
+        let _ = studio.update(Message::Search("teto".to_string()));
+        assert!(studio.picker);
+
+        // Choosing ends the search; the task this returns is dropped, not run.
+        let _ = studio.update(Message::Select(3799603054));
+        assert!(!studio.picker);
+
+        let _ = studio.update(Message::OpenPicker);
+        assert!(studio.picker);
+        let _ = studio.update(Message::ClosePicker);
+        assert!(!studio.picker);
     }
 
     #[test]

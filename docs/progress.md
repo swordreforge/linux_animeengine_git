@@ -733,6 +733,15 @@ search field with IME, and Workshop browse/search.
       pane. Button rows `.wrap()` now, which stops a narrow window from squeezing "Flip V" into a
       two-line vertical pill, and the overlay pick list shortens its label instead of spilling a
       Steam path out of the row.
+- [x] The left column now belongs to the overlay panel, and the workshop browser floats. The list
+      used to be a permanent region above the panel: at this window size it had room for a row or
+      two, it hid the installed items whenever Steam results replaced them, and it squeezed the
+      panel. It is a `stack!` layer over the left half now — the scene, then a scrim that takes the
+      dismissing press, then the picker — with its rows, its count and the Steam/local switch in
+      its own header. Choosing a row, the `×`, or a press outside closes it; typing opens it, and
+      so does the `Workshop` button in the search row. Esc is still not available (0.14 removed the
+      key API, see next-steps), so those are the ways out. No new i18n keys, and one new field
+      (`picker: bool`) is the whole state.
 - [ ] The known flake, disclosed rather than hidden: `shepherd::tests::live_instances_cover_every_control_file`
       reads the **real** control directory while other tests in the same process write it, so it
       fails roughly one run in three (it passes on its own). The fix is a test-side lock around
