@@ -55,7 +55,7 @@ use wgpu::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BlendState, BufferBinding, BufferBindingType, BufferDescriptor,
     BufferUsages, ColorTargetState, ColorWrites, CommandEncoderDescriptor, CompositeAlphaMode,
-    DeviceDescriptor, Extent3d, FragmentState, LoadOp, MultisampleState, Operations, Origin3d,
+    Extent3d, FragmentState, LoadOp, MultisampleState, Operations, Origin3d,
     PipelineLayoutDescriptor, PresentMode, PrimitiveState, RenderPassColorAttachment,
     RenderPassDescriptor, RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor,
     ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, SurfaceConfiguration,
@@ -2009,7 +2009,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compatible_surface: Some(&wgpu_surface),
         force_fallback_adapter: false,
     }))?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default()))?;
+    // Block-compressed frames (BC7) need this device feature; ask for it when the
+    // adapter offers it, and say so — the GPU half of the BC7 route depends on it.
+    let adapter_features = adapter.features();
+    let bc7 = adapter_features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+    let mut descriptor = wgpu::DeviceDescriptor::default();
+    if bc7 {
+        descriptor.required_features = wgpu::Features::TEXTURE_COMPRESSION_BC;
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))?;
+    eprintln!(
+        "[overlay] gpu {} | bc7 blocks: {}",
+        adapter.get_info().name,
+        if bc7 { "supported" } else { "unavailable" }
+    );
 
     let limits = adapter.limits();
     if width > limits.max_texture_dimension_2d || height > limits.max_texture_dimension_2d {
