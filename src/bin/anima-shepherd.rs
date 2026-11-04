@@ -207,90 +207,166 @@ impl ksni::Tray for ShepherdTray {
         use ksni::menu::{CheckmarkItem, MenuItem, StandardItem, SubMenu};
 
         let registry = Registry::load(&self.registry_path);
-        let mut items = Vec::new();
+        let live = shepherd::live_instances();
 
+        // Union of "what should run" and "what is on disk": a manager has to show both, or an
+        // animation the user started by hand would be invisible here.
+        let mut rows: Vec<(String, Option<String>, bool, bool, PathBuf)> = Vec::new();
         for entry in &registry.instances {
             let control = ControlState::path_for(Some(&entry.path));
-            let running = ControlState::is_running(&control);
-            let state = ControlState::load(&control);
-            let name = entry
-                .path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&entry.path)
-                .to_string();
-            let label = format!(
-                "{} {}{}",
-                if running { "●" } else { "○" },
+            rows.push((
+                entry.path.clone(),
+                Some(entry.path.clone()),
+                entry.enabled,
+                ControlState::is_running(&control),
+                control,
+            ));
+        }
+        for instance in &live {
+            let name = instance
+                .animation
+                .clone()
+                .unwrap_or_else(|| instance.label());
+            if rows.iter().any(|(path, ..)| *path == name) {
+                continue;
+            }
+            rows.push((
                 name,
-                if entry.enabled { "" } else { " (disabled)" }
-            );
+                instance.animation.clone(),
+                false,
+                instance.running,
+                instance.control.clone(),
+            ));
+        }
+        rows.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
 
-            let toggle = entry.path.clone();
-            let quit = entry.path.clone();
-            let disable = entry.path.clone();
-            let registry_path = self.registry_path.clone();
-            items.push(MenuItem::SubMenu(SubMenu {
-                label,
-                submenu: vec![
-                    MenuItem::Checkmark(CheckmarkItem {
-                        label: "Visible".into(),
-                        checked: running && !state.hidden,
-                        activate: Box::new(move |_: &mut Self| {
-                            let control = ControlState::path_for(Some(&toggle));
-                            let next = ControlState::load(&control).toggle_hidden();
-                            if let Err(error) = next.save(&control) {
-                                eprintln!("[shepherd] tray write failed: {error}");
-                            }
-                        }),
-                        ..Default::default()
-                    }),
-                    MenuItem::Standard(StandardItem {
+        let mut items = Vec::new();
+        for (name, animation, enabled, running, control) in rows {
+            let suffix = match (enabled, running) {
+                (true, _) => "",
+                (false, true) => " · not supervised",
+                (false, false) => " · off",
+            };
+            let label = format!(
+                "{} {}{suffix}",
+                if running { "●" } else { "○" },
+                name.rsplit('/').next().unwrap_or(&name)
+            );
+            let mut children = Vec::new();
+
+            match &animation {
+                Some(animation) => {
+                    if !enabled || !running {
+                        let animation = animation.clone();
+                        let registry_path = self.registry_path.clone();
+                        children.push(MenuItem::Standard(StandardItem {
+                            label: if running {
+                                "Keep supervised".into()
+                            } else {
+                                "Start (and supervise)".into()
+                            },
+                            activate: Box::new(move |_: &mut Self| {
+                                let mut registry = Registry::load(&registry_path);
+                                registry.enable(&animation);
+                                if let Err(error) = registry.save(&registry_path) {
+                                    eprintln!("[shepherd] registry write failed: {error}");
+                                }
+                            }),
+                            ..Default::default()
+                        }));
+                    }
+                    if running {
+                        let path = ControlState::path_for(Some(animation));
+                        let state = ControlState::load(&path);
+                        let toggle = path.clone();
+                        children.push(MenuItem::Checkmark(CheckmarkItem {
+                            label: "Visible".into(),
+                            checked: !state.hidden,
+                            activate: Box::new(move |_: &mut Self| {
+                                let next = ControlState::load(&toggle).toggle_hidden();
+                                if let Err(error) = next.save(&toggle) {
+                                    eprintln!("[shepherd] tray write failed: {error}");
+                                }
+                            }),
+                            ..Default::default()
+                        }));
+                        children.push(MenuItem::Standard(StandardItem {
+                            label: "Quit this overlay".into(),
+                            activate: Box::new(move |_: &mut Self| {
+                                let next = ControlState::load(&path).request_quit();
+                                if let Err(error) = next.save(&path) {
+                                    eprintln!("[shepherd] tray write failed: {error}");
+                                }
+                            }),
+                            ..Default::default()
+                        }));
+                    }
+                    if enabled {
+                        let animation = animation.clone();
+                        let registry_path = self.registry_path.clone();
+                        children.push(MenuItem::Standard(StandardItem {
+                            label: "Stop supervising".into(),
+                            activate: Box::new(move |_: &mut Self| {
+                                let mut registry = Registry::load(&registry_path);
+                                registry.disable(&animation);
+                                if let Err(error) = registry.save(&registry_path) {
+                                    eprintln!("[shepherd] registry write failed: {error}");
+                                }
+                            }),
+                            ..Default::default()
+                        }));
+                    }
+                }
+                None => {
+                    // A control file the persisted list cannot explain: nothing to
+                    // supervise, but quitting it is still useful.
+                    let quit = control.clone();
+                    children.push(MenuItem::Standard(StandardItem {
                         label: "Quit this overlay".into(),
                         activate: Box::new(move |_: &mut Self| {
-                            let control = ControlState::path_for(Some(&quit));
-                            let next = ControlState::load(&control).request_quit();
-                            if let Err(error) = next.save(&control) {
+                            let next = ControlState::load(&quit).request_quit();
+                            if let Err(error) = next.save(&quit) {
                                 eprintln!("[shepherd] tray write failed: {error}");
                             }
                         }),
                         ..Default::default()
-                    }),
-                    MenuItem::Standard(StandardItem {
-                        label: "Disable (stop supervising)".into(),
-                        activate: Box::new(move |_: &mut Self| {
-                            let mut registry = Registry::load(&registry_path);
-                            registry.disable(&disable);
-                            if let Err(error) = registry.save(&registry_path) {
-                                eprintln!("[shepherd] registry write failed: {error}");
-                            }
-                        }),
-                        ..Default::default()
-                    }),
-                ],
+                    }));
+                }
+            }
+
+            items.push(MenuItem::SubMenu(SubMenu {
+                label,
+                submenu: children,
                 ..Default::default()
             }));
         }
 
         if items.is_empty() {
             items.push(MenuItem::Standard(StandardItem {
-                label: "Nothing enabled — anima-shepherd enable <animation>".into(),
+                label: "Nothing yet — start an overlay, or anima-shepherd enable <animation>"
+                    .into(),
                 ..Default::default()
             }));
         }
 
         items.push(MenuItem::Separator);
-        if let Some(studio) = &self.studio {
-            let studio = studio.clone();
-            items.push(MenuItem::Standard(StandardItem {
-                label: "Open main window".into(),
-                activate: Box::new(move |_: &mut Self| {
-                    if let Err(error) = std::process::Command::new(&studio).spawn() {
-                        eprintln!("[shepherd] could not open {}: {error}", studio.display());
-                    }
-                }),
+        match &self.studio {
+            Some(studio) => {
+                let studio = studio.clone();
+                items.push(MenuItem::Standard(StandardItem {
+                    label: "Open main window".into(),
+                    activate: Box::new(move |_: &mut Self| {
+                        if let Err(error) = std::process::Command::new(&studio).spawn() {
+                            eprintln!("[shepherd] could not open {}: {error}", studio.display());
+                        }
+                    }),
+                    ..Default::default()
+                }));
+            }
+            None => items.push(MenuItem::Standard(StandardItem {
+                label: "Open main window (not installed — build --features studio)".into(),
                 ..Default::default()
-            }));
+            })),
         }
         items.push(MenuItem::Standard(StandardItem {
             label: "Quit shepherd (overlays keep playing)".into(),
@@ -310,6 +386,12 @@ fn spawn_tray(registry_path: PathBuf) -> Option<ksni::blocking::Handle<ShepherdT
         registry_path,
         studio: sibling_binary("anima-studio"),
     };
+    match &tray.studio {
+        Some(studio) => eprintln!("[shepherd] main window: {}", studio.display()),
+        None => eprintln!(
+            "[shepherd] main window not found — build with --features studio or install it"
+        ),
+    }
     match tray
         .disable_dbus_name(false)
         .assume_sni_available(true)

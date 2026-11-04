@@ -241,6 +241,64 @@ fn backoff(now: Instant, failures: u32) -> Option<Instant> {
     (step > Duration::ZERO).then(|| now + step)
 }
 
+/// One instance as a UI sees it: the control file, the animation behind it (when the
+/// persisted list can explain the slug), and whether a process owns it.
+#[derive(Debug, Clone)]
+pub struct Live {
+    pub animation: Option<String>,
+    pub control: PathBuf,
+    pub running: bool,
+}
+
+impl Live {
+    /// What to show in a menu: the animation's file name, else the control file's slug.
+    pub fn label(&self) -> String {
+        self.animation
+            .as_deref()
+            .and_then(|path| path.rsplit('/').next())
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| {
+                self.control
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "?".to_string())
+            })
+    }
+}
+
+/// Every control file on disk, registered or not — a manager has to show what is actually
+/// on screen, not only what it was told to supervise.
+pub fn live_instances() -> Vec<Live> {
+    let persisted = crate::state::SecondaryState::load(&crate::state::SecondaryState::user_path());
+    let mut out: Vec<Live> = ControlState::instances()
+        .into_iter()
+        .map(|control| {
+            let stem = control
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let animation = persisted
+                .instances
+                .iter()
+                .find(|instance| crate::control::instance_slug(&instance.path) == stem)
+                .map(|instance| instance.path.clone());
+            let running = ControlState::is_running(&control);
+            Live {
+                animation,
+                control,
+                running,
+            }
+        })
+        .collect();
+    // Running first, then by name, so the menu leads with what is alive.
+    out.sort_by(|a, b| {
+        b.running
+            .cmp(&a.running)
+            .then_with(|| a.label().cmp(&b.label()))
+    });
+    out
+}
+
 /// Markers whose process is gone. Only written by the process that owns them, so this is
 /// for tidying up, not for supervision.
 pub fn stale_markers() -> Vec<PathBuf> {
@@ -418,6 +476,21 @@ mod tests {
                 path: "/a.apng".to_string(),
                 error: "no binary".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn live_instances_cover_every_control_file() {
+        let live = live_instances();
+        assert_eq!(live.len(), ControlState::instances().len());
+        for instance in &live {
+            assert!(instance.control.is_file());
+            assert!(!instance.label().is_empty());
+        }
+        eprintln!(
+            "[shepherd] {} control file(s), {} running",
+            live.len(),
+            live.iter().filter(|instance| instance.running).count()
         );
     }
 
