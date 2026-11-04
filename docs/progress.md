@@ -143,12 +143,13 @@ Interaction and control:
   the app would see.
 - `anima-workshop` (bin, no extra features): `roots`, `libraries`, `list`,
   `show <id>`, `download <id...>` (SteamCMD), `play <id> [asset]` (install if
-  needed, then run it in `anima-overlay`), `sync`; `web <id...>` with
-  `--features workshop-web`.
+  needed, then run it in `anima-overlay`), `upload <dir> [--title T] [--id N]
+  [--user U] [--dry-run]` (writes `workshop.vdf` + `workshop_build_item`),
+  `sync`; `web <id...>` with `--features workshop-web`.
 
 ## Verification
 
-- `cargo test`: **116** default (113 lib + 3 CLI), **119** with
+- `cargo test`: **121** default (118 lib + 3 CLI), **124** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -176,6 +177,15 @@ Interaction and control:
   installed item, picked its first asset and launched the overlay
   (`[workshop] .../TETO12.apng → .../anima-overlay`), which kept running until
   the 6 s test timeout. An uninstalled item would be downloaded first.
+- Upload: `upload <dir> --dry-run` prints the generated `workshop.vdf`
+  (`appid` 3474900, `publishedfileid` 0 for a new item, `contentfolder`,
+  optional `previewfile`, `visibility`, `title`, `description`). Driven through a
+  fake `steamcmd`, the real path wrote `<STEAMCMD_DIR>/anima_upload/workshop.vdf`
+  and ran `+login tester +workshop_build_item <vdf> +quit`, then parsed the
+  published id from `Success. Workshop item 9999999999 published.` into
+  `https://steamcommunity.com/sharedfiles/filedetails/?id=9999999999`.
+- Uploading a **real** item still needs the user's Steam account (`--user` or
+  `STEAM_USER`); anonymous login cannot publish.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -363,8 +373,8 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (116 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (119)
+cargo test                                        # pure logic (121 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (124)
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -402,4 +412,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   runtime-tunable rectangle budgets) → in-surface right-click menu →
   Steam root/library discovery + `anima-workshop` CLI → SteamCMD download path →
   SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray +
-  menu) → `anima-workshop play` (download → sync → overlay).
+  menu) → `anima-workshop play` (download → sync → overlay) → workshop upload
+  (`workshop.vdf` + `workshop_build_item`).

@@ -7,6 +7,7 @@
 //! anima-workshop show <id>          # one item's directory and assets
 //! anima-workshop download <id...>   # via SteamCMD (STEAMCMD, STEAMCMD_DIR)
 //! anima-workshop play <id> [asset]  # install if needed, run in anima-overlay
+//! anima-workshop upload <dir> [--title T] [--id N] [--user U] [--dry-run]
 //! anima-workshop sync               # subscribed items, downloading missing ones
 //! anima-workshop web <id...>        # metadata (needs --features workshop-web)
 //! ```
@@ -38,15 +39,23 @@ fn main() -> ExitCode {
         },
         Some("download") => download(&args[1..]),
         Some("play") => play(&args[1..]),
+        Some("upload") => upload(&args[1..]),
         Some("sync") => sync(),
         Some("web") => web(&args[1..]),
         _ => usage(),
     }
 }
 
+/// Consume the value that follows a flag.
+fn take(args: &[String], index: &mut usize) -> String {
+    let value = args.get(*index).cloned().unwrap_or_default();
+    *index += 1;
+    value
+}
+
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|play <id> [asset]|sync|web <id...>>"
+        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|play <id> [asset]|upload <dir> [opts]|sync|web <id...>>"
     );
     ExitCode::FAILURE
 }
@@ -185,6 +194,101 @@ fn play(args: &[String]) -> ExitCode {
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
         Err(err) => {
             eprintln!("could not launch {}: {err}", overlay.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Build a `workshop.vdf` for a content folder and upload it with SteamCMD.
+fn upload(args: &[String]) -> ExitCode {
+    use anima_engine_rs::steamcmd::{SteamCmd, Visibility, WorkshopUpload};
+
+    let mut content_dir: Option<PathBuf> = None;
+    let mut title: Option<String> = None;
+    let mut description = String::new();
+    let mut preview: Option<PathBuf> = None;
+    let mut published_file_id: Option<u64> = None;
+    let mut visibility = Visibility::Public;
+    let mut changenote = String::new();
+    let mut user = std::env::var("STEAM_USER").ok();
+    let mut dry_run = false;
+
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].clone();
+        index += 1;
+        match arg.as_str() {
+            "--title" => title = Some(take(args, &mut index)),
+            "--description" | "--desc" => description = take(args, &mut index),
+            "--preview" => preview = Some(PathBuf::from(take(args, &mut index))),
+            "--id" => published_file_id = take(args, &mut index).parse().ok(),
+            "--changenote" => changenote = take(args, &mut index),
+            "--user" => user = Some(take(args, &mut index)),
+            "--visibility" => match Visibility::parse(&take(args, &mut index)) {
+                Some(parsed) => visibility = parsed,
+                None => {
+                    eprintln!("visibility must be public, friends, private or unlisted");
+                    return usage();
+                }
+            },
+            "--dry-run" => dry_run = true,
+            _ if arg.starts_with('-') => return usage(),
+            other => content_dir = Some(PathBuf::from(other)),
+        }
+    }
+
+    let Some(content_dir) = content_dir else {
+        eprintln!(
+            "usage: anima-workshop upload <dir> [--title T] [--description D] [--preview PNG] \
+             [--id <publishedfileid>] [--visibility public|friends|private|unlisted] \
+             [--changenote N] [--user U] [--dry-run]"
+        );
+        return ExitCode::FAILURE;
+    };
+    if !content_dir.is_dir() {
+        eprintln!("{} is not a directory", content_dir.display());
+        return ExitCode::FAILURE;
+    }
+    let title = title.unwrap_or_else(|| {
+        content_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "AnimaEngine item".to_string())
+    });
+
+    let item = WorkshopUpload {
+        title,
+        description,
+        content_dir,
+        preview,
+        published_file_id,
+        visibility,
+        changenote,
+    };
+    if dry_run {
+        print!("{}", item.to_vdf());
+        return ExitCode::SUCCESS;
+    }
+
+    let Some(user) = user else {
+        eprintln!("upload needs an account: pass --user <steam login> or set STEAM_USER");
+        return ExitCode::FAILURE;
+    };
+    let Some(steamcmd) = SteamCmd::detect() else {
+        eprintln!("steamcmd not found: install it or set STEAMCMD=/path/to/steamcmd");
+        return ExitCode::FAILURE;
+    };
+    match steamcmd.upload(&item, &user) {
+        Ok(Some(id)) => {
+            println!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}");
+            ExitCode::SUCCESS
+        }
+        Ok(None) => {
+            eprintln!("steamcmd finished but did not report a published file id");
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!("upload failed: {err}");
             ExitCode::FAILURE
         }
     }
