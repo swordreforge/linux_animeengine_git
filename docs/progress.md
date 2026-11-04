@@ -480,6 +480,24 @@ Interaction and control:
       Verified: `niri msg windows` shows `App ID: "anima-engine-studio"` (it was `""`), and a
       temp-prefix install validates `desktop-file-validate: ok` both with and without the
       studio binary.
+- [x] Fixed a self-inflicted flicker: `view()` rebuilt `image::Handle::from_rgba(...)` on
+      every frame, and every one of those gets a fresh unique id, so the renderer treated
+      the preview as a new image and re-uploaded it — which the 1s overlay poll turned into
+      a visible flash once a second. The handle is now built once when the item loads and
+      lives in `Thumb::Ready(Handle)`; `view()` clones it (same id, cached texture).
+- [x] The window can put an item **on the overlay**: each playable asset (`.apng`, `.gif`,
+      `.webp`, `.png`) is a `▶` button and the action row gets a primary `Play` for the
+      item's first animation. If an instance already plays that asset (its control file
+      exists, matched by `paths::canonical_path` + `ControlState::path_for` — the same
+      computation the CLI does) the overlay is simply un-hidden; otherwise the window
+      spawns `anima-overlay <asset>`, which creates the layer-shell surface itself. The
+      window deliberately does **not** try to own an sctk surface: the layer exists on the
+      overlay's Wayland connection with its own wgpu 29 stack, while iced runs winit on
+      wgpu 27, so embedding it would mean a second event loop and a second GPU device in
+      one process for no benefit — starting the process gets the same result.
+      Verified: the spawned process logged `decoded 64 frame(s) at 1500x1125` and restored
+      its instance, and a headless test proves the "already has an instance" lookup lines
+      up with the real control files.
 - [ ] Not yet: Workshop **metadata is not cached on disk**. `fetch_meta` hits the keyless
       Steam API once per item per session and only the preview image is persisted
       (`~/.local/share/AnimaEngine/thumbnails/<id>.img`), so titles and view counts vanish

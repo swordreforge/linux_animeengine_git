@@ -128,15 +128,14 @@ struct Meta {
     preview_url: String,
 }
 
-/// A decoded preview: ready to hand to the renderer.
+/// A decoded preview. The handle is built **once**, when the item loads: every
+/// `Handle::from_rgba` gets a fresh unique id, so rebuilding it in `view()` made the
+/// renderer treat the image as new and re-upload it on every redraw — which the 1s
+/// overlay poll turned into a visible flash.
 #[derive(Debug, Clone)]
 enum Thumb {
     Loading,
-    Ready {
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    },
+    Ready(image::Handle),
     Failed(String),
 }
 
@@ -213,6 +212,29 @@ fn overlay_signature() -> String {
     out
 }
 
+/// `anima-overlay` next to this binary first (a checkout's `target/release` or an
+/// install prefix), then on `PATH`.
+fn find_overlay_binary() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("anima-overlay");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    anima_engine_rs::steamcmd::find_in_path("anima-overlay")
+}
+
+/// Extensions the overlay can actually play.
+fn is_playable(asset: &Path) -> bool {
+    asset.extension().is_some_and(|extension| {
+        ["apng", "gif", "webp", "png"]
+            .iter()
+            .any(|known| extension.eq_ignore_ascii_case(known))
+    })
+}
+
 /// Every control file on disk, labelled with the animation it belongs to when the
 /// persisted instance list knows that key.
 fn overlay_instances() -> Vec<OverlayInstance> {
@@ -250,6 +272,9 @@ enum Message {
     OpenPage(u64),
     ArmRemove(u64),
     Remove(u64),
+    /// Put one workshop asset on the overlay: show the instance if it already exists,
+    /// otherwise start one.
+    PlayAsset(PathBuf),
     RefreshOverlay,
     SelectOverlay(String),
     Overlay(OverlayAction),
@@ -488,11 +513,9 @@ impl Studio {
                 self.thumbs.insert(
                     id,
                     match thumb {
-                        Ok((width, height, rgba)) => Thumb::Ready {
-                            width,
-                            height,
-                            rgba,
-                        },
+                        Ok((width, height, rgba)) => {
+                            Thumb::Ready(image::Handle::from_rgba(width, height, rgba))
+                        }
                         Err(error) => Thumb::Failed(error),
                     },
                 );
@@ -565,6 +588,7 @@ impl Studio {
                     .position(|instance| instance.label == label);
             }
             Message::Overlay(action) => self.apply_overlay(action),
+            Message::PlayAsset(asset) => self.play_on_overlay(&asset),
             Message::PollOverlay => self.poll_overlay(),
             Message::Quit => return iced::exit(),
         }
@@ -651,18 +675,11 @@ impl Studio {
                 .spacing(10);
 
                 match self.thumbs.get(&id) {
-                    Some(Thumb::Ready {
-                        width,
-                        height,
-                        rgba,
-                    }) => {
+                    Some(Thumb::Ready(handle)) => {
                         pane = pane.push(
-                            container(
-                                image(image::Handle::from_rgba(*width, *height, rgba.clone()))
-                                    .content_fit(iced::ContentFit::Contain),
-                            )
-                            .width(Length::Fill)
-                            .height(Length::Fixed(PREVIEW_HEIGHT)),
+                            container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
+                                .width(Length::Fill)
+                                .height(Length::Fixed(PREVIEW_HEIGHT)),
                         );
                     }
                     Some(Thumb::Loading) => {
@@ -697,18 +714,30 @@ impl Studio {
 
                 pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
 
-                let mut actions = row![
-                    button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
-                        .style(primary)
-                        .on_press(Message::Download(id)),
-                    button(text(self.i18n.tr("Subscribe")))
-                        .style(secondary)
-                        .on_press(Message::OpenPage(id)),
-                    button(text(self.i18n.tr("Unsubscribe")))
-                        .style(secondary)
-                        .on_press(Message::OpenPage(id)),
-                ]
-                .spacing(8);
+                let mut actions = row![];
+                if let Some(playable) = item.assets.iter().find(|asset| is_playable(asset)) {
+                    actions = actions.push(
+                        button(text(self.i18n.tr("Play")))
+                            .style(primary)
+                            .on_press(Message::PlayAsset(playable.clone())),
+                    );
+                }
+                actions = actions
+                    .push(
+                        button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
+                            .style(secondary)
+                            .on_press(Message::Download(id)),
+                    )
+                    .push(
+                        button(text(self.i18n.tr("Subscribe")))
+                            .style(secondary)
+                            .on_press(Message::OpenPage(id)),
+                    )
+                    .push(
+                        button(text(self.i18n.tr("Unsubscribe")))
+                            .style(secondary)
+                            .on_press(Message::OpenPage(id)),
+                    );
                 actions = if self.pending_remove == Some(id) {
                     actions.push(
                         button(text(self.i18n.tr("Confirm remove")))
@@ -729,7 +758,15 @@ impl Studio {
                     text(format!("{} {}", item.assets.len(), self.i18n.tr("assets"))).size(12),
                 );
                 for asset in &item.assets {
-                    pane = pane.push(text(file_name(asset)).size(12));
+                    if is_playable(asset) {
+                        pane = pane.push(
+                            button(text(format!("▶ {}", file_name(asset))))
+                                .style(text_button)
+                                .on_press(Message::PlayAsset(asset.clone())),
+                        );
+                    } else {
+                        pane = pane.push(text(file_name(asset)).size(12));
+                    }
                 }
                 scrollable(pane).into()
             }
@@ -874,6 +911,33 @@ impl Studio {
         panel.into()
     }
 
+    /// Put one asset on the overlay. The layer-shell surface belongs to the overlay
+    /// process, so this either re-shows the instance that already plays this animation
+    /// or starts one for it — the window deliberately does not try to own a layer
+    /// surface next to iced's loop and its own wgpu stack.
+    fn play_on_overlay(&mut self, asset: &Path) {
+        let key = anima_engine_rs::paths::canonical_path(&asset.to_string_lossy());
+        let control = ControlState::path_for(Some(&key));
+        if control.is_file() {
+            let next = ControlState::load(&control).set_hidden(false);
+            self.note = match next.save(&control) {
+                Ok(()) => format!("showing {} on the overlay", file_name(asset)),
+                Err(error) => format!("could not write the control file: {error}"),
+            };
+            self.reload_overlay();
+            return;
+        }
+        let Some(binary) = find_overlay_binary() else {
+            self.note = "anima-overlay not found — build or install it first (--features overlay)"
+                .to_string();
+            return;
+        };
+        self.note = match std::process::Command::new(&binary).arg(asset).spawn() {
+            Ok(_) => format!("started an overlay for {}", file_name(asset)),
+            Err(error) => format!("could not start {}: {error}", binary.display()),
+        };
+    }
+
     /// The panel follows the control files on its own; the Refresh buttons are for
     /// impatience rather than correctness.
     fn subscription(&self) -> Subscription<Message> {
@@ -942,6 +1006,31 @@ mod tests {
             assert!(!instance.label.is_empty());
         }
         eprintln!("[studio] {} overlay control file(s)", instances.len());
+    }
+
+    /// "Play" must find the instance that already plays an asset, or decide to start one.
+    /// Read-only: it only computes the control-file path the same way the CLI does.
+    #[test]
+    fn play_targets_the_right_control_file() {
+        let studio = Studio::boot();
+        let instances = ControlState::instances();
+        let mut matched = 0;
+        for item in studio.snapshot.items.values() {
+            for asset in item.assets.iter().filter(|asset| is_playable(asset)) {
+                let key = anima_engine_rs::paths::canonical_path(&asset.to_string_lossy());
+                if instances.contains(&ControlState::path_for(Some(&key))) {
+                    matched += 1;
+                    break;
+                }
+            }
+        }
+        eprintln!("[studio] {matched} item(s) already have an overlay instance");
+        let sample = ControlState::path_for(Some("/tmp/anima-studio-test.apng"));
+        assert!(sample.starts_with(user_data_dir()));
+        assert_eq!(
+            sample.extension().and_then(|extension| extension.to_str()),
+            Some("json")
+        );
     }
 
     /// The fingerprint must be stable while nothing changes, and cover the control dir.
