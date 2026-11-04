@@ -579,7 +579,8 @@ mod tests {
         assert_eq!(fr.missing, 2);
         assert!(!fr.is_complete());
 
-        assert_eq!(report.incomplete().count(), 1);
+        // `de` counts because of its blank entry, `fr` because it is missing two.
+        assert_eq!(report.incomplete().count(), 2);
         assert!(verify_catalog(&Catalog::new()).is_none());
     }
 
