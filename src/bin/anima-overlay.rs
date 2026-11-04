@@ -1008,6 +1008,131 @@ struct Loaded {
     limits: DecodeLimits,
 }
 
+/// Everything that depends on the loaded animation's geometry: replacing these is what
+/// makes a reload with a different size, frame count or storage path possible without
+/// restarting the process.
+struct Frames {
+    animation: Arc<Animation>,
+    blocks: Option<Blocks>,
+    blocks_usable: bool,
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    use_array: bool,
+    tex_width: u32,
+    tex_height: u32,
+    /// `(width / tex_width, height / tex_height)`: 1:1 for RGBA, < 1 for the BC7
+    /// padding up to whole 4x4 blocks.
+    scale: (f32, f32),
+}
+
+impl Frames {
+    fn frame_count(&self) -> usize {
+        self.animation.frames.len()
+    }
+}
+
+/// Upload one frame into the frame texture: BC7 blocks when we have usable ones,
+/// otherwise the decoded RGBA. Only writes to the texture, so `&Frames` is enough.
+fn upload_frame(queue: &wgpu::Queue, frames: &Frames, index: usize, layer: u32) {
+    let texture = &frames.texture;
+    let (tex_width, tex_height) = (frames.tex_width, frames.tex_height);
+    let (width, height) = (frames.animation.width, frames.animation.height);
+    let (data, bytes_per_row, rows, size) =
+        match frames.blocks.as_ref().filter(|_| frames.blocks_usable) {
+            Some(blocks) => {
+                let block_bytes = blocks.frame_bytes();
+                let start = index * block_bytes;
+                (
+                    &blocks.data[start..start + block_bytes],
+                    blocks.blocks_per_row() * 16,
+                    blocks.rows(),
+                    (tex_width, tex_height),
+                )
+            }
+            None => (
+                frames.animation.frames[index].rgba.as_slice(),
+                width * 4,
+                height,
+                (width, height),
+            ),
+        };
+    queue.write_texture(
+        TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: Origin3d {
+                x: 0,
+                y: 0,
+                z: layer,
+            },
+            aspect: TextureAspect::All,
+        },
+        data,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: Some(rows),
+        },
+        Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+/// First run (or reload) for a file without a BC7 sidecar: encode one in the background
+/// while the RGBA path plays. A later reload uploads the blocks directly.
+#[cfg(feature = "bc7")]
+fn spawn_bc7_encode(
+    path: Option<&std::path::Path>,
+    animation: &Arc<Animation>,
+    crop: (u32, u32),
+    limits: DecodeLimits,
+    bc7: bool,
+) {
+    if !bc7 {
+        return;
+    }
+    let Some(source) = path else {
+        return;
+    };
+    let frames = Arc::clone(animation);
+    let source = source.to_path_buf();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let params = anima_engine_rs::bc7::Bc7Params::default();
+        let mut data = Vec::with_capacity(frames.frames.len() * frames.frame_bytes() as usize);
+        for frame in &frames.frames {
+            match anima_engine_rs::bc7::encode(&frame.rgba, frames.width, frames.height, params) {
+                Ok(blocks) => data.extend_from_slice(&blocks),
+                Err(err) => {
+                    eprintln!("[overlay] bc7 encode failed: {err}");
+                    return;
+                }
+            }
+        }
+        let blocks = Blocks {
+            width: frames.width,
+            height: frames.height,
+            count: frames.frames.len(),
+            uber_level: params.uber_level,
+            crop,
+            limits,
+            delays: frames.frames.iter().map(|frame| frame.delay_ms).collect(),
+            data,
+        };
+        match FrameCache::user_default().write_blocks(&source, &blocks) {
+            Ok(()) => eprintln!(
+                "[overlay] bc7 sidecar written: {:.1} MiB in {:.1}s (used on the next reload)",
+                blocks.data.len() as f64 / (1024.0 * 1024.0),
+                started.elapsed().as_secs_f32()
+            ),
+            Err(err) => eprintln!("[overlay] bc7 sidecar write failed: {err}"),
+        }
+    });
+}
+
 /// Crop the author's transparent padding away, reporting where the art started.
 ///
 /// Art usually carries padding (measured: 227 px on miku12's right, 344 px on
@@ -1996,8 +2121,8 @@ fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).map(PathBuf::from);
     let Loaded {
-        mut animation,
-        mut blocks,
+        animation,
+        blocks,
         crop,
         limits: decode_limits,
     } = load_animation(path.as_deref())?;
@@ -2275,170 +2400,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     wgpu_surface.configure(&device, &config);
 
-    // --- frame storage: BC7 blocks when we have them and the GPU takes them,
-    //     else the whole RGBA array if it fits, else one re-uploaded layer ---
-    let blocks_usable = blocks.as_ref().is_some_and(|blocks| {
-        bc7 && blocks.is_consistent() && blocks.width == width && blocks.height == height
-    });
-    let frame_bytes = u64::from(width) * u64::from(height) * 4;
-    let total_bytes = frame_bytes * frame_count as u64;
-    let block_bytes = blocks.as_ref().map_or(0, |blocks| blocks.data.len() as u64);
-    let rgba_array =
-        frame_count as u32 <= limits.max_texture_array_layers && total_bytes <= ARRAY_BUDGET;
-    let bc7_array = blocks_usable
-        && frame_count as u32 <= limits.max_texture_array_layers
-        && block_bytes <= ARRAY_BUDGET;
-    let use_array = bc7_array || rgba_array;
-    let layers = if use_array { frame_count as u32 } else { 1 };
-    eprintln!(
-        "[overlay] {} frame(s) {}x{} — {:.1} MiB decoded, {:.1} MiB bc7, {} (decode cap {:.0} MiB)",
-        frame_count,
-        width,
-        height,
-        total_bytes as f64 / (1024.0 * 1024.0),
-        block_bytes as f64 / (1024.0 * 1024.0),
-        if bc7_array {
-            "bc7 array texture"
-        } else if blocks_usable {
-            "bc7 just-in-time upload"
-        } else if rgba_array {
-            "rgba array texture"
-        } else {
-            "rgba just-in-time upload"
-        },
-        decode_limits.max_bytes as f64 / (1024.0 * 1024.0)
-    );
-
-    // BC textures are measured in pixels but stored in whole 4x4 blocks, so the
-    // texture is block-aligned (e.g. 1125 -> 1128) and the shader samples only the
-    // real pixels via `texture_scale`.
-    let (tex_format, tex_width, tex_height) = match blocks.as_ref().filter(|_| blocks_usable) {
-        Some(blocks) => (
-            TextureFormat::Bc7RgbaUnormSrgb,
-            blocks.blocks_per_row() * 4,
-            blocks.rows() * 4,
-        ),
-        None => (TextureFormat::Rgba8UnormSrgb, width, height),
-    };
-    let texture_scale = (
-        width as f32 / tex_width.max(1) as f32,
-        height as f32 / tex_height.max(1) as f32,
-    );
-
-    let texture = device.create_texture(&TextureDescriptor {
-        label: Some("anima-frames"),
-        size: Extent3d {
-            width: tex_width,
-            height: tex_height,
-            depth_or_array_layers: layers,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: TextureDimension::D2,
-        format: tex_format,
-        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    let upload_frame =
-        |animation: &Animation, blocks: Option<&Blocks>, index: usize, layer: u32| {
-            let (data, bytes_per_row, rows, size) = match blocks.filter(|_| blocks_usable) {
-                Some(blocks) => {
-                    let block_bytes = blocks.frame_bytes();
-                    let start = index * block_bytes;
-                    (
-                        &blocks.data[start..start + block_bytes],
-                        blocks.blocks_per_row() * 16,
-                        blocks.rows(),
-                        (tex_width, tex_height),
-                    )
-                }
-                None => (
-                    animation.frames[index].rgba.as_slice(),
-                    width * 4,
-                    height,
-                    (width, height),
-                ),
-            };
-            queue.write_texture(
-                TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: layer,
-                    },
-                    aspect: TextureAspect::All,
-                },
-                data,
-                TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(rows),
-                },
-                Extent3d {
-                    width: size.0,
-                    height: size.1,
-                    depth_or_array_layers: 1,
-                },
-            );
-        };
-    if use_array {
-        for index in 0..frame_count {
-            upload_frame(&animation, blocks.as_ref(), index, index as u32);
-        }
-    } else {
-        upload_frame(&animation, blocks.as_ref(), 0, 0);
-    }
-
-    // First run for a file: no sidecar yet, so encode one in the background while
-    // the RGBA path plays. The next run uploads BC7 blocks directly.
-    #[cfg(feature = "bc7")]
-    if bc7
-        && blocks.is_none()
-        && let Some(source) = path.as_deref()
-    {
-        let frames = Arc::clone(&animation);
-        let source = source.to_path_buf();
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let params = anima_engine_rs::bc7::Bc7Params::default();
-            let mut data = Vec::with_capacity(frames.frames.len() * frames.frame_bytes() as usize);
-            for frame in &frames.frames {
-                match anima_engine_rs::bc7::encode(&frame.rgba, frames.width, frames.height, params)
-                {
-                    Ok(blocks) => data.extend_from_slice(&blocks),
-                    Err(err) => {
-                        eprintln!("[overlay] bc7 encode failed: {err}");
-                        return;
-                    }
-                }
-            }
-            let blocks = Blocks {
-                width: frames.width,
-                height: frames.height,
-                count: frames.frames.len(),
-                uber_level: params.uber_level,
-                crop,
-                limits: decode_limits,
-                delays: frames.frames.iter().map(|frame| frame.delay_ms).collect(),
-                data,
-            };
-            match FrameCache::user_default().write_blocks(&source, &blocks) {
-                Ok(()) => eprintln!(
-                    "[overlay] bc7 sidecar written: {:.1} MiB in {:.1}s (restart to use it)",
-                    blocks.data.len() as f64 / (1024.0 * 1024.0),
-                    started.elapsed().as_secs_f32()
-                ),
-                Err(err) => eprintln!("[overlay] bc7 sidecar write failed: {err}"),
-            }
-        });
-    }
-
-    let texture_view = texture.create_view(&TextureViewDescriptor {
-        dimension: Some(TextureViewDimension::D2Array),
-        ..Default::default()
-    });
+    // Created before the frame storage because a rebuild needs them to make the new
+    // bind group; none of them depends on the animation.
     // Linear minification keeps downscaled frames (scale < 100%) from aliasing.
     let sampler = device.create_sampler(&SamplerDescriptor {
         min_filter: wgpu::FilterMode::Linear,
@@ -2450,11 +2413,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         size: std::mem::size_of::<FrameCtl>() as u64,
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
-    });
-
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("anima-shader"),
-        source: ShaderSource::Wgsl(SHADER.into()),
     });
     let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("anima-bgl"),
@@ -2487,27 +2445,142 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         ],
     });
-    let bind_group = device.create_bind_group(&BindGroupDescriptor {
-        label: Some("anima-bg"),
-        layout: &bind_group_layout,
-        entries: &[
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::TextureView(&texture_view),
+
+    // --- frame storage, as a builder: BC7 blocks when we have them and the GPU takes
+    //     them, else the whole RGBA array if it fits, else one re-uploaded layer ---
+    let build_frames = |loaded: Loaded| -> Frames {
+        let Loaded {
+            animation,
+            blocks,
+            crop: _,
+            limits: decode_limits,
+        } = loaded;
+        let (width, height) = (animation.width, animation.height);
+        let frame_count = animation.frames.len();
+        let blocks_usable = blocks.as_ref().is_some_and(|blocks| {
+            bc7 && blocks.is_consistent() && blocks.width == width && blocks.height == height
+        });
+        let frame_bytes = u64::from(width) * u64::from(height) * 4;
+        let total_bytes = frame_bytes * frame_count as u64;
+        let block_bytes = blocks.as_ref().map_or(0, |blocks| blocks.data.len() as u64);
+        let rgba_array =
+            frame_count as u32 <= limits.max_texture_array_layers && total_bytes <= ARRAY_BUDGET;
+        let bc7_array = blocks_usable
+            && frame_count as u32 <= limits.max_texture_array_layers
+            && block_bytes <= ARRAY_BUDGET;
+        let use_array = bc7_array || rgba_array;
+        let layers = if use_array { frame_count as u32 } else { 1 };
+        eprintln!(
+            "[overlay] {} frame(s) {}x{} — {:.1} MiB decoded, {:.1} MiB bc7, {} (decode cap {:.0} MiB)",
+            frame_count,
+            width,
+            height,
+            total_bytes as f64 / (1024.0 * 1024.0),
+            block_bytes as f64 / (1024.0 * 1024.0),
+            if bc7_array {
+                "bc7 array texture"
+            } else if blocks_usable {
+                "bc7 just-in-time upload"
+            } else if rgba_array {
+                "rgba array texture"
+            } else {
+                "rgba just-in-time upload"
             },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::Sampler(&sampler),
+            decode_limits.max_bytes as f64 / (1024.0 * 1024.0)
+        );
+
+        // BC textures are measured in pixels but stored in whole 4x4 blocks, so the
+        // texture is block-aligned (e.g. 1125 -> 1128) and the shader samples only the
+        // real pixels via `scale`.
+        let (tex_format, tex_width, tex_height) = match blocks.as_ref().filter(|_| blocks_usable) {
+            Some(blocks) => (
+                TextureFormat::Bc7RgbaUnormSrgb,
+                blocks.blocks_per_row() * 4,
+                blocks.rows() * 4,
+            ),
+            None => (TextureFormat::Rgba8UnormSrgb, width, height),
+        };
+        let scale = (
+            width as f32 / tex_width.max(1) as f32,
+            height as f32 / tex_height.max(1) as f32,
+        );
+
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("anima-frames"),
+            size: Extent3d {
+                width: tex_width,
+                height: tex_height,
+                depth_or_array_layers: layers,
             },
-            BindGroupEntry {
-                binding: 2,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: &uniform,
-                    offset: 0,
-                    size: None,
-                }),
-            },
-        ],
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: tex_format,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("anima-bg"),
+            layout: &bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &uniform,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+        let frames = Frames {
+            animation,
+            blocks,
+            blocks_usable,
+            texture,
+            bind_group,
+            use_array,
+            tex_width,
+            tex_height,
+            scale,
+        };
+        if use_array {
+            for index in 0..frame_count {
+                upload_frame(&queue, &frames, index, index as u32);
+            }
+        } else {
+            upload_frame(&queue, &frames, 0, 0);
+        }
+        frames
+    };
+
+    let mut frames = build_frames(Loaded {
+        animation,
+        blocks,
+        crop,
+        limits: decode_limits,
+    });
+
+    #[cfg(feature = "bc7")]
+    if frames.blocks.is_none() {
+        spawn_bc7_encode(path.as_deref(), &frames.animation, crop, decode_limits, bc7);
+    }
+
+    let shader = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("anima-shader"),
+        source: ShaderSource::Wgsl(SHADER.into()),
     });
     let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some("anima-pl"),
@@ -2615,61 +2688,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         event_queue.dispatch_pending(&mut state)?;
 
-        // Hot reload: same frame geometry (count, size and storage path) is swapped
-        // into the existing texture — seamless, no surface gap. Anything else falls
-        // back to re-execing (the placement still survives via the persisted state).
+        // Hot reload: everything that depends on the animation's geometry is rebuilt in
+        // place, so a changed size, frame count or storage path needs no restart. The
+        // state is updated first because `scaled_size`/`reapply_clamp` read it.
         if hot_reload.changed() {
-            let Loaded {
-                animation: reloaded,
-                blocks: reloaded_blocks,
-                crop: _,
-                limits: _,
-            } = load_animation(path.as_deref())?;
-            let reloaded_usable = reloaded_blocks.as_ref().is_some_and(|blocks| {
-                bc7 && blocks.is_consistent() && blocks.width == width && blocks.height == height
-            });
-            if reloaded.width == width
-                && reloaded.height == height
-                && reloaded.frames.len() == frame_count
-                && reloaded_usable == blocks_usable
-            {
-                animation = reloaded;
-                blocks = reloaded_blocks;
-                state.animation = Arc::clone(&animation);
-                state.frame_index = 0;
-                index = 0;
-                if use_array {
-                    for frame in 0..frame_count {
-                        upload_frame(&animation, blocks.as_ref(), frame, frame as u32);
-                    }
-                } else {
-                    upload_frame(&animation, blocks.as_ref(), 0, 0);
-                }
-                state.region_dirty = true;
-                state.visual_dirty = true;
-                eprintln!(
-                    "[overlay] reloaded in place: {} frame(s) {}x{}",
-                    frame_count, width, height
-                );
-                persist_geometry(&state);
-            } else {
-                eprintln!(
-                    "[overlay] geometry changed ({}x{} x{} -> {}x{} x{}), restarting to reload",
-                    width,
-                    height,
-                    frame_count,
-                    reloaded.width,
-                    reloaded.height,
-                    reloaded.frames.len()
-                );
-                persist_geometry(&state);
-                let executable = std::env::current_exe()?;
-                use std::os::unix::process::CommandExt;
-                let error = std::process::Command::new(executable)
-                    .args(std::env::args_os().skip(1))
-                    .exec();
-                eprintln!("[overlay] reload failed, keeping the current animation: {error}");
+            let loaded = load_animation(path.as_deref())?;
+            let new_width = loaded.animation.width;
+            let new_height = loaded.animation.height;
+            let new_crop = loaded.crop;
+            #[cfg(feature = "bc7")]
+            let new_limits = loaded.limits;
+            let needs_bc7 = loaded.blocks.is_none();
+
+            state.animation = Arc::clone(&loaded.animation);
+            state.native_size = (new_width, new_height);
+            state.crop = new_crop;
+            state.frame_index = 0;
+            state.applied_rects.clear();
+            state.region_dirty = true;
+            state.visual_dirty = true;
+            if !state.hidden {
+                let (width, height) = fit_to_output(&state, scaled_size(&state));
+                state.desired_size = (width, height);
+                state.layer_surface.set_size(width, height);
+                state.surface.commit();
             }
+
+            frames = build_frames(loaded);
+            if needs_bc7 {
+                #[cfg(feature = "bc7")]
+                spawn_bc7_encode(
+                    path.as_deref(),
+                    &frames.animation,
+                    new_crop,
+                    new_limits,
+                    bc7,
+                );
+            }
+            index = 0;
+            uploaded_layer0 = 0;
+            last_presented = None;
+            next_change = Instant::now();
+            reapply_clamp(&mut state);
+            eprintln!(
+                "[overlay] rebuilt frames: {} frame(s) {}x{}",
+                frames.frame_count(),
+                new_width,
+                new_height
+            );
+            persist_geometry(&state);
         }
 
         // Tray / portal commands arrive through the control file.
@@ -2741,11 +2808,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let layer = if use_array {
+        let layer = if frames.use_array {
             index as u32
         } else {
             if uploaded_layer0 != index {
-                upload_frame(&animation, blocks.as_ref(), index, 0);
+                upload_frame(&queue, &frames, index, 0);
                 uploaded_layer0 = index;
             }
             0
@@ -2769,17 +2836,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (uv_mat, uv_off) = uv_transform(state.orientation);
             // Block-compressed textures are padded to whole 4x4 blocks; scale the
             // UVs so only the real pixels are sampled (no squashed image).
-            let (uv_mat, uv_off) = if texture_scale == (1.0, 1.0) {
+            let (uv_mat, uv_off) = if frames.scale == (1.0, 1.0) {
                 (uv_mat, uv_off)
             } else {
                 (
                     [
-                        uv_mat[0] * texture_scale.0,
-                        uv_mat[1] * texture_scale.1,
-                        uv_mat[2] * texture_scale.0,
-                        uv_mat[3] * texture_scale.1,
+                        uv_mat[0] * frames.scale.0,
+                        uv_mat[1] * frames.scale.1,
+                        uv_mat[2] * frames.scale.0,
+                        uv_mat[3] * frames.scale.1,
                     ],
-                    [uv_off[0] * texture_scale.0, uv_off[1] * texture_scale.1],
+                    [uv_off[0] * frames.scale.0, uv_off[1] * frames.scale.1],
                 )
             };
             queue.write_buffer(
@@ -2818,7 +2885,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             multiview_mask: None,
                         });
                         pass.set_pipeline(&pipeline);
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_bind_group(0, &frames.bind_group, &[]);
                         if !hide_now {
                             pass.draw(0..3, 0..1);
                         }
@@ -2849,7 +2916,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             state.meta_fps
         };
-        next_change = now + frame_delay(&animation.frames[index], fps);
+        next_change = now + frame_delay(&frames.animation.frames[index], fps);
         state.frame_index = index;
         if state.pointer_inside {
             state.pointer_over = state.opaque_at(state.pointer_pos.0, state.pointer_pos.1);
@@ -2867,7 +2934,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             region_index = Some(index);
         }
         presented = presented.wrapping_add(1);
-        index = (index + 1) % frame_count;
+        index = (index + 1) % frames.frame_count();
     }
 
     // Safety net: keep the last geometry even if we exit mid-interaction.

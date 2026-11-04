@@ -274,12 +274,15 @@ Interaction and control:
   (`mutter_x11_interop`, `ext_background_effect_manager_v1`, `xdg_wm_base v7`,
   `wp_fractional_scale_manager_v1`, …) with **no `zwlr_*`**) — the sandbox attached
   to a different compositor, so layer-shell was legitimately absent.
-- Hot reload (end to end): a copy of `bochi455.apng` was run and then `touch`ed. The
-  log went `decoded 27 frame(s)` → `reloaded in place: 27 frame(s) 136x132`, and the
-  process id was **unchanged** afterwards — the frames were re-uploaded into the
-  same texture, with no surface recreated and no state restore needed. A geometry
-  change (size, frame count or switching between BC7 and RGBA) takes the re-exec
-  fallback instead, which keeps the placement but flickers.
+- Hot reload (end to end): a copy of `bochi455.apng` was run, `touch`ed, then had
+  `miku12.apng` swapped over it, then `bochi455.apng` swapped back. The log went
+  `decoded 27 frame(s) at 512x512` → `rebuilt frames: 27 frame(s) 136x132` →
+  `decoded 64 frame(s) at 1500x1125` → `rebuilt frames: 64 frame(s) 1266x1078` →
+  `rebuilt frames: 27 frame(s) 136x132`, and the process id was **unchanged** across
+  all three reloads: the texture, view, bind group, layer count and UV scale are
+  rebuilt in place, with no surface recreated, no `restored instance` line and no
+  state restore. Each swap also re-spawned the BC7 encoder, because overwriting the
+  file invalidates the sidecar for its path (`bc7 sidecar written: 0.5 MiB`).
 - Workshop watch (the callbacks fallback): `anima-workshop watch --once` printed
   `watching 1 item(s) in 2 root(s)` with `3828587753 6 asset(s)`, i.e. the Steam
   library and our SteamCMD root, deduplicated by id. Unit tests drive a temporary
@@ -412,23 +415,19 @@ Interaction and control:
 - [ ] Subscribe / repair / unsubscribe actions in the UI (downloads already work
       through `anima-workshop download` / SteamCMD)
 - [x] Hot reload: the overlay watches the displayed animation (its size/mtime every
-      second) and the Workshop content (`WorkshopWatcher`, every fifth second). When
-      the frame geometry is unchanged — same size, frame count and storage path — the
-      new frames are **uploaded into the existing texture**, so the reload is
-      seamless (no surface gap, no restart). Otherwise it persists the geometry and
-      re-execs itself, which keeps the placement but flickers briefly. Verified:
-      touching a copy of `bochi455.apng` mid-run logged
-      `reloaded in place: 27 frame(s) 136x132` with the **same PID**
-- [ ] Seamless reload for a **geometry change**: today the in-place path covers the
-      identical-size case and a geometry change falls back to `exec` (flicker). The
-      refactor that removes the fallback (a `Frames` struct owning the texture, view,
-      bind group, layer count and UV scale) is written up step by step in
-      `docs/seamless-reload-plan.md`, including the acceptance test (swap a 512²×27
-      animation for a 1500×1125×64 one mid-run and expect the same PID)
+      second) and the Workshop content (`WorkshopWatcher`, every fifth second).
+      Everything that depends on the animation's geometry — texture, view, bind group,
+      layer count, UV scale — lives in a `Frames` value built by a `build_frames`
+      closure, so a reload that changes the size, frame count or storage path is
+      rebuilt **in place** too: no restart, no surface gap, no flicker, no state
+      restore. Verified mid-run with **the same process id**: `touch` →
+      `rebuilt frames: 27 frame(s) 136x132`; swap in `miku12.apng` →
+      `decoded 64 frame(s) at 1500x1125` then `rebuilt frames: 64 frame(s) 1266x1078`;
+      swap back → `rebuilt frames: 27 frame(s) 136x132`. The `exec` fallback is gone.
 - [ ] Steamworks callbacks (`ItemInstalled` / `DownloadItemResult`) still need
       `libsteam_api.so`. The **fallback is already in place**: `WorkshopWatcher` plus
-      the overlay's hot reload (in place when the geometry matches, otherwise a
-      re-exec) cover the "new or updated item becomes the animation" case without the
+      the overlay's hot reload cover the "new or updated item becomes the animation"
+      case without the
       SDK. When the `.so` is available, `steam::FlatSteamApi::run_callbacks` can drive
       the same diff, and `diff` reports **updated** items too (same id, new files)
 - [ ] Upload via SteamCMD (`workshop_build_item`) and/or the Steamworks worker,

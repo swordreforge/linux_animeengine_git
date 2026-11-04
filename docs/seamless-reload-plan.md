@@ -1,4 +1,16 @@
-# Seamless reload for a *geometry change* — executable plan
+# Seamless reload for a *geometry change* — implementation plan
+
+**Status: implemented** (commit "Rebuild the frame texture in place on a geometry
+change"). What the code does differs from the plan in three small ways, all noted
+below: `sampler`/`uniform`/`bind_group_layout` were moved above the frame block as
+written; the builder became a closure returning a `Frames` value instead of an
+associated function with a `FrameBuild` context; and `view`/`layers` are built
+locally and *not* stored in `Frames` (only `bind_group`, `use_array`,
+`tex_width`/`tex_height` and `scale` survive past the builder). `DecodeLimits`
+already derived `Copy`, so no change was needed there. The `upload_frame` body moved
+to a free function taking `&Frames`, which is what lets the builder upload through
+the struct it is constructing. Verified end to end: same PID across a touch, a swap
+to a 1500×1125×64 animation and a swap back.
 
 Goal: remove the `CommandExt::exec` fallback so that swapping in an animation with a
 different size/frame count also happens in place (same PID, no flicker).
