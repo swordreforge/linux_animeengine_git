@@ -2026,9 +2026,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let qh = event_queue.handle();
     let (globals, _) = registry_queue_init::<OverlayState>(&conn)?;
 
-    let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=4, ())?;
-    let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ())?;
-    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=9, ())?;
+    let compositor: wl_compositor::WlCompositor = globals
+        .bind(&qh, 1..=4, ())
+        .map_err(|err| format!("binding wl_compositor: {err}"))?;
+    let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals
+        .bind(&qh, 1..=4, ())
+        .map_err(|err| format!("binding zwlr_layer_shell_v1: {err}"))?;
+    let seat: wl_seat::WlSeat = globals
+        .bind(&qh, 1..=9, ())
+        .map_err(|err| format!("binding wl_seat: {err}"))?;
     let outputs = OutputState::new(&globals, &qh);
 
     let surface = compositor.create_surface(&qh, ());
