@@ -203,9 +203,10 @@ mod tests {
 
     #[test]
     fn rejects_mismatched_buffers() {
-        let one_block = [10u8, 120, 200, 255].repeat(4);
+        // A 4x4 image is 64 bytes of RGBA; 4x4 blocks are 16 bytes of BC7.
+        let one_block = [10u8, 120, 200, 255].repeat(16);
         assert!(encode(&one_block, 4, 4, Bc7Params::default()).is_ok());
-        assert!(encode(&[0u8; 15], 4, 4, Bc7Params::default()).is_err());
+        assert!(encode(&[0u8; 16], 4, 4, Bc7Params::default()).is_err());
         assert!(decode(&[0u8; 15], 4, 4).is_err());
     }
 }

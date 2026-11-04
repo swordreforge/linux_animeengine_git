@@ -203,8 +203,10 @@ Interaction and control:
   45.8 dB colour / 44.5 dB alpha (max alpha error 133), 2.7 fps — the average is
   visibly lossless, the worst silhouette pixels are not, which is why the CPU
   alpha stays authoritative for hit-testing and regions.
-- Only a **degenerate** all-transparent 4x4 input was rejected by the encoder in
-  testing (real antialiased sprites round-trip); noted for investigation.
+- BC7 encode/decode is covered by quality gates in `src/bc7.rs`: an antialiased
+  disc must stay above 30 dB for colour *and* alpha with a bounded worst-case
+  alpha error, solid colours above 45 dB, and mismatched buffer sizes are
+  rejected (a 4x4 image is 64 bytes of RGBA, its blocks 16 bytes).
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
