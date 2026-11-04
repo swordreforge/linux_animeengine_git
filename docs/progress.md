@@ -873,6 +873,24 @@ search field with IME, and Workshop browse/search.
       `Message::Select`.
       Verified: 0 warnings, clippy 0, 162 lib + 28 studio tests (4 ignored), two of them new — one for
       each bug above.
+- [x] Installed rows show their real titles without being clicked for them. The rule was already
+      "metadata title, else the first asset's file name", but metadata was only fetched when an item
+      was **selected** — so a row showed `ssstik.io_1790…apng` and turned into a title the moment you
+      clicked it, one item at a time, which is exactly what the user described.
+      `GetPublishedFileDetails` is **keyless** and takes up to 100 ids per request, so the installed
+      list is one request now, made at boot and on Refresh: `installed_meta_task` asks only about ids
+      whose cached answer is not fresh. A second run with a warm cache asks nothing at all — offline
+      and instant, and no flip at all.
+      Proved on this machine by moving a single cache file aside (not deleting it):
+        launch A: `metadata: asking for 1 of 9 installed item(s)` → `1 item(s) arrived in the batch`
+        launch B: no metadata line at all — nothing to ask for, no request made
+      The first attempt at this test showed *no* metadata line either, which looked like a bug and
+      was not: all nine items already had fresh cached answers from today's testing, so there was
+      genuinely nothing to ask. Moving one file aside is what made the difference visible.
+      The file name stays as the immediate, offline fallback for the first paint and for libraries
+      past the first hundred, and it is still in the detail pane and the asset list, where the actual
+      file is what matters. `meta_from` is shared by both paths now, so the batch and the single-item
+      fetch cannot describe an item differently.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

@@ -786,6 +786,8 @@ enum Message {
     /// Search the Workshop itself (needs `STEAM_WEB_API_KEY`).
     SearchSteam,
     RemoteResults(u64, u32, Result<RemotePage, String>),
+    /// Metadata for a batch of installed items, from the startup request.
+    MetaLoaded(Vec<(u64, Meta)>),
     /// Ask for another page of the same search.
     RemotePage(u32),
     ShowInstalled,
@@ -948,18 +950,110 @@ fn decode_asset_preview(bytes: &[u8]) -> Option<Still> {
     Some((width, height, rgba.to_vec()))
 }
 
-/// Ask Steam (keyless `GetPublishedFileDetails`).
+/// One `Meta` from an API record. Both the single-item path and the batch path build it here, so the
+/// two cannot drift.
+fn meta_from(details: anima_engine_rs::workshop_web::PublishedFileDetails) -> Meta {
+    Meta {
+        title: details.title,
+        subscriptions: details.subscriptions,
+        views: details.views,
+        preview_url: details.preview_url,
+        stale: false,
+    }
+}
+
+/// How many installed items the startup batch asks about. One keyless request covers this many, which
+/// is more than a page of the list; anything past it falls back to the file name and is fetched when
+/// it is selected, exactly as before.
+const INSTALLED_META_LIMIT: usize = 100;
+
+/// The ids worth asking Steam about, in batches of at most [`MAX_IDS_PER_REQUEST`]. The caller says
+/// what counts as fresh, so this stays pure and testable: it is the decision, not the request.
+fn meta_batches(ids: &[u64], is_fresh: impl Fn(u64) -> bool) -> Vec<Vec<u64>> {
+    ids.iter()
+        .copied()
+        .filter(|id| !is_fresh(*id))
+        .collect::<Vec<u64>>()
+        .chunks(anima_engine_rs::workshop_web::MAX_IDS_PER_REQUEST)
+        .map(|batch| batch.to_vec())
+        .collect()
+}
+
+/// Fetch metadata for a batch of ids — one keyless request — and cache each answer the same way the
+/// single-item path does, so a later [`meta_for`] is a cache hit rather than a request. Blocking:
+/// this is the worker side of [`Message::MetaLoaded`].
+fn load_metadata(ids: Vec<u64>) -> Vec<(u64, Meta)> {
+    let Ok(web) = WorkshopWeb::new() else {
+        return Vec::new();
+    };
+    let details = match web.fetch_published_file_details(&ids) {
+        Ok(details) => details,
+        Err(error) => {
+            // Not fatal, and not worth a status line: the rows keep their file names.
+            eprintln!(
+                "[studio] metadata batch of {} id(s) failed: {error}",
+                ids.len()
+            );
+            return Vec::new();
+        }
+    };
+    let now = now_secs();
+    let mut loaded = Vec::with_capacity(details.len());
+    for record in details {
+        let Some(id) = record.id() else { continue };
+        let meta = meta_from(record);
+        let entry = CachedMeta {
+            fetched: now,
+            details: meta.clone(),
+        };
+        if let Err(error) = ensure_dir(&thumb_dir()) {
+            eprintln!("[studio] could not create the metadata cache: {error}");
+        } else if let Err(error) =
+            anima_engine_rs::paths::atomic_write_json(&meta_cache_path(id), &entry)
+        {
+            eprintln!("[studio] could not cache metadata for {id}: {error}");
+        }
+        loaded.push((id, meta));
+    }
+    loaded
+}
+
+/// Ask Steam for the metadata of the installed list in one batch, so rows can show titles without
+/// being clicked one at a time. Everything the cache already has fresh is skipped, which is what makes
+/// a second run offline and instant. `None` when there is nothing to ask about.
+fn installed_meta_task(studio: &Studio) -> Option<Task<Message>> {
+    let now = now_secs();
+    let ids: Vec<u64> = studio
+        .snapshot
+        .items
+        .keys()
+        .copied()
+        .take(INSTALLED_META_LIMIT)
+        .collect();
+    let batch = meta_batches(&ids, |id| {
+        std::fs::read_to_string(meta_cache_path(id))
+            .ok()
+            .and_then(|text| serde_json::from_str::<CachedMeta>(&text).ok())
+            .is_some_and(|cached| cache_is_fresh(cached.fetched, now))
+    })
+    .into_iter()
+    .next()?;
+    eprintln!(
+        "[studio] metadata: asking for {} of {} installed item(s)",
+        batch.len(),
+        ids.len()
+    );
+    Some(Task::perform(
+        async move { load_metadata(batch) },
+        Message::MetaLoaded,
+    ))
+}
+
+/// Ask Steam (keyless `GetPublishedFileDetails`) for one item.
 fn fetch_meta(id: u64) -> Option<Meta> {
     let web = WorkshopWeb::new().ok()?;
     let details = web.fetch_published_file_details(&[id]).ok()?;
-    let first = details.into_iter().next()?;
-    Some(Meta {
-        title: first.title,
-        subscriptions: first.subscriptions,
-        views: first.views,
-        preview_url: first.preview_url,
-        stale: false,
-    })
+    Some(meta_from(details.into_iter().next()?))
 }
 
 /// Metadata for `id`: the cache while it is fresh, otherwise Steam — and when Steam is not
@@ -1404,7 +1498,13 @@ impl Studio {
                     self.note = format!("language not saved: {error}");
                 }
             }
-            Message::Refresh => self.refresh(),
+            Message::Refresh => {
+                self.refresh();
+                // A refresh is also the moment to pick up titles for anything new.
+                if let Some(task) = installed_meta_task(self) {
+                    return task;
+                }
+            }
             Message::Search(query) => {
                 // Typing only filters. Every keystroke used to open the picker, which popped the
                 // installed list up under the cursor while the user was still typing a word.
@@ -1588,6 +1688,13 @@ impl Studio {
             }
             Message::SelectOverlay(control) => self.overlay_selected = Some(control),
             Message::Overlay(action) => self.apply_overlay(action),
+            Message::MetaLoaded(loaded) => {
+                let count = loaded.len();
+                for (id, meta) in loaded {
+                    self.meta.insert(id, meta);
+                }
+                eprintln!("[studio] metadata: {count} item(s) arrived in the batch");
+            }
             Message::SelectAsset(asset) => return self.select_asset(asset),
             Message::AssetPreview(asset, loaded) => {
                 if loaded.is_ok() {
@@ -2566,26 +2673,54 @@ impl Studio {
 }
 
 fn main() -> iced::Result {
-    iced::application(Studio::boot, Studio::update, Studio::view)
-        .title(APP_TITLE)
-        // A minimum size keeps the two panes from collapsing into overflow.
-        .window(iced::window::Settings {
-            size: iced::Size::new(1100.0, 720.0),
-            min_size: Some(iced::Size::new(760.0, 520.0)),
-            platform_specific: iced::window::settings::PlatformSpecific {
-                application_id: APP_ID.to_string(),
-                ..Default::default()
-            },
+    iced::application(
+        || {
+            let studio = Studio::boot();
+            // Titles for the installed list, in one keyless batch, before anyone has to click an
+            // item to make its name appear. Boot returns the task rather than spawning it here, so
+            // it runs on the runtime that owns the tasks.
+            let task = installed_meta_task(&studio).unwrap_or_else(Task::none);
+            (studio, task)
+        },
+        Studio::update,
+        Studio::view,
+    )
+    .title(APP_TITLE)
+    // A minimum size keeps the two panes from collapsing into overflow.
+    .window(iced::window::Settings {
+        size: iced::Size::new(1100.0, 720.0),
+        min_size: Some(iced::Size::new(760.0, 520.0)),
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: APP_ID.to_string(),
             ..Default::default()
-        })
-        .subscription(Studio::subscription)
-        .theme(Studio::theme)
-        .run()
+        },
+        ..Default::default()
+    })
+    .subscription(Studio::subscription)
+    .theme(Studio::theme)
+    .run()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_stale_metadata_is_requested() {
+        let ids = [1, 2, 3, 4];
+        // Everything fresh: nothing to ask for, which is the offline second run.
+        assert!(meta_batches(&ids, |_| true).is_empty());
+        // Nothing fresh: one batch, in order.
+        assert_eq!(meta_batches(&ids, |_| false), vec![vec![1, 2, 3, 4]]);
+        // Mixed: only what is missing.
+        assert_eq!(meta_batches(&ids, |id| id == 2), vec![vec![1, 3, 4]]);
+        // The batches respect the endpoint's cap.
+        let many: Vec<u64> = (0..250).collect();
+        let batches = meta_batches(&many, |_| false);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].len(), 100);
+        assert_eq!(batches[2].len(), 50);
+    }
 
     /// Boot does not touch a window or the GPU, so this runs headless: it proves the
     /// catalog and the Workshop scan are wired the same way the rest of the tree is.
