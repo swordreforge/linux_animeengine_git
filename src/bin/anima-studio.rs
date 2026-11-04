@@ -30,6 +30,9 @@ use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::steamcmd::SteamCmd;
 use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
+use std::time::Instant;
+
+use iced::animation::{Animation, Easing};
 use iced::widget::{
     button, column, container, image, pick_list, row, scrollable, space, stack, text, text_input,
     tooltip,
@@ -577,6 +580,30 @@ fn truncate_middle(name: &str, max: usize) -> String {
 /// Longest a pick-list label gets before its middle is dropped.
 const INSTANCE_LABEL_MAX: usize = 28;
 
+/// One animation frame. The window only ticks while something is actually moving, so this is
+/// what a spinner costs and nothing more when the window is idle.
+const FRAME_MS: u64 = 16;
+/// A spinner frame every this many milliseconds: four of them is one turn in 360ms.
+const SPINNER_STEP_MS: u64 = 90;
+/// How long a preview takes to come up. Short on purpose: it removes the pop, it is not a show.
+const FADE_MS: u64 = 160;
+
+/// The loading spinner. Four quadrants in step: enough at this size, and it needs no rotation
+/// support — iced cannot rotate text, and an image would mean shipping one.
+fn spinner_frame(elapsed_ms: u64) -> &'static str {
+    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+    FRAMES[(elapsed_ms / SPINNER_STEP_MS % FRAMES.len() as u64) as usize]
+}
+
+/// The spinner's phase and the preview fades both need a frame, and nothing else does: when
+/// this is false the window's subscription is a single one-second poll.
+fn fade_in(at: Instant) -> Animation<f32> {
+    Animation::new(0.0)
+        .duration(std::time::Duration::from_millis(FADE_MS))
+        .easing(Easing::EaseOutCubic)
+        .go(1.0, at)
+}
+
 /// `● running` / `○ stopped` in front of the animation's **file name**: a full Steam path is a
 /// mouthful in a closed drop-down, and the path is still in the item pane. Two instances can
 /// ship assets with the same name, and only then does the label need the directory in front.
@@ -728,6 +755,8 @@ enum Message {
     /// of staging — the file is the channel, so the parameters are already there when the
     /// overlay starts.
     StageOverlay(OverlayAction),
+    /// One animation frame, while something is moving.
+    Frame(Instant),
     RefreshOverlay,
     SelectOverlay(PathBuf),
     Overlay(OverlayAction),
@@ -1004,6 +1033,17 @@ struct Studio {
     /// The previewed asset's staged state as last read or written. The view must not read a
     /// JSON file on every frame, and this is what the summary line is built from.
     staged: Option<(PathBuf, ControlState)>,
+    /// The clock the view reads: set on every message, so easing and the spinner never need to
+    /// ask for the time themselves.
+    now: Instant,
+    /// Milliseconds of animation frames so far — the spinner's phase.
+    spin_ms: u64,
+    /// When the previous frame arrived, so `Frame` can add the elapsed time.
+    last_frame: Instant,
+    /// How far the item preview has come up, and the same for the asset preview. Two of them
+    /// because the two panes swap independently.
+    item_fade: Animation<f32>,
+    asset_fade: Animation<f32>,
     pending_remove: Option<u64>,
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
@@ -1037,6 +1077,12 @@ impl Studio {
             asset_previews: HashMap::new(),
             previewed_asset: None,
             staged: None,
+            now: Instant::now(),
+            spin_ms: 0,
+            last_frame: Instant::now(),
+            // Start settled: nothing fades in until something actually arrives.
+            item_fade: Animation::new(1.0),
+            asset_fade: Animation::new(1.0),
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
@@ -1182,7 +1228,17 @@ impl Studio {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // One clock for the view: the spinner's phase and the easings read this instead of
+        // asking for the time themselves, so a redraw cannot land between two different "nows".
+        self.now = Instant::now();
         match message {
+            Message::Frame(at) => {
+                self.spin_ms = self
+                    .spin_ms
+                    .saturating_add(at.duration_since(self.last_frame).as_millis() as u64);
+                self.last_frame = at;
+                self.now = at;
+            }
             Message::Language(code) => {
                 if let Err(error) = self.i18n.set_language(&code) {
                     self.note = format!("language not saved: {error}");
@@ -1242,6 +1298,9 @@ impl Studio {
             Message::Loaded(id, meta, thumb) => {
                 if let Some(meta) = meta {
                     self.meta.insert(id, meta);
+                }
+                if thumb.is_ok() && self.selected_item == Some(id) {
+                    self.item_fade = fade_in(self.now);
                 }
                 self.thumbs.insert(
                     id,
@@ -1335,6 +1394,9 @@ impl Studio {
             Message::Overlay(action) => self.apply_overlay(action),
             Message::SelectAsset(asset) => return self.select_asset(asset),
             Message::AssetPreview(asset, loaded) => {
+                if loaded.is_ok() {
+                    self.asset_fade = fade_in(self.now);
+                }
                 self.asset_previews.insert(
                     asset,
                     match loaded {
@@ -1397,16 +1459,20 @@ impl Studio {
                 match self.thumbs.get(&id) {
                     Some(Thumb::Ready(handle)) => {
                         pane = pane.push(tooltip(
-                            container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
-                                .width(Length::Fill)
-                                .height(Length::Fixed(PREVIEW_HEIGHT)),
+                            container(
+                                image(handle.clone())
+                                    .content_fit(iced::ContentFit::Contain)
+                                    .opacity(self.fade(&self.item_fade)),
+                            )
+                            .width(Length::Fill)
+                            .height(Length::Fixed(PREVIEW_HEIGHT)),
                             path_tip(&item.path),
                             tooltip::Position::Bottom,
                         ));
                     }
                     Some(Thumb::Loading) => {
                         pane = pane.push(placeholder(
-                            "▦",
+                            spinner_frame(self.spin_ms),
                             "…".to_string(),
                             Length::Fixed(PREVIEW_HEIGHT),
                         ));
@@ -1525,14 +1591,18 @@ impl Studio {
                 match self.thumbs.get(&id) {
                     Some(Thumb::Ready(handle)) => {
                         pane = pane.push(
-                            container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
-                                .width(Length::Fill)
-                                .height(Length::Fixed(PREVIEW_HEIGHT)),
+                            container(
+                                image(handle.clone())
+                                    .content_fit(iced::ContentFit::Contain)
+                                    .opacity(self.fade(&self.item_fade)),
+                            )
+                            .width(Length::Fill)
+                            .height(Length::Fixed(PREVIEW_HEIGHT)),
                         );
                     }
                     Some(Thumb::Loading) => {
                         pane = pane.push(placeholder(
-                            "▦",
+                            spinner_frame(self.spin_ms),
                             "…".to_string(),
                             Length::Fixed(PREVIEW_HEIGHT),
                         ));
@@ -2068,16 +2138,20 @@ impl Studio {
         match self.asset_previews.get(asset) {
             Some(Thumb::Ready(handle)) => {
                 area = area.push(tooltip(
-                    container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
-                        .width(Length::Fill)
-                        .height(Length::Fixed(PREVIEW_HEIGHT)),
+                    container(
+                        image(handle.clone())
+                            .content_fit(iced::ContentFit::Contain)
+                            .opacity(self.fade(&self.asset_fade)),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fixed(PREVIEW_HEIGHT)),
                     path_tip(asset),
                     tooltip::Position::Bottom,
                 ));
             }
             Some(Thumb::Loading) => {
                 area = area.push(placeholder(
-                    "▦",
+                    spinner_frame(self.spin_ms),
                     "…".to_string(),
                     Length::Fixed(PREVIEW_HEIGHT),
                 ));
@@ -2164,13 +2238,42 @@ impl Studio {
         };
     }
 
+    /// Whether anything is moving: a spinner needs frames, and so does an unfinished fade.
+    /// Nothing else does, so an idle window asks for no frames at all.
+    fn animating(&self) -> bool {
+        self.item_fade.is_animating(self.now)
+            || self.asset_fade.is_animating(self.now)
+            || self
+                .thumbs
+                .values()
+                .any(|thumb| matches!(thumb, Thumb::Loading))
+            || self
+                .asset_previews
+                .values()
+                .any(|thumb| matches!(thumb, Thumb::Loading))
+    }
+
+    /// How opaque a fade is right now.
+    fn fade(&self, animation: &Animation<f32>) -> f32 {
+        let value: f32 = animation.interpolate_with(|value| value, self.now);
+        value.clamp(0.0, 1.0)
+    }
+
     /// The panel follows the control files on its own; the Refresh buttons are for
     /// impatience rather than correctness.
     fn subscription(&self) -> Subscription<Message> {
         // Keyboard shortcuts are not here yet: iced 0.14 removed `keyboard::on_key_press`, so
         // they have to go through the event-listening API. Noted in docs/next-steps.md.
-        iced::time::every(std::time::Duration::from_millis(OVERLAY_POLL_MS))
-            .map(|_| Message::PollOverlay)
+        let mut subscriptions = vec![
+            iced::time::every(std::time::Duration::from_millis(OVERLAY_POLL_MS))
+                .map(|_| Message::PollOverlay),
+        ];
+        if self.animating() {
+            subscriptions.push(
+                iced::time::every(std::time::Duration::from_millis(FRAME_MS)).map(Message::Frame),
+            );
+        }
+        Subscription::batch(subscriptions)
     }
 
     /// Material 3's dark colour scheme, mapped onto iced's own palette so the widgets we
@@ -2440,6 +2543,40 @@ mod tests {
 
     /// Selections are keyed by id / control path, so rebuilding the list or the instance set
     /// cannot move them to something else. Read-only against the real data dir.
+    #[test]
+    fn the_spinner_turns_through_four_quadrants() {
+        assert_eq!(spinner_frame(0), "◐");
+        assert_eq!(spinner_frame(SPINNER_STEP_MS), "◓");
+        assert_eq!(spinner_frame(2 * SPINNER_STEP_MS), "◑");
+        assert_eq!(spinner_frame(3 * SPINNER_STEP_MS), "◒");
+        assert_eq!(spinner_frame(4 * SPINNER_STEP_MS), "◐");
+        // Long uptimes must not panic or divide by zero.
+        let _ = spinner_frame(u64::MAX);
+    }
+
+    #[test]
+    fn a_fade_starts_transparent_and_ends_opaque() {
+        let started = Instant::now();
+        let fade = fade_in(started);
+
+        let at_start: f32 = fade.interpolate_with(|value| value, started);
+        assert_eq!(at_start, 0.0);
+        assert!(fade.is_animating(started));
+
+        let quarter: f32 = fade.interpolate_with(
+            |value| value,
+            started + std::time::Duration::from_millis(FADE_MS / 4),
+        );
+        assert!(quarter > 0.0 && quarter < 1.0, "quarter was {quarter}");
+
+        let after: f32 = fade.interpolate_with(
+            |value| value,
+            started + std::time::Duration::from_millis(FADE_MS * 2),
+        );
+        assert_eq!(after, 1.0);
+        assert!(!fade.is_animating(started + std::time::Duration::from_millis(FADE_MS * 2)));
+    }
+
     #[test]
     fn long_asset_names_keep_their_head_and_tail() {
         assert_eq!(truncate_middle("short.apng", 28), "short.apng");

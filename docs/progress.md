@@ -761,6 +761,20 @@ search field with IME, and Workshop browse/search.
       a hover tip, on the cover and on the asset preview in the tuning area (which shows that
       file's path, not the item's). A raw path is an unbreakable token that wrecks the wrapping, so
       not laying one out at all is also the tidier layout.
+- [x] Motion, from iced's own animation module — it re-exports `lilt`, so this needed **no new
+      dependency**: `Animation<f32>` plus `Easing::EaseOutCubic`, built by a one-line `fade_in(at)`.
+      The item cover and the asset preview fade up over 160ms when their picture arrives instead of
+      popping in, and both loading placeholders are a spinner now (`◐ ◓ ◑ ◒`, one turn in 360ms)
+      rather than a bare `…`.
+      The cost is bounded *and measured*, which is the point of doing it this way: frames are only
+      asked for while something moves (`animating()` is an unfinished fade or a `Thumb::Loading`
+      anywhere), so an idle window does 7 scheduler ticks in 3s and 1.33% of one core — not the
+      ~188 ticks a permanent 16ms tick would cost. During startup (frames on, thumbnails decoding)
+      the process averages ~11%.
+      Deliberately **not** done: a shared selection highlight that slides between rows (it needs row
+      geometry, i.e. fighting iced's layout, for maybe 10% of the feel over a per-row fade), and
+      reduced-motion support (iced does not expose the system setting — it would have to be an env
+      var or a setting of ours; worth doing before this ships widely).
 - [ ] The known flake, disclosed rather than hidden: `shepherd::tests::live_instances_cover_every_control_file`
       reads the **real** control directory while other tests in the same process write it, so it
       fails roughly one run in three (it passes on its own). The fix is a test-side lock around
