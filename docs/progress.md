@@ -1007,6 +1007,15 @@ search field with IME, and Workshop browse/search.
       it, so the first click on something that deletes a directory looked like an ordinary action and the
       warning only appeared afterwards. The second click is still there; the warning now comes before the
       confirmation rather than after it.
+- [x] Removing a local copy asks with a **warning that takes the window**, the way UAC does, instead of
+      arming the same button. `Remove local copy` never changes its meaning now: it opens a card with
+      **Delete** and **Cancel** side by side over a scrim, and the scrim itself is the "no" — press
+      anywhere outside and nothing happens. The card names the item and says what will *not* happen (no
+      unsubscribe, your Steam library untouched).
+      That also closes a latent bug the inline version carried: `pending_remove` was never cleared when the
+      selection moved, so coming back to an armed item showed `Confirm remove` straight away — a warning
+      that had already been forgotten. With a modal there is no window in which the selection can move
+      while it is armed, and both buttons clear it.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

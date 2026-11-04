@@ -34,8 +34,8 @@ use std::time::Instant;
 
 use iced::animation::{Animation, Easing};
 use iced::widget::{
-    button, column, container, image, pick_list, row, scrollable, slider, space, text, text_input,
-    tooltip,
+    button, column, container, image, pick_list, row, scrollable, slider, space, stack, text,
+    text_input, tooltip,
 };
 use iced::{Element, Length, Subscription, Task};
 use iced_material::button::{filled as primary, outlined as secondary, text as text_button};
@@ -869,6 +869,8 @@ enum Message {
     KeyDraft(String),
     /// Write the key field to `studio.json`.
     SaveKey,
+    /// Close the removal warning without deleting anything.
+    CancelRemove,
     /// Flip the motion preference in `studio.json` and re-resolve it.
     ToggleReduceMotion,
     /// Put the diagnostics on the clipboard, for a bug report.
@@ -1843,6 +1845,7 @@ impl Studio {
             }
             Message::OverlayOn(control, action) => self.apply_overlay_to(control, action),
             Message::SetScale(control, percent) => self.set_scale_on(control, percent),
+            Message::CancelRemove => self.pending_remove = None,
             Message::ScaleDraft(control, text) => {
                 let cleaned: String = text.chars().filter(char::is_ascii_digit).take(3).collect();
                 self.scale_draft = Some((control, cleaned));
@@ -2015,19 +2018,13 @@ impl Studio {
                             .style(secondary)
                             .on_press(Message::OpenPage(id)),
                     );
-                actions = if self.pending_remove == Some(id) {
-                    actions.push(
-                        button(text(self.i18n.tr("Confirm remove")))
-                            .style(danger)
-                            .on_press(Message::Remove(id)),
-                    )
-                } else {
-                    actions.push(
-                        button(text(self.i18n.tr("Remove local copy")))
-                            .style(danger)
-                            .on_press(Message::ArmRemove(id)),
-                    )
-                };
+                // The button does not change its meaning any more: it opens the warning, and the warning
+                // is where the yes and the no live.
+                actions = actions.push(
+                    button(text(self.i18n.tr("Remove local copy")))
+                        .style(danger)
+                        .on_press(Message::ArmRemove(id)),
+                );
                 pane = pane.push(actions.spacing(6).wrap());
 
                 pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
@@ -2201,7 +2198,75 @@ impl Studio {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        scene.into()
+        let Some(dialog) = self.remove_dialog() else {
+            return scene.into();
+        };
+        stack![
+            scene,
+            // The scrim is the "no": a press anywhere outside the card cancels, which is the way back the
+            // inline confirm button never had.
+            button(space())
+                .style(|_theme: &iced_material::Theme, _status| {
+                    iced::widget::button::Style {
+                        background: Some(
+                            iced::Color {
+                                a: 0.55,
+                                ..iced::Color::BLACK
+                            }
+                            .into(),
+                        ),
+                        ..Default::default()
+                    }
+                })
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .on_press(Message::CancelRemove),
+            container(dialog)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center),
+        ]
+        .into()
+    }
+
+    /// A warning that takes the window, the way UAC does: the action deletes a directory, so it gets a yes
+    /// and a no side by side instead of a button that changes its own meaning and offers no way back.
+    fn remove_dialog(&self) -> Option<El<'_>> {
+        let id = self.pending_remove?;
+        let title = self
+            .meta
+            .get(&id)
+            .map(|meta| meta.title.clone())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| id.to_string());
+        Some(
+            container(
+                column![
+                    text(self.i18n.tr("Remove local copy")).size(18),
+                    text(format!("{title} · {id}")).size(12),
+                    text(
+                        "This deletes the copy under the SteamCMD root. It does not unsubscribe in \
+                         Steam, and your own Steam library is never touched."
+                    )
+                    .size(11),
+                    row![
+                        button(text(self.i18n.tr("Remove local copy")))
+                            .style(danger)
+                            .on_press(Message::Remove(id)),
+                        button(text("Cancel"))
+                            .style(secondary)
+                            .on_press(Message::CancelRemove),
+                    ]
+                    .spacing(8),
+                ]
+                .spacing(10),
+            )
+            .style(iced_material::container::surface_container_high)
+            .padding(16)
+            .width(Length::Fixed(430.0))
+            .into(),
+        )
     }
 
     /// The tab strip, on its own row under the header rather than inside it: the header already
