@@ -78,7 +78,10 @@
     "Downloading": "Downloading",
     "subscribe in Steam first — it downloads there": "subscribe in Steam first — it downloads there",
     "Steam is still downloading this one": "Steam is still downloading this one",
-    "fetches another copy here with SteamCMD": "fetches another copy here with SteamCMD"
+    "fetches another copy here with SteamCMD": "fetches another copy here with SteamCMD",
+    "Downloading…": "Downloading…",
+    "downloaded": "downloaded",
+    "the Steam client has this item": "the Steam client has this item"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -159,7 +162,10 @@
     "Downloading": "下载中",
     "subscribe in Steam first — it downloads there": "请先在 Steam 里订阅 —— 下载发生在那边",
     "Steam is still downloading this one": "Steam 还在下载这一项",
-    "fetches another copy here with SteamCMD": "用 SteamCMD 在这里再取一份副本"
+    "fetches another copy here with SteamCMD": "用 SteamCMD 在这里再取一份副本",
+    "Downloading…": "下载中…",
+    "downloaded": "已下载",
+    "the Steam client has this item": "Steam 客户端已经拥有这一项"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -240,7 +246,10 @@
     "Downloading": "下載中",
     "subscribe in Steam first — it downloads there": "請先在 Steam 裡訂閱 —— 下載發生在那邊",
     "Steam is still downloading this one": "Steam 還在下載這一項",
-    "fetches another copy here with SteamCMD": "用 SteamCMD 在這裡再取一份副本"
+    "fetches another copy here with SteamCMD": "用 SteamCMD 在這裡再取一份副本",
+    "Downloading…": "下載中…",
+    "downloaded": "已下載",
+    "the Steam client has this item": "Steam 客戶端已經擁有這一項"
   },
   "ja": {
     "Refresh": "更新",
@@ -321,6 +330,9 @@
     "Downloading": "ダウンロード中",
     "subscribe in Steam first — it downloads there": "先に Steam で登録してください — ダウンロードはそちらで行われます",
     "Steam is still downloading this one": "Steam がまだダウンロード中です",
-    "fetches another copy here with SteamCMD": "SteamCMD でここに別のコピーを取得します"
+    "fetches another copy here with SteamCMD": "SteamCMD でここに別のコピーを取得します",
+    "Downloading…": "ダウンロード中…",
+    "downloaded": "ダウンロード済み",
+    "the Steam client has this item": "Steam クライアントにこの項目があります"
   }
 }

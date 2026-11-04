@@ -31,7 +31,7 @@ use anima_engine_rs::i18n::{I18n, PRIMARY_LANGUAGES, STEAM_LANGUAGES, normalize_
 use anima_engine_rs::paths::{ensure_dir, user_data_dir};
 use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::steamcmd::SteamCmd;
-use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
+use anima_engine_rs::workshop::{ItemState, WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
 use std::time::Instant;
 
@@ -103,6 +103,31 @@ fn danger(
         },
         ..Default::default()
     }
+}
+
+/// How often the window asks Steam what it is doing. One small file, and only while the client owes an
+/// item a download — see `Message::PollWorkshop`, which returns before reading anything when it does not.
+const WORKSHOP_POLL_MS: u64 = 1000;
+
+/// The download cell: it exists while the Steam client owes the item a download, and reports once it does
+/// not. Nothing to press either way — the download is the client's, and its progress is what Steam writes
+/// into the manifest — which is why this widget never has an `on_press` and always renders disabled.
+fn download_state(studio: &Studio, pending: bool) -> El<'_> {
+    tooltip(
+        button(text(if pending {
+            studio.i18n.tr("Downloading…")
+        } else {
+            studio.i18n.tr("downloaded")
+        }))
+        .style(if pending { secondary } else { primary }),
+        text(if pending {
+            studio.i18n.tr("Steam is downloading this one")
+        } else {
+            studio.i18n.tr("the Steam client has this item")
+        }),
+        tooltip::Position::Top,
+    )
+    .into()
 }
 
 /// The selected state, carried by colour instead of a "▸" glyph in front of the text.
@@ -908,7 +933,6 @@ enum Message {
     Select(u64),
     Loaded(u64, Option<Meta>, Result<(u32, u32, Vec<u8>), String>),
     CopyPath(String),
-    Download(u64),
     OpenPage(u64),
     ArmRemove(u64),
     Remove(u64),
@@ -939,6 +963,8 @@ enum Message {
     KeyDraft(String),
     /// Write the key field to `studio.json`.
     SaveKey,
+    /// Ask Steam what it is doing, one second at a time, while it owes an item a download.
+    PollWorkshop,
     /// Close the removal warning without deleting anything.
     CancelRemove,
     /// Flip the motion preference in `studio.json` and re-resolve it.
@@ -1444,6 +1470,19 @@ impl Studio {
         studio
     }
 
+    /// Re-read the client's `.acf` alone. This is the whole of "progress": one small file, and the only
+    /// thing that changes while Steam works through a download queue.
+    fn refresh_states(&mut self, roots: &[PathBuf]) {
+        self.states = anima_engine_rs::workshop::libraries_from_roots(roots)
+            .iter()
+            .find_map(|library| {
+                let text =
+                    std::fs::read_to_string(anima_engine_rs::workshop::acf_path(library)).ok()?;
+                anima_engine_rs::workshop::installed_items(&text).ok()
+            })
+            .unwrap_or_default();
+    }
+
     fn refresh(&mut self) {
         let mut watcher = WorkshopWatcher::discover();
         let _ = watcher.poll();
@@ -1900,25 +1939,6 @@ impl Studio {
                 self.note = format!("{}: {path}", self.i18n.tr("copied"));
                 return iced::clipboard::write(path);
             }
-            Message::Download(id) => {
-                if self.steamcmd_root.is_none() {
-                    self.note = self
-                        .i18n
-                        .tr("steamcmd not found (set STEAMCMD / STEAMCMD_DIR)");
-                } else {
-                    self.note = format!("{} {id}", self.i18n.tr("downloading with SteamCMD…"));
-                    // Detached on purpose: a download takes minutes and the window must
-                    // stay responsive. `SteamCmd` is built inside the thread so nothing
-                    // borrows the UI state.
-                    std::thread::spawn(move || match SteamCmd::detect() {
-                        Some(steamcmd) => match steamcmd.download(id) {
-                            Ok(dir) => eprintln!("[studio] downloaded {id} -> {}", dir.display()),
-                            Err(error) => eprintln!("[studio] download {id} failed: {error}"),
-                        },
-                        None => eprintln!("[studio] download {id}: steamcmd not found"),
-                    });
-                }
-            }
             Message::OpenPage(id) => {
                 // Subscribe and unsubscribe both live in the Steam client; this is the
                 // page that carries the toggle.
@@ -1969,6 +1989,14 @@ impl Studio {
             }
             Message::OverlayOn(control, action) => self.apply_overlay_to(control, action),
             Message::SetScale(control, percent) => self.set_scale_on(control, percent),
+            Message::PollWorkshop => {
+                // Only while something is actually owed: an idle window does no reading at all, which is
+                // why this can be unconditional in the subscription without costing anything.
+                if self.states.values().any(ItemState::pending) {
+                    let roots = WorkshopWatcher::discover().roots().to_vec();
+                    self.refresh_states(&roots);
+                }
+            }
             Message::CancelRemove => {
                 self.pending_remove = None;
                 self.note = self.i18n.tr("cancelled");
@@ -2130,34 +2158,30 @@ impl Studio {
                         .on_press(Message::CopyPath(item.path.display().to_string())),
                 );
                 let subscribed = self.snapshot.items.contains_key(&id);
-                actions = actions
-                    .push(tooltip(
-                        button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
-                            .style(secondary)
-                            .on_press(Message::Download(id)),
-                        text(
-                            self.i18n
-                                .tr("fetches a copy here with SteamCMD, no subscription needed"),
-                        ),
-                        tooltip::Position::Top,
-                    ))
-                    // One button whose word says which way the toggle goes. The state is the Steam
-                    // client's own list, so it cannot drift from what Steam thinks — and the tooltip
-                    // says where the toggle actually lives, because we do not own it.
-                    .push(tooltip(
-                        toggle(
-                            self,
-                            subscribed,
-                            "Unsubscribe",
-                            "Subscribe",
-                            Message::OpenPage(id),
-                        ),
-                        text(
-                            self.i18n
-                                .tr("opens the item's page in Steam; the toggle lives there"),
-                        ),
-                        tooltip::Position::Top,
-                    ));
+                let pending = self.states.get(&id).is_some_and(|state| state.pending());
+                // Before subscribing there is nothing to download and nothing to press — the subscribe
+                // button is the whole story — and once the client has the item, Steam's copy *is* the
+                // copy, so the cell reports instead of offering a second one.
+                if subscribed {
+                    actions = actions.push(download_state(self, pending));
+                }
+                // One button whose word says which way the toggle goes. The state is the Steam client's
+                // own list, so it cannot drift from what Steam thinks — and the tooltip says where the
+                // toggle actually lives, because we do not own it.
+                actions = actions.push(tooltip(
+                    toggle(
+                        self,
+                        subscribed,
+                        "Unsubscribe",
+                        "Subscribe",
+                        Message::OpenPage(id),
+                    ),
+                    text(
+                        self.i18n
+                            .tr("opens the item's page in Steam; the toggle lives there"),
+                    ),
+                    tooltip::Position::Top,
+                ));
                 // The button does not change its meaning any more: it opens the warning, and the warning
                 // is where the yes and the no live.
                 actions = actions.push(
@@ -2240,30 +2264,13 @@ impl Studio {
                 let pending = self.states.get(&id).is_some_and(|state| state.pending());
                 pane = pane.push(
                     row![
-                        tooltip(
-                            button(text(if pending {
-                                self.i18n.tr("Downloading")
-                            } else {
-                                format!("{} (SteamCMD)", self.i18n.tr("Download"))
-                            }))
-                            .style(primary)
-                            // Greyed until Steam has it: a download here is a *second* copy, and a
-                            // second copy of something nobody has subscribed to is not what the button
-                            // promises. (This was written inverted once; the tooltip said "subscribe
-                            // first" while the button was live, which is how it was caught.)
-                            .on_press_maybe(
-                                (subscribed && !pending).then_some(Message::Download(id)),
-                            ),
-                            text(if !subscribed {
-                                self.i18n
-                                    .tr("subscribe in Steam first — it downloads there")
-                            } else if pending {
-                                self.i18n.tr("Steam is still downloading this one")
-                            } else {
-                                self.i18n.tr("fetches another copy here with SteamCMD")
-                            }),
-                            tooltip::Position::Top,
-                        ),
+                        // Present only once the client has it: there is no download to offer before
+                        // that, and afterwards the client's copy is the copy.
+                        if subscribed {
+                            download_state(self, pending)
+                        } else {
+                            space().into()
+                        },
                         tooltip(
                             toggle(
                                 self,
@@ -3201,6 +3208,11 @@ impl Studio {
                 .map(|_| Message::PollOverlay),
             // The fast path: an event from the watcher, which is what makes a change look immediate.
             control_events(),
+            // Steam downloads on its own schedule and tells nobody, so the row has to notice by itself.
+            // This tick is outside the `animating` branch on purpose: a download is not an animation, and
+            // `Message::PollWorkshop` returns without reading anything unless the client owes something.
+            iced::time::every(std::time::Duration::from_millis(WORKSHOP_POLL_MS))
+                .map(|_| Message::PollWorkshop),
         ];
         if self.animating() {
             subscriptions.push(

@@ -1094,6 +1094,23 @@ search field with IME, and Workshop browse/search.
       happens to produce the same files. Worth deciding deliberately: keep both (greyed as it is now, which
       makes the order honest), or drop the SteamCMD copy entirely and let the client own every download,
       leaving this window only reporting `pending`.
+- [x] The download cell has three states and exists in two of them. **Not subscribed: nothing** — no
+      button to grey, because there is nothing to download and the subscribe button is the whole story.
+      **Subscribed and Steam still working: "downloads…", disabled.** **Done: "downloaded", disabled.**
+      Nothing in that cell is pressable any more, and that is the honest end of it: the download belongs to
+      the client, and the second copy our own mechanism produced was the lie sitting in the middle of the row.
+- [x] **The window watches Steam work by itself.** A one-second tick re-reads the `.acf` and the row changes
+      with no manual refresh. The tick lives in the subscription list *outside* the `animating` branch — a
+      download is not an animation, and the `animating` branch is where it went first — and the handler
+      returns before reading anything unless the client actually owes an item a download, so an idle window
+      does no work at all.
+      `Message::Download` and its SteamCMD thread are **gone**: with nothing able to press it, it was
+      unreachable, and the compiler said so before I did — *variant `Download` is never constructed*.
+- [x] A note on the tooling, because it cost time twice: the two action rows could not be found by shape
+      (fmt had reflowed them, and the same `let subscribed` line appears in both), so the fix was to print
+      the region and cut it by line number. One attempt in between wrote **nothing at all** because it
+      crashed before the write — the safe failure — which is exactly why those scripts print what they are
+      about to cut.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
