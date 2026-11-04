@@ -247,6 +247,11 @@ Interaction and control:
   `<data>/AnimaEngine/anima_translations.json` (1,662,324 bytes) and `status` then
   read it back (language `zh-CN`, 793 entries, catalog version
   `2026-09-13-v4.7-final`).
+- i18n primary set on the real catalog: `en` 776 entries / **19 missing** and every
+  value identical to its key (the `en` block is a stub), `ja` 776/19 missing,
+  `zh-CN` and `zh-TW` 793/**2 missing** with one blank each. `install --primary`
+  trimmed the data file from 1,662,324 to **199,078 bytes** (4 of 31 languages) and
+  `status` still resolves `zh-CN` (793 entries) from it.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -433,6 +438,11 @@ Interaction and control:
       over 31 languages, and **no language is complete** — 2 missing for
       `ar`/`bg`/`zh-CN`, 19 for `cs`/`da`/`de`, 1 blank value and 39-124
       untranslated entries each
+- [x] Primary languages: the port ships and verifies **en, zh-CN, zh-TW, ja**
+      first (`i18n::PRIMARY_LANGUAGES`). `verify` fails only while a primary
+      language is incomplete (`--all` for every language) and `--missing` lists the
+      untranslated source strings for a translator; `install --primary`
+      (or `--languages=a,b`) trims the catalog on the way in
 - [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
 
 ### Main UI (optional)

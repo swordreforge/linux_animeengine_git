@@ -1,11 +1,17 @@
 //! Inspect, verify and install the AnimaEngine translation catalog.
 //!
 //! ```text
-//! anima-i18n candidates        # search order for anima_translations.json
-//! anima-i18n status            # active language and catalog
-//! anima-i18n verify [file]     # per-language health (exit 1 when incomplete)
-//! anima-i18n install <file>    # validate and install it as the catalog
+//! anima-i18n candidates                      # search order for anima_translations.json
+//! anima-i18n status                          # active language and catalog
+//! anima-i18n verify [file] [--all] [--missing]
+//! anima-i18n install <file> [--primary|--languages=a,b]
 //! ```
+//!
+//! `verify` fails while a **primary** language (en, zh-CN, zh-TW, ja) is
+//! incomplete; `--all` makes every language count instead. `--missing` prints the
+//! source strings a primary language does not translate, which is the list a
+//! translator needs. `install --primary` (or `--languages=…`) trims the catalog on
+//! the way in, so a release can ship just the languages it supports.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -32,18 +38,33 @@ fn main() -> ExitCode {
             println!("entries:  {}", status.entries);
             ExitCode::SUCCESS
         }
-        Some("verify") => verify(arguments.get(1).map(PathBuf::from)),
-        Some("install") => install(arguments.get(1).map(PathBuf::from)),
+        Some("verify") => verify(&arguments[1..]),
+        Some("install") => install(&arguments[1..]),
         _ => usage(),
     }
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: anima-i18n <candidates|status|verify [file]|install <file>>");
+    eprintln!(
+        "usage: anima-i18n <candidates|status|verify [file] [--all] [--missing]|\
+         install <file> [--primary|--languages=a,b]>"
+    );
     ExitCode::FAILURE
 }
 
-fn verify(path: Option<PathBuf>) -> ExitCode {
+fn verify(arguments: &[String]) -> ExitCode {
+    let mut path = None;
+    let mut every_language = false;
+    let mut show_missing = false;
+    for argument in arguments {
+        match argument.as_str() {
+            "--all" => every_language = true,
+            "--missing" => show_missing = true,
+            other if !other.starts_with('-') => path = Some(PathBuf::from(other)),
+            _ => return usage(),
+        }
+    }
+
     let path = path.or_else(|| {
         i18n::catalog_candidates()
             .into_iter()
@@ -72,21 +93,50 @@ fn verify(path: Option<PathBuf>) -> ExitCode {
     );
     for language in &report.languages {
         println!(
-            "{:<8} {:>8} {:>8} {:>6} {:>9}",
+            "{:<8} {:>8} {:>8} {:>6} {:>9} {}",
             language.language,
             language.entries,
             language.missing,
             language.empty,
-            language.untranslated
+            language.untranslated,
+            if language.primary { "*" } else { "" }
         );
     }
+    println!("(* primary: {})", i18n::PRIMARY_LANGUAGES.join(", "));
 
-    let incomplete: Vec<&str> = report
-        .incomplete()
-        .map(|language| language.language.as_str())
-        .collect();
+    if show_missing {
+        for language in &report.languages {
+            if !language.primary || language.missing == 0 {
+                continue;
+            }
+            let missing = i18n::missing_sources(&catalog, &language.language);
+            println!(
+                "\n{} does not translate {}:",
+                language.language,
+                missing.len()
+            );
+            for source in missing.iter().take(25) {
+                println!("  {source}");
+            }
+            if missing.len() > 25 {
+                println!("  ... ({} more)", missing.len() - 25);
+            }
+        }
+    }
+
+    let incomplete: Vec<&str> = if every_language {
+        report
+            .incomplete()
+            .map(|language| language.language.as_str())
+            .collect()
+    } else {
+        report
+            .primary_incomplete()
+            .map(|language| language.language.as_str())
+            .collect()
+    };
     if incomplete.is_empty() {
-        println!("all languages complete");
+        println!("all primary languages complete");
         ExitCode::SUCCESS
     } else {
         eprintln!("incomplete: {}", incomplete.join(", "));
@@ -94,13 +144,56 @@ fn verify(path: Option<PathBuf>) -> ExitCode {
     }
 }
 
-fn install(path: Option<PathBuf>) -> ExitCode {
+fn install(arguments: &[String]) -> ExitCode {
+    let mut path = None;
+    let mut languages: Vec<String> = Vec::new();
+    for argument in arguments {
+        if let Some(list) = argument.strip_prefix("--languages=") {
+            languages = list
+                .split(',')
+                .map(|code| code.trim().to_string())
+                .filter(|code| !code.is_empty())
+                .collect();
+            continue;
+        }
+        match argument.as_str() {
+            "--primary" => {
+                languages = i18n::PRIMARY_LANGUAGES
+                    .iter()
+                    .map(|code| (*code).to_string())
+                    .collect();
+            }
+            other if !other.starts_with('-') => path = Some(PathBuf::from(other)),
+            _ => return usage(),
+        }
+    }
     let Some(path) = path else {
         return usage();
     };
-    match i18n::install_catalog(&path) {
+
+    let catalog = i18n::load_catalog(&path);
+    if catalog.is_empty() {
+        eprintln!("{} is empty or unreadable", path.display());
+        return ExitCode::FAILURE;
+    }
+
+    let (catalog, note) = if languages.is_empty() {
+        (catalog, String::new())
+    } else {
+        let wanted: Vec<&str> = languages.iter().map(String::as_str).collect();
+        let trimmed = i18n::filter_catalog(&catalog, &wanted);
+        let note = format!(
+            " ({} of {} languages: {})",
+            trimmed.len(),
+            catalog.len(),
+            trimmed.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+        (trimmed, note)
+    };
+
+    match i18n::install_catalog_data(&catalog) {
         Ok(destination) => {
-            println!("{}", destination.display());
+            println!("{}{note}", destination.display());
             ExitCode::SUCCESS
         }
         Err(err) => {

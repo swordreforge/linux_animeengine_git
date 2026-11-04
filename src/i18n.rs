@@ -275,10 +275,74 @@ pub fn install_catalog_into(source: &Path, dir: &Path) -> Result<PathBuf> {
     Ok(destination)
 }
 
+/// Languages this port ships and verifies first. The catalog carries more; these
+/// are the ones a release is expected to be complete in, and what
+/// `anima-i18n install --primary` trims a catalog down to.
+pub const PRIMARY_LANGUAGES: &[&str] = &["en", "zh-CN", "zh-TW", "ja"];
+
+/// Whether `code` normalises to one of [`PRIMARY_LANGUAGES`].
+pub fn is_primary(code: &str) -> bool {
+    let code = normalize_language(code);
+    PRIMARY_LANGUAGES.contains(&code.as_str())
+}
+
+/// Keep only `languages` (normalised), so a release can ship a smaller catalog.
+pub fn filter_catalog(catalog: &Catalog, languages: &[&str]) -> Catalog {
+    let wanted: HashSet<String> = languages
+        .iter()
+        .map(|code| normalize_language(code))
+        .collect();
+    catalog
+        .iter()
+        .filter(|(language, _)| wanted.contains(language.as_str()))
+        .map(|(language, entries)| (language.clone(), entries.clone()))
+        .collect()
+}
+
+/// Source strings `language` does not translate, compared against the whole
+/// catalog — the actionable list for a translator.
+pub fn missing_sources(catalog: &Catalog, language: &str) -> Vec<String> {
+    let mut sources: HashSet<&str> = HashSet::new();
+    for entries in catalog.values() {
+        sources.extend(entries.keys().map(String::as_str));
+    }
+    let empty = HashMap::new();
+    let entries = catalog.get(language).unwrap_or(&empty);
+
+    let mut missing: Vec<String> = sources
+        .into_iter()
+        .filter(|source| !entries.contains_key(*source))
+        .map(str::to_string)
+        .collect();
+    missing.sort();
+    missing
+}
+
+/// Install an already-loaded catalog (used when filtering languages out).
+pub fn install_catalog_data(catalog: &Catalog) -> Result<PathBuf> {
+    install_catalog_data_into(catalog, &crate::paths::user_data_dir())
+}
+
+/// [`install_catalog_data`] into an explicit directory (used by tests).
+pub fn install_catalog_data_into(catalog: &Catalog, dir: &Path) -> Result<PathBuf> {
+    if catalog.is_empty() {
+        return Err(crate::Error::Decode(
+            "refusing to install an empty catalog".into(),
+        ));
+    }
+    let destination = dir.join(CATALOG_FILE);
+    crate::paths::ensure_dir(dir)?;
+    // Re-serialised, so a catalog with duplicate keys is normalised on the way in.
+    crate::paths::save_json(&destination, catalog)?;
+    Ok(destination)
+}
+
 /// Per-language health of a catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageReport {
     pub language: String,
+    /// One of [`PRIMARY_LANGUAGES`]: a release must be complete here.
+    pub primary: bool,
     pub entries: usize,
     /// Source strings some other language translates but this one does not.
     pub missing: usize,
@@ -309,6 +373,13 @@ impl CatalogReport {
     pub fn incomplete(&self) -> impl Iterator<Item = &LanguageReport> {
         self.languages.iter().filter(|report| !report.is_complete())
     }
+
+    /// Primary languages that are not complete: what a release must fix.
+    pub fn primary_incomplete(&self) -> impl Iterator<Item = &LanguageReport> {
+        self.languages
+            .iter()
+            .filter(|report| report.primary && !report.is_complete())
+    }
 }
 
 /// Compare every language against the union of source strings. `None` when the
@@ -327,6 +398,7 @@ pub fn verify_catalog(catalog: &Catalog) -> Option<CatalogReport> {
         .iter()
         .map(|(language, entries)| LanguageReport {
             language: language.clone(),
+            primary: is_primary(language),
             entries: entries.len(),
             missing: sources
                 .iter()
@@ -582,6 +654,30 @@ mod tests {
         // `de` counts because of its blank entry, `fr` because it is missing two.
         assert_eq!(report.incomplete().count(), 2);
         assert!(verify_catalog(&Catalog::new()).is_none());
+    }
+
+    #[test]
+    fn primary_languages_and_filtering() {
+        let catalog: Catalog = serde_json::from_str(
+            r#"{"en":{"Hello":"Hello"},"zh-CN":{"你好":"你好"},"fr":{"Hello":"Bonjour"}}"#,
+        )
+        .unwrap();
+
+        assert!(is_primary("zh_TW"), "codes are normalised first");
+        assert!(is_primary("ja"));
+        assert!(!is_primary("fr"));
+
+        let trimmed = filter_catalog(&catalog, &["ja", "zh-CN", "en"]);
+        assert_eq!(trimmed.len(), 2, "ja is not in this catalog");
+        assert!(trimmed.contains_key("zh-CN") && trimmed.contains_key("en"));
+
+        // Missing strings are relative to the union of every language.
+        assert_eq!(missing_sources(&catalog, "fr"), vec!["你好".to_string()]);
+        assert_eq!(missing_sources(&catalog, "en"), vec!["你好".to_string()]);
+        assert_eq!(
+            missing_sources(&catalog, "zh-CN"),
+            vec!["Hello".to_string()]
+        );
     }
 
     #[test]
