@@ -690,10 +690,19 @@ search field with IME, and Workshop browse/search.
       falls back to `Theme::Dark`; the now-unused iced-palette parser and its test went with it.
       Verified: 0 warnings, 13 studio tests, clippy 0, and the window logs
       `theme: Material You from …/palette.toml`.
-- [ ] The last Material step is the widgets themselves — `iced_material`'s `button`, `container`,
-      `pick_list`, `scrollable`, `text_input` — for its shapes, elevation and type scale; the theme
-      alone gives colours and Material's default styles, not those. What was verified while doing
-      the type switch, and why the code looks the way it does:
+- [x] The Material step the plan called "swap the widgets" turned out to be smaller:
+      `iced_material` ships **styles and Catalogs, not widget wrappers** — its `container`/`text`
+      modules are style functions, and there is no `iced_material::button(...)`. So the work was
+      applying them: the search box, both pick lists and all three scroll areas now use its
+      `default` styles, and the details pane is a `container::surface_container_low`, which gives
+      it that surface tone and the crate's 4px corner radius. The buttons were already on
+      `filled`/`outlined`/`text` (its `styled()` makes them pills).
+      What the crate does **not** provide: the Material type scale (its `text` styles are colour
+      roles, not sizes) and elevation beyond what `styled()` computes — so "more Material" from
+      here means picking our own sizes and paddings, not adopting a widget set.
+- [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
+      palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
+      follow-up).
       `iced_material` 0.14.2, which decides the order:
       - it implements iced's `Catalog` for `Theme` on `button`, `container`, `pick_list`,
         `scrollable` and `text` — so those keep their default styles and the "every text call
