@@ -252,6 +252,13 @@ Interaction and control:
   `zh-CN` and `zh-TW` 793/**2 missing** with one blank each. `install --primary`
   trimmed the data file from 1,662,324 to **199,078 bytes** (4 of 31 languages) and
   `status` still resolves `zh-CN` (793 entries) from it.
+- Packaging: the installer ran in a scratch prefix (`PREFIX=… XDG_DATA_HOME=…`) and
+  for real. `desktop-file-validate` reports `ok` and `appstreamcli validate`
+  `✔ 验证成功` (rc 0) for the installed entries and metadata; the niri snippet
+  rendered with the absolute prefix
+  (`spawn-at-startup "<prefix>/bin/anima-overlay"`); `--uninstall` left zero
+  binaries behind; after the real run all four binaries resolve on `PATH` and the
+  catalog is the 4-language file (199,078 bytes).
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -443,7 +450,16 @@ Interaction and control:
       language is incomplete (`--all` for every language) and `--missing` lists the
       untranslated source strings for a translator; `install --primary`
       (or `--languages=a,b`) trims the catalog on the way in
-- [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
+- [x] Portable install: `packaging/install.sh` puts the four binaries, both
+      desktop entries, the icon and the AppStream metadata under `$PREFIX`
+      (default `~/.local`); `--catalog FILE` installs the primary-language
+      translations, `--niri` writes an autostart snippet (it does **not** edit the
+      user's niri config — it prints the `include` line), `--uninstall` removes
+      everything, and `desktop-file-validate` + `appstreamcli validate` run
+      automatically (both pass). Verified in a scratch prefix and for real
+- [ ] AppImage / Flatpak: a Flatpak needs the sandbox decisions for `~/.steam` and
+      steamcmd. `libsteam_api.so` stays out until the callback path is used (the
+      download path is SteamCMD-only, no SDK)
 
 ### Main UI (optional)
 
@@ -497,6 +513,7 @@ cargo test --features "workshop-web,steamworks"   # + Steam adapters (132)
 cargo test --features bc7                         # + BC7 encode/decode (133)
 cargo run --release --features bc7 --example bc7_bench -- <animation>
 cargo run --bin anima-i18n -- verify <catalog.json>   # per-language health
+bash packaging/install.sh --catalog <catalog.json>    # portable user-local install
 cargo run --release --example cache_bench -- <animation>   # zstd vs PNG cache
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
