@@ -998,6 +998,15 @@ search field with IME, and Workshop browse/search.
       puts Quit on the end of it. Four lines of buttons with half the width empty was the ugliest thing in
       the first pass; `.wrap()` keeps the narrow case from overflowing without spending height when there
       is room.
+- [x] The buttons whose text flips with state go through one `toggle()` now: the label always says what
+      **pressing it will do** — "Show" while hidden, "Unlock" while locked, "turn motion off" while motion
+      is on — and the fill says what the state is. Four call sites share it, so the convention cannot drift
+      the way "Hide" did when each row invented its own wording. The follow button keeps its dot, because
+      there the state *is* the point and the dot says it faster than a verb.
+- [x] **Remove local copy is danger-red from the start.** It was `secondary` until the confirm step armed
+      it, so the first click on something that deletes a directory looked like an ordinary action and the
+      warning only appeared afterwards. The second click is still there; the warning now comes before the
+      confirmation rather than after it.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
