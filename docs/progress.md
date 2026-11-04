@@ -422,9 +422,12 @@ Interaction and control:
       `2 root(s) · 1 item(s) · catalog …/anima_translations.json · 793 entries`, and
       the window itself runs on niri/Wayland with no errors (launched, stayed up, no
       stderr).
-- [ ] Not yet: CJK glyphs confirmed on screen (needs a look at the picker), Workshop
-      thumbnails, subscribe/repair/unsubscribe, driving the overlay through
-      `ControlState`, a search field with IME, and a desktop entry for the window.
+- [x] CJK glyphs confirmed on screen: the language picker's native names
+      (`English / 简体中文 / 繁體中文 / 日本語`) all render correctly, so
+      `cosmic-text`'s system font fallback is enough and no font needs bundling yet.
+- [ ] Not yet: layout review in progress; then Workshop thumbnails,
+      subscribe/repair/unsubscribe, driving the overlay through `ControlState`, a
+      search field with IME, and a desktop entry for the window.
 
 ### Steam / Workshop
 

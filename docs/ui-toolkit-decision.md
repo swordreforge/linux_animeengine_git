@@ -61,9 +61,12 @@ render path.
 - `Cargo.toml` gains `studio = ["dep:iced"]`; nothing existing is affected.
 - The window boots the catalog and the workshop snapshot headlessly (see the test) and
   the window itself runs on niri/Wayland with no errors.
-- Still to do: verify CJK glyphs on screen (the language picker's native names are the
-  natural check) and decide whether to bundle a font; workshop thumbnails (Steam
-  preview images) via the `image` feature; subscribe/repair/unsubscribe actions
-  through `anima-workshop`; wiring the window's controls to `ControlState` so it drives
-  the overlay; keyboard/IME for the search field; and a window icon + desktop entry
-  (the packaging step already ships a `anima-overlay` entry, not yet a studio one).
+- CJK is **verified on screen**: the picker's native names (`English / 简体中文 /
+  繁體中文 / 日本語`) render correctly through `cosmic-text`'s system font fallback, so
+  no font needs to be bundled yet (revisit if the window ever ships a font-less Flatpak
+  runtime or a system without CJK fonts).
+- Still to do: workshop thumbnails (Steam preview images) via the `image` feature;
+  subscribe/repair/unsubscribe actions through `anima-workshop`; wiring the window's
+  controls to `ControlState` so it drives the overlay; keyboard/IME for the search
+  field; and a window icon + desktop entry (the packaging step already ships an
+  `anima-overlay` entry, not yet a studio one).
