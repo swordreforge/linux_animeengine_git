@@ -797,6 +797,14 @@ search field with IME, and Workshop browse/search.
       write landing between the two reads broke the comparison about one run in three. The tests that
       touch that directory now take a module-level `CONTROL_DIR` mutex (poison-tolerant, so one
       failing test cannot cascade), and six consecutive full runs of the lib suite are green.
+- [x] The status line fades in when it says something new. It is written in **nineteen** places, so
+      instead of routing all of them through a setter, `update` grew a wrapper: `handle` keeps the
+      match, and the wrapper compares what the line *shows* — `note`, or `remote_note` while a search
+      has something to say — against what it showed last. The guarantee is the same as a setter's,
+      and it is the only one that matters: the fade begins in the same message as the write. Started
+      a message later it would draw the new line at full opacity once and then fade it, which reads
+      as a flash. Nineteen hand edits were also nineteen chances to miss one. The alpha rides on the
+      text colour, because iced has no way to fade a container.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

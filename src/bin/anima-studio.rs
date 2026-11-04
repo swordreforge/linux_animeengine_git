@@ -1070,6 +1070,9 @@ struct Studio {
     asset_fade: Animation<f32>,
     /// How far the picker's entrance has come. Started once per opening, not per keystroke.
     picker_motion: Animation<f32>,
+    /// The status line: how far its fade has come, and what it said when the fade started.
+    note_fade: Animation<f32>,
+    shown_seen: String,
     /// Whether motion is allowed at all (see [`motion_enabled`]).
     motion: bool,
     pending_remove: Option<u64>,
@@ -1112,6 +1115,8 @@ impl Studio {
             item_fade: Animation::new(1.0),
             asset_fade: Animation::new(1.0),
             picker_motion: Animation::new(1.0),
+            note_fade: Animation::new(1.0),
+            shown_seen: String::new(),
             motion: motion_enabled(),
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
@@ -1261,6 +1266,24 @@ impl Studio {
         // One clock for the view: the spinner's phase and the easings read this instead of
         // asking for the time themselves, so a redraw cannot land between two different "nows".
         self.now = Instant::now();
+        let task = self.handle(message);
+        // The status line is written in nineteen places. Rather than route all of them through a
+        // setter, the fade starts here — and here is the only place that matters: it has to be the
+        // same message as the write. Starting it one message later would draw the new line at full
+        // opacity once and then fade it, which reads as a flash.
+        let shown = if self.remote_note.is_empty() {
+            &self.note
+        } else {
+            &self.remote_note
+        };
+        if *shown != self.shown_seen {
+            self.shown_seen = shown.clone();
+            self.note_fade = fade_in(self.now, self.motion);
+        }
+        task
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Frame(at) => {
                 self.spin_ms = self
@@ -1717,6 +1740,9 @@ impl Studio {
         .spacing(16)
         .height(Length::Fill);
 
+        // The status line fades in when it says something new: the text colour carries the alpha
+        // because iced has no way to fade a container, and this is a one-line widget.
+        let status_alpha = self.fade(&self.note_fade);
         let scene = container(
             column![
                 header,
@@ -1727,6 +1753,14 @@ impl Studio {
                     self.remote_note.clone()
                 })
                 .size(11)
+                .style(
+                    move |theme: &iced_material::Theme| iced::widget::text::Style {
+                        color: Some(iced::Color {
+                            a: status_alpha,
+                            ..theme.colors().surface.text_variant
+                        }),
+                    }
+                ),
             ]
             .spacing(12),
         )
@@ -2287,6 +2321,7 @@ impl Studio {
         self.item_fade.is_animating(self.now)
             || self.asset_fade.is_animating(self.now)
             || self.picker_motion.is_animating(self.now)
+            || self.note_fade.is_animating(self.now)
             || self
                 .thumbs
                 .values()
@@ -2619,6 +2654,28 @@ mod tests {
         assert_eq!(spinner_frame(4 * SPINNER_STEP_MS), "◐");
         // Long uptimes must not panic or divide by zero.
         let _ = spinner_frame(u64::MAX);
+    }
+
+    #[test]
+    fn the_status_line_fades_only_when_it_changes() {
+        let mut studio = Studio::boot();
+        let settle = std::time::Duration::from_millis(FADE_MS * 2);
+
+        // Booting said something; let it finish.
+        studio.now += settle;
+        assert_eq!(studio.eased(&studio.note_fade), 1.0);
+
+        // The same thing again is not something new, so the line does not restart.
+        let _ = studio.update(Message::Refresh);
+        studio.now += settle;
+        assert_eq!(studio.eased(&studio.note_fade), 1.0);
+
+        // A different line is, and it starts from the bottom.
+        let _ = studio.update(Message::ArmRemove(3799603054));
+        assert!(
+            studio.eased(&studio.note_fade) < 1.0,
+            "expected a fresh fade"
+        );
     }
 
     #[test]
