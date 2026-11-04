@@ -1151,9 +1151,10 @@ search field with IME, and Workshop browse/search.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
-- [ ] The rows' per-instance actions have never been exercised against a **running** overlay from the new
-      tab — the messages and the file writes are the same as the panel's, but the wiring is new. Worth a
-      pass with two overlays up.
+- [x] The rows' per-instance actions were exercised against a **running** overlay from the new tab, and the
+      user confirmed the tab as a whole: the ordering puts running ones first, the non-running cards have no
+      controls, the 1% slider and the typed value both apply, and the buttons sit on one row. The wiring was
+      new but the messages and the file writes were the panel's, which is why it held.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).
