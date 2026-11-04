@@ -419,7 +419,12 @@ Interaction and control:
       re-execs itself, which keeps the placement but flickers briefly. Verified:
       touching a copy of `bochi455.apng` mid-run logged
       `reloaded in place: 27 frame(s) 136x132` with the **same PID**
-- [ ] Steamworks callbacks (`ItemInstalled` / `DownloadItemResult`) still need
+- [ ] Seamless reload for a **geometry change**: today the in-place path covers the
+      identical-size case and a geometry change falls back to `exec` (flicker). The
+      refactor that removes the fallback (a `Frames` struct owning the texture, view,
+      bind group, layer count and UV scale) is written up step by step in
+      `docs/seamless-reload-plan.md`, including the acceptance test (swap a 512²×27
+      animation for a 1500×1125×64 one mid-run and expect the same PID)
       `libsteam_api.so`. The **fallback is already in place**: `WorkshopWatcher` plus
       the overlay's hot reload (in place when the geometry matches, otherwise a
       re-exec) cover the
