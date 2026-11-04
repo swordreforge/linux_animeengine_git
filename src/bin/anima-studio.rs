@@ -30,11 +30,11 @@ use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::steamcmd::SteamCmd;
 use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
-use iced::widget::button::{danger, primary, secondary, text as text_button};
 use iced::widget::{
     button, column, container, image, pick_list, row, scrollable, space, text, text_input,
 };
 use iced::{Element, Length, Subscription, Task};
+use iced_material::button::{filled as primary, outlined as secondary, text as text_button};
 use serde::{Deserialize, Serialize};
 
 const APP_TITLE: &str = "AnimaEngine";
@@ -55,6 +55,31 @@ const LOCAL_PREVIEWS: &[&str] = &[
     "preview.webp",
     "preview.gif",
 ];
+
+/// The element type of this window: `iced_material`'s theme is what the whole view speaks.
+type El<'a> = Element<'a, Message, iced_material::Theme>;
+
+/// iced_material has no danger style, and Material 3 does not either — destructive actions use
+/// the error role, which is what this is.
+fn danger(
+    theme: &iced_material::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    use iced::widget::button;
+    let colors = theme.colors();
+    let (background, text_color) = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            (colors.error.container, colors.error.container_text)
+        }
+        button::Status::Disabled => (colors.surface.container.high, colors.surface.text_variant),
+        _ => (colors.error.color, colors.error.text),
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color,
+        ..Default::default()
+    }
+}
 
 /// The native name of a catalog language (`zh-CN` → `简体中文`), via the Steam codes
 /// the catalog is keyed by (`schinese`, `tchinese`, …).
@@ -134,28 +159,8 @@ fn role(roles: &std::collections::HashMap<&str, iced::Color>, name: &str) -> Opt
     roles.get(name).copied()
 }
 
-/// Parse the handful of Material 3 roles iced can use out of a `key = "#rrggbb"` file. Pure,
-/// so it is tested without a desktop.
-fn parse_palette(text: &str) -> Option<iced::theme::Palette> {
-    let roles = palette_roles(text);
-    let primary = role(&roles, "primary")?;
-    let background = role(&roles, "surface").or_else(|| role(&roles, "background"))?;
-    let text = role(&roles, "on_surface").or_else(|| role(&roles, "on_background"))?;
-    Some(iced::theme::Palette {
-        background,
-        text,
-        primary,
-        // iced has no secondary/tertiary roles; map the ones it has onto the same scheme.
-        success: role(&roles, "secondary").unwrap_or(primary),
-        warning: role(&roles, "tertiary").unwrap_or(primary),
-        danger: role(&roles, "error").unwrap_or(primary),
-    })
-}
-
-/// Build `iced_material`'s own colour scheme from the same file. This is step (1) of turning the
-/// window's theme type over: the UI does not consume it yet, but every later step needs it, and
-/// the roles line up one-to-one with Material 3's names.
-#[allow(dead_code)]
+/// Build `iced_material`'s own colour scheme from the palette file: every role lines up
+/// one-to-one with Material 3's names.
 fn parse_color_scheme(text: &str) -> Option<iced_material::ColorScheme> {
     use iced_material::{ColorQuartet, ColorScheme, Inverse, Outline, Surface, SurfaceContainer};
 
@@ -238,31 +243,30 @@ fn parse_hex(value: &str) -> Option<iced::Color> {
     })
 }
 
-/// The window's theme, resolved once at boot: noctalia's dynamic Material You palette when it
-/// is there, otherwise iced_material's Material 3 dark scheme.
-fn resolve_theme() -> iced::Theme {
+/// The window's theme, resolved once at boot: noctalia's dynamic Material You scheme when it is
+/// there, otherwise iced_material's Material 3 dark scheme.
+fn resolve_theme() -> iced_material::Theme {
     if let Some(path) = palette_path()
         && let Ok(text) = std::fs::read_to_string(&path)
-        && let Some(palette) = parse_palette(&text)
+        && let Some(scheme) = parse_color_scheme(&text)
     {
         eprintln!("[studio] theme: Material You from {}", path.display());
-        return iced::Theme::custom("Material You (noctalia)", palette);
+        return iced_material::Theme::new("Material You (noctalia)", scheme);
     }
-    use iced::theme::Base;
-    match Base::palette(&iced_material::Theme::Dark) {
-        Some(palette) => iced::Theme::custom("AnimaEngine MD3", palette),
-        None => iced::Theme::Dark,
-    }
+    iced_material::Theme::Dark
 }
 
 /// 1px separator. 0.14 dropped the `vertical_rule`/`horizontal_rule` helpers, so a line
 /// is a zero-content container that only carries a background.
-fn divider(width: Length, height: Length) -> iced::widget::Container<'static, Message> {
+fn divider(
+    width: Length,
+    height: Length,
+) -> iced::widget::Container<'static, Message, iced_material::Theme> {
     container(space())
         .width(width)
         .height(height)
-        .style(|theme: &iced::Theme| container::Style {
-            background: Some(theme.extended_palette().background.weak.color.into()),
+        .style(|theme: &iced_material::Theme| container::Style {
+            background: Some(theme.colors().surface.container.high.into()),
             ..Default::default()
         })
 }
@@ -710,9 +714,9 @@ struct Studio {
     selected_item: Option<u64>,
     /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
     query: String,
-    /// Material 3 colours, resolved at boot: noctalia's dynamic palette when present, else
-    /// iced_material's dark scheme. Kept as an `iced::Theme` so no view signature changes.
-    theme: iced::Theme,
+    /// Material 3 colours, resolved at boot: noctalia's dynamic scheme when present, else
+    /// iced_material's dark theme.
+    theme: iced_material::Theme,
     /// Whether the panel follows the overlay the user last touched. Locking it keeps the
     /// selection on one instance while several are being dragged in turn.
     follow: bool,
@@ -1040,7 +1044,7 @@ impl Studio {
         Task::none()
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    fn view(&self) -> El<'_> {
         let header = row![
             text(self.i18n.tr(APP_TITLE)).size(24),
             space().width(Length::Fill),
@@ -1126,7 +1130,7 @@ impl Studio {
                 .find(|row| row.id == id)
                 .cloned()
         });
-        let details: Element<'_, Message> = match (selected_item, selected_remote) {
+        let details: El<'_> = match (selected_item, selected_remote) {
             (Some(item), _) => {
                 let id = item.id;
                 // The pane reads: where it lives → what it looks like → what it is →
@@ -1335,6 +1339,22 @@ impl Studio {
         let mut search = row![
             text_input(&placeholder, &self.query)
                 .on_input(Message::Search)
+                // iced_material has no text_input catalog, so this one carries its own style.
+                .style(|theme: &iced_material::Theme, _status| {
+                    let colors = theme.colors();
+                    iced::widget::text_input::Style {
+                        background: colors.surface.container.high.into(),
+                        border: iced::Border {
+                            color: colors.outline.variant,
+                            width: 1.0,
+                            radius: 6.0.into(),
+                        },
+                        icon: colors.surface.text_variant,
+                        placeholder: colors.surface.text_variant,
+                        value: colors.surface.text,
+                        selection: colors.primary.container,
+                    }
+                })
                 .width(Length::Fill)
         ]
         .spacing(6)
@@ -1398,7 +1418,7 @@ impl Studio {
 
     /// The overlay control panel. Same channel as the tray, the portal and the CLI:
     /// everything it does is one write to a control file.
-    fn overlay_panel(&self) -> Element<'_, Message> {
+    fn overlay_panel(&self) -> El<'_> {
         let mut panel = column![
             row![
                 text(self.i18n.tr("Overlay")).size(14),
@@ -1599,7 +1619,7 @@ impl Studio {
     /// already have pick it up — the theme *type* stays `iced::Theme`, which keeps every view
     /// signature and button style untouched. Reversible: delete this and the window falls back
     /// to iced's theme.
-    fn theme(&self) -> iced::Theme {
+    fn theme(&self) -> iced_material::Theme {
         self.theme.clone()
     }
 
@@ -1710,20 +1730,9 @@ mod tests {
     }
 
     #[test]
-    fn the_noctalia_palette_parses() {
-        let text = "# generated by noctalia\n\
-                    primary = \"#8bd0ef\"\nsecondary = \"#b4cad6\"\ntertiary = \"#c6c2ea\"\n\
-                    error = \"#ffb4ab\"\nsurface = \"#0f1417\"\non_surface = \"#dfe3e7\"\n";
-        let palette = parse_palette(text).expect("palette");
-        assert_eq!(palette.primary, parse_hex("#8bd0ef").unwrap());
-        assert_eq!(palette.background, parse_hex("#0f1417").unwrap());
-        assert_eq!(palette.text, parse_hex("#dfe3e7").unwrap());
-        assert_eq!(palette.danger, parse_hex("#ffb4ab").unwrap());
-        assert_eq!(palette.success, parse_hex("#b4cad6").unwrap());
-
-        // Not a palette, and a truncated colour is not one either.
-        assert!(parse_palette("# only a comment").is_none());
-        assert!(parse_palette("primary = \"#12345\"").is_none());
+    fn the_palette_parser_rejects_junk() {
+        assert!(parse_color_scheme("# only a comment").is_none());
+        assert!(parse_color_scheme("primary = \"#12345\"").is_none());
         assert!(parse_hex("#8bd0ef").is_some());
         assert!(parse_hex("8bd0ef").is_none());
     }
