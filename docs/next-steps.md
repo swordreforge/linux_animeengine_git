@@ -121,5 +121,11 @@ fail silently.
   control directory would be instant; only worth it if the delay is annoying.
 - **A studio icon** distinct from `anima-engine.svg`.
 - **Keyboard shortcuts** in the window: quit, play, refresh, next/prev item.
+- **Prune dead references.** Control files, `.pid`/`.focus` markers and cached metadata for
+  animations that no longer exist are only cleaned by hand — a one-off script did it once
+  (10 files: one dead `secondary_instances` entry, two stale control files including the
+  key-less `default.json`, six dead markers, two caches for uninstalled items). Repeatable
+  versions would be `anima-shepherd prune [--dry-run]` and `anima-shepherd forget <animation>`;
+  anything whose animation still exists must be left alone.
 - **Steamworks callbacks** (`ItemInstalled` / `DownloadItemResult`) remain unimplemented
   for lack of a Linux `libsteam_api.so`; the watcher + hot reload cover the behaviour.
