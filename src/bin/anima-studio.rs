@@ -1053,7 +1053,8 @@ impl Studio {
                 self.languages(),
                 Some(Language(self.i18n.language().to_string())),
                 |language: Language| Message::Language(language.0),
-            ),
+            )
+            .style(iced_material::pick_list::default),
             button(text(self.i18n.tr("Refresh")))
                 .style(secondary)
                 .on_press(Message::Refresh),
@@ -1244,7 +1245,9 @@ impl Studio {
                         pane = pane.push(text(file_name(asset)).size(12));
                     }
                 }
-                scrollable(pane).into()
+                scrollable(pane)
+                    .style(iced_material::scrollable::default)
+                    .into()
             }
             (None, Some(row)) => {
                 let id = row.id;
@@ -1297,7 +1300,9 @@ impl Studio {
                     .spacing(8),
                 );
                 pane = pane.push(text(format!("({})", self.i18n.tr("not installed"))).size(11));
-                scrollable(pane).into()
+                scrollable(pane)
+                    .style(iced_material::scrollable::default)
+                    .into()
             }
             (None, None) => text(self.note.clone()).into(),
         };
@@ -1339,22 +1344,8 @@ impl Studio {
         let mut search = row![
             text_input(&placeholder, &self.query)
                 .on_input(Message::Search)
-                // iced_material has no text_input catalog, so this one carries its own style.
-                .style(|theme: &iced_material::Theme, _status| {
-                    let colors = theme.colors();
-                    iced::widget::text_input::Style {
-                        background: colors.surface.container.high.into(),
-                        border: iced::Border {
-                            color: colors.outline.variant,
-                            width: 1.0,
-                            radius: 6.0.into(),
-                        },
-                        icon: colors.surface.text_variant,
-                        placeholder: colors.surface.text_variant,
-                        value: colors.surface.text,
-                        selection: colors.primary.container,
-                    }
-                })
+                // iced_material has no text_input catalog, but it does ship this style.
+                .style(iced_material::text_input::default)
                 .width(Length::Fill)
         ]
         .spacing(6)
@@ -1382,7 +1373,9 @@ impl Studio {
 
         let left = column![
             search,
-            scrollable(list).height(Length::Fill),
+            scrollable(list)
+                .style(iced_material::scrollable::default)
+                .height(Length::Fill),
             divider(Length::Fill, Length::Fixed(1.0)),
             self.overlay_panel(),
         ]
@@ -1392,7 +1385,9 @@ impl Studio {
         let bodies = row![
             left,
             divider(Length::Fixed(1.0), Length::Fill),
-            container(details).width(Length::FillPortion(3)),
+            container(details)
+                .style(iced_material::container::surface_container_low)
+                .width(Length::FillPortion(3)),
         ]
         .spacing(16)
         .height(Length::Fill);
@@ -1453,18 +1448,21 @@ impl Studio {
                 .into();
         }
 
-        panel = panel.push(pick_list(
-            self.overlay.iter().map(instance_choice).collect::<Vec<_>>(),
-            self.overlay_selected
-                .as_ref()
-                .and_then(|selected| {
-                    self.overlay
-                        .iter()
-                        .find(|instance| instance.path == *selected)
-                })
-                .map(instance_choice),
-            |choice: InstanceChoice| Message::SelectOverlay(choice.control),
-        ));
+        panel = panel.push(
+            pick_list(
+                self.overlay.iter().map(instance_choice).collect::<Vec<_>>(),
+                self.overlay_selected
+                    .as_ref()
+                    .and_then(|selected| {
+                        self.overlay
+                            .iter()
+                            .find(|instance| instance.path == *selected)
+                    })
+                    .map(instance_choice),
+                |choice: InstanceChoice| Message::SelectOverlay(choice.control),
+            )
+            .style(iced_material::pick_list::default),
+        );
 
         let Some(instance) = self.overlay_selected.as_ref().and_then(|selected| {
             self.overlay
