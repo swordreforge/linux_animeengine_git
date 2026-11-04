@@ -575,6 +575,17 @@ search field with IME, and Workshop browse/search.
       also move when something the shepherd did not start exits).
       Verified: the shepherd logged `tray registered (StatusNotifierItem)` while the overlay it
       started logged `tray disabled (--no-tray): the shepherd owns it`.
+- [x] The tray menu was wrong twice over, both fixed after actually looking at it: it listed
+      only the **registry**, so with every entry disabled it offered nothing to start and its
+      one action (`Visible`) wrote into a file nobody was reading; and `Open main window`
+      silently disappeared when the studio was not installed anywhere the shepherd looked.
+      It now lists the **union of the registry and every control file on disk** (running
+      first), gives a stopped entry `Start (and supervise)` — which enables it in the registry
+      so the supervisor starts it a second later — keeps `Visible` / `Quit this overlay` for
+      live ones and `Stop supervising` for enabled ones, and always shows the main-window item,
+      explicitly as `Open main window (not installed — build --features studio)` when it cannot
+      find it. `anima-studio` is installed beside the other binaries, and the shepherd logs
+      where it looked: `[shepherd] main window: …/anima-studio`.
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 
