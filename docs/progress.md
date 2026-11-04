@@ -891,6 +891,22 @@ search field with IME, and Workshop browse/search.
       past the first hundred, and it is still in the detail pane and the asset list, where the actual
       file is what matters. `meta_from` is shared by both paths now, so the batch and the single-item
       fetch cannot describe an item differently.
+- [x] The reason the rows kept showing file names, found by reading the data instead of the picture.
+      The freshness check consulted the **disk cache** to decide what to fetch, while the rows read the
+      **in-memory `meta`** map — so a warm cache meant "ask for nothing" *and* "show nothing", and
+      every row fell back to its file name. The check was doing exactly what it said; the display still
+      looked broken. `refresh` now hydrates `meta` from the cache before anything is drawn, through a
+      pure `hydrate_from` that skips stale answers and is tested without a cache on disk, and
+      `read_cached_meta` is shared by the decision and the hydration so the two cannot disagree.
+      Result: `metadata: 9 item(s) came from the cache`, no request, and rows show
+      `kasane teto hooked trend` where they showed `Pre-comp 2_0_20260930_032758.apng`.
+      The screenshot could not settle it and neither could I: the vision read the rows as "file names",
+      which is indistinguishable in a picture from a Steam item whose **title** is a file name — common
+      on this Workshop. Reading the cached JSON next to the item directory is what showed the titles
+      had been there all along:
+        3810914663: title 'kasane teto hooked trend'  ·  file 'Pre-comp 2_0_20260930_032758.apng'
+      Same lesson as the two bugs before it: one decision read from two places will eventually go two
+      ways, and a picture is not evidence about data.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

@@ -1018,6 +1018,30 @@ fn load_metadata(ids: Vec<u64>) -> Vec<(u64, Meta)> {
     loaded
 }
 
+/// The metadata cached on disk for `id`, if there is any. Both the decision about what to fetch and
+/// the act of showing it go through here, so a warm cache cannot be honoured by one and ignored by
+/// the other.
+fn read_cached_meta(id: u64) -> Option<CachedMeta> {
+    std::fs::read_to_string(meta_cache_path(id))
+        .ok()
+        .and_then(|text| serde_json::from_str::<CachedMeta>(&text).ok())
+}
+
+/// The fresh answers among `ids`, as the map the rows read. Pure, so the rule can be tested without a
+/// cache on disk: the caller says where a cached answer comes from.
+fn hydrate_from(
+    ids: impl IntoIterator<Item = u64>,
+    now: u64,
+    read: impl Fn(u64) -> Option<CachedMeta>,
+) -> HashMap<u64, Meta> {
+    ids.into_iter()
+        .filter_map(|id| {
+            let cached = read(id)?;
+            cache_is_fresh(cached.fetched, now).then_some((id, cached.details))
+        })
+        .collect()
+}
+
 /// Ask Steam for the metadata of the installed list in one batch, so rows can show titles without
 /// being clicked one at a time. Everything the cache already has fresh is skipped, which is what makes
 /// a second run offline and instant. `None` when there is nothing to ask about.
@@ -1031,10 +1055,7 @@ fn installed_meta_task(studio: &Studio) -> Option<Task<Message>> {
         .take(INSTALLED_META_LIMIT)
         .collect();
     let batch = meta_batches(&ids, |id| {
-        std::fs::read_to_string(meta_cache_path(id))
-            .ok()
-            .and_then(|text| serde_json::from_str::<CachedMeta>(&text).ok())
-            .is_some_and(|cached| cache_is_fresh(cached.fetched, now))
+        read_cached_meta(id).is_some_and(|cached| cache_is_fresh(cached.fetched, now))
     })
     .into_iter()
     .next()?;
@@ -1287,6 +1308,10 @@ impl Studio {
         let mut watcher = WorkshopWatcher::discover();
         let _ = watcher.poll();
         self.snapshot = watcher.snapshot().clone();
+        // Read what the cache already knows into memory. Without this step a warm cache is used only
+        // to decide *not* to fetch, leaving `meta` empty and the rows showing file names — which is
+        // exactly backwards, and exactly what happened.
+        self.hydrate_meta(INSTALLED_META_LIMIT);
         self.note = format!(
             "{} root(s) · {} item(s) · catalog {} · {} entries",
             watcher.roots().len(),
@@ -1298,6 +1323,28 @@ impl Studio {
             self.i18n.entries()
         );
         eprintln!("[studio] {}", self.note);
+    }
+
+    /// Put the cached answers for the installed list into `meta`, which is what the rows read. No
+    /// network, and nothing that is already in memory is rewritten.
+    fn hydrate_meta(&mut self, limit: usize) {
+        let now = now_secs();
+        let ids: Vec<u64> = self
+            .snapshot
+            .items
+            .keys()
+            .copied()
+            .take(limit)
+            .filter(|id| !self.meta.contains_key(id))
+            .collect();
+        let hydrated = hydrate_from(ids, now, read_cached_meta);
+        if !hydrated.is_empty() {
+            eprintln!(
+                "[studio] metadata: {} item(s) came from the cache",
+                hydrated.len()
+            );
+        }
+        self.meta.extend(hydrated);
     }
 
     fn item(&self, id: u64) -> Option<&WorkshopItem> {
@@ -2704,6 +2751,30 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_warm_cache_reaches_the_rows_without_a_request() {
+        let cached = |id: u64, fetched: u64| CachedMeta {
+            fetched,
+            details: Meta {
+                title: format!("title {id}"),
+                ..Meta::default()
+            },
+        };
+        let now = 1_000_000;
+        let read = |id: u64| match id {
+            1 => Some(cached(1, now - 10)),
+            // Stale: its title must not be shown as if it were current.
+            2 => Some(cached(2, now - META_TTL_SECS - 1)),
+            _ => None,
+        };
+
+        let hydrated = hydrate_from([1_u64, 2, 3], now, read);
+        assert_eq!(hydrated.len(), 1);
+        assert_eq!(hydrated[&1].title, "title 1");
+        assert!(!hydrated.contains_key(&2));
+        assert!(!hydrated.contains_key(&3));
+    }
 
     #[test]
     fn only_stale_metadata_is_requested() {
