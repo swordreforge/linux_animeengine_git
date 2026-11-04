@@ -491,9 +491,16 @@ Interaction and control:
       (`mutter_x11_interop`, `ext_background_effect_manager_v1`, `xdg_wm_base v7`,
       no `zwlr_*` at all) while the host registry has `zwlr_layer_shell_v1 v5` — so
       the sandboxed app connected to a different compositor's socket, not niri's.
-      That is why `zwlr_layer_shell_v1` was missing. Next: launch the Flatpak with
-      `--env=WAYLAND_DISPLAY=<niri socket>` and confirm with the same dump. The
-      overlay stays on the portable install until then
+      That is why `zwlr_layer_shell_v1` was missing. Evidence gathered: `ss -xlp`
+      shows niri (pid 1153) listening on `/run/user/1000/wayland-1`, the socket
+      classifies as niri/wlroots with `zwlr_layer_shell_v1 v5`, and
+      `flatpak-session-helper` itself has `WAYLAND_DISPLAY=wayland-1` and
+      `XDG_RUNTIME_DIR=/run/user/1000` — so the *proxy path* is where the mismatch
+      happens, not our environment. Two bypasses failed deterministically with
+      `bwrap: Can't mount on symlink destination` (mounting the socket path, and an
+      aliased `$XDG_RUNTIME_DIR` socket). Next: trace what target
+      `flatpak-session-helper` relays to (and whether a GNOME session owns the
+      portal/proxy). The overlay stays on the portable install until then
 
 ### Main UI (optional)
 
