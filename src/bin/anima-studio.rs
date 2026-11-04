@@ -446,6 +446,17 @@ struct Loaded {
     thumb: Result<(u32, u32, Vec<u8>), String>,
 }
 
+/// Which screen the window is showing. One field and one `match`: iced builds only the selected
+/// branch, so switching tabs needs no teardown and no callback — the message loop is the callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Tab {
+    #[default]
+    Workshop,
+    Overlays,
+    Settings,
+    Diagnostics,
+}
+
 /// One overlay control file. The file name is only a 16-hex slug of the animation path,
 /// so the label comes from the persisted instance list (`secondary_instances.json`).
 #[derive(Debug, Clone)]
@@ -823,6 +834,8 @@ enum Message {
     StageOverlay(OverlayAction),
     /// One animation frame, while something is moving.
     Frame(Instant),
+    /// Show another tab. Nothing is cleared: coming back shows what you left.
+    Tab(Tab),
     RefreshOverlay,
     SelectOverlay(PathBuf),
     Overlay(OverlayAction),
@@ -1245,6 +1258,8 @@ struct Studio {
     shown_seen: String,
     /// Whether motion is allowed at all (see [`motion_enabled`]).
     motion: bool,
+    /// Which screen is showing.
+    tab: Tab,
     pending_remove: Option<u64>,
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
@@ -1295,6 +1310,7 @@ impl Studio {
             note_fade: Animation::new(1.0),
             shown_seen: String::new(),
             motion: motion_enabled(),
+            tab: Tab::default(),
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
@@ -1544,6 +1560,7 @@ impl Studio {
                 self.last_frame = at;
                 self.now = at;
             }
+            Message::Tab(tab) => self.tab = tab,
             Message::Language(code) => {
                 if let Err(error) = self.i18n.set_language(&code) {
                     self.note = format!("language not saved: {error}");
@@ -1792,7 +1809,20 @@ impl Studio {
         .spacing(12)
         .align_y(iced::Alignment::Center);
 
-        // The rows live in the floating picker now: the left column is the overlay panel's.
+        // Everything below builds the workshop tab. The other tabs return here, before any of the
+        // two-pane body exists, so switching really does cost less per frame — the plan's promise
+        // kept in the shape of the code rather than in a comment.
+        if self.tab != Tab::Workshop {
+            let body: El<'_> = match self.tab {
+                Tab::Overlays => {
+                    self.tab_placeholder("Overlays get a row each here, with their own parameters.")
+                }
+                Tab::Settings => self.tab_settings(),
+                _ => self.tab_diagnostics(),
+            };
+            return self.frame(header, body);
+        }
+
         let selected_item = self.selected_item.and_then(|id| self.item(id).cloned());
         let selected_remote = self.selected_item.and_then(|id| {
             self.remote
@@ -2044,13 +2074,20 @@ impl Studio {
         .spacing(16)
         .height(Length::Fill);
 
+        self.frame(header, bodies)
+    }
+
+    /// The chrome every tab shares: the header, the tab strip, the body, the status line, and the
+    /// picker on top when it is open. One place, so the tabs cannot drift apart in their frame.
+    fn frame<'a>(&'a self, header: impl Into<El<'a>>, body: impl Into<El<'a>>) -> El<'a> {
         // The status line fades in when it says something new: the text colour carries the alpha
         // because iced has no way to fade a container, and this is a one-line widget.
         let status_alpha = self.fade(&self.note_fade);
         let scene = container(
             column![
-                header,
-                bodies,
+                header.into(),
+                self.tab_strip(),
+                body.into(),
                 text(if self.remote_note.is_empty() {
                     self.note.clone()
                 } else {
@@ -2090,6 +2127,56 @@ impl Studio {
                 .height(Length::Fill),
         ]
         .into()
+    }
+
+    /// The tab strip, on its own row under the header rather than inside it: the header already
+    /// carries the title, the language picker, refresh and quit, and four more labels would crowd it
+    /// at the minimum window size. This is also the shape Steam uses, which is where the idea came
+    /// from.
+    fn tab_strip(&self) -> El<'_> {
+        let tabs = [
+            (Tab::Workshop, "Workshop"),
+            (Tab::Overlays, "Overlay"),
+            (Tab::Settings, "Settings"),
+            (Tab::Diagnostics, "Diagnostics"),
+        ];
+        let mut strip = row![].spacing(6);
+        for (tab, key) in tabs {
+            let tab_button = button(text(self.i18n.tr(key)))
+                .style(if self.tab == tab {
+                    primary
+                } else {
+                    text_button
+                })
+                .padding(6);
+            // The active tab has no press handler: pressing it would do nothing anyway, and this is
+            // the same "no affordance means disabled" idiom the pager uses.
+            strip = strip.push(if self.tab == tab {
+                tab_button
+            } else {
+                tab_button.on_press(Message::Tab(tab))
+            });
+        }
+        strip.into()
+    }
+
+    /// An honest empty tab: a glyph and a sentence saying what will live there, rather than a blank
+    /// pane that reads as a bug.
+    fn tab_placeholder(&self, note: &str) -> El<'_> {
+        placeholder("▤", note.to_string(), Length::Fill).into()
+    }
+
+    /// The Steam key and the motion switch. Filled in next; the placeholder says what is coming
+    /// rather than leaving a pane that looks broken.
+    fn tab_settings(&self) -> El<'_> {
+        self.tab_placeholder(
+            "The Steam API key and the motion switch live here — until then, both are in studio.json.",
+        )
+    }
+
+    /// What the status line knows, laid out so it can be pasted into a bug report.
+    fn tab_diagnostics(&self) -> El<'_> {
+        self.tab_placeholder("Version, roots, catalog and shepherd state live here.")
     }
 
     /// The installed items whose title, id or asset names match the query.
@@ -2185,7 +2272,8 @@ impl Studio {
     /// because the list used to be a permanent region of the left column, where it both squeezed
     /// the overlay panel and had no height to show more than a row or two.
     fn picker_layer(&self) -> Option<El<'_>> {
-        if !self.picker {
+        // The picker belongs to the workshop tab, so it cannot float over the settings form.
+        if !self.picker || self.tab != Tab::Workshop {
             return None;
         }
         let installed = self.filtered_installed();

@@ -10,6 +10,8 @@ pub mod anim;
 pub mod bc7;
 pub mod cache;
 pub mod control;
+#[cfg(feature = "dbus")]
+pub mod dbus_intent;
 pub mod error;
 pub mod i18n;
 pub mod input_map;
@@ -19,8 +21,6 @@ pub mod paths;
 pub mod prefs;
 pub mod settings;
 pub mod shepherd;
-#[cfg(feature = "dbus")]
-pub mod dbus_intent;
 pub mod state;
 pub mod steam;
 pub mod steamcmd;

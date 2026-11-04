@@ -7,8 +7,8 @@
 
 use std::path::PathBuf;
 
-use crate::shepherd::Registry;
 use crate::Result;
+use crate::shepherd::Registry;
 
 /// The name other programs connect to on the session bus.
 pub const BUS_NAME: &str = "dev.AnimaEngine.Shepherd";
@@ -124,13 +124,20 @@ mod tests {
         let intent = Intent::new(&path);
 
         assert!(intent.wanted().is_empty());
-        assert!(intent.enable("/tmp/a.apng").unwrap(), "first ask changes it");
+        assert!(
+            intent.enable("/tmp/a.apng").unwrap(),
+            "first ask changes it"
+        );
         assert!(
             !intent.enable("/tmp/a.apng").unwrap(),
             "asking again changes nothing"
         );
         assert_eq!(intent.wanted().len(), 1);
-        assert!(intent.summary().contains("1 wanted"), "{}", intent.summary());
+        assert!(
+            intent.summary().contains("1 wanted"),
+            "{}",
+            intent.summary()
+        );
 
         // A second object over the same file sees the same state: nothing is cached in the object.
         let other = Intent::new(&path);
