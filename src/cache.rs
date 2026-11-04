@@ -107,6 +107,42 @@ impl FrameCache {
         Ok(())
     }
 
+    /// BC7 blocks for `source`. Shares [`EXTENSION`] so the LRU pass counts and
+    /// clears it alongside the frames; a missing sidecar just means the overlay
+    /// falls back to the RGBA path.
+    pub fn blocks_path(&self, source: &Path) -> Result<PathBuf> {
+        Ok(self
+            .root
+            .join(format!("{}.bc7.{}", cache_key(source)?, EXTENSION)))
+    }
+
+    /// Read BC7 blocks for `source`, or `None` when absent or malformed.
+    pub fn read_blocks(&self, source: &Path) -> Option<Blocks> {
+        let path = self.blocks_path(source).ok()?;
+        if !path.exists() {
+            return None;
+        }
+        match read_blocks(&path) {
+            Ok(blocks) => {
+                touch(&path);
+                Some(blocks)
+            }
+            Err(_) => {
+                let _ = fs::remove_file(&path);
+                None
+            }
+        }
+    }
+
+    /// Store BC7 blocks for `source` (atomic), then enforce the size cap.
+    /// Uncompressed on purpose: 8 bpp blocks upload straight to the GPU.
+    pub fn write_blocks(&self, source: &Path, blocks: &Blocks) -> Result<()> {
+        let path = self.blocks_path(source)?;
+        write_blocks(&path, blocks)?;
+        self.enforce_limit();
+        Ok(())
+    }
+
     /// Evict least-recently-used entries until the total is at or below 80% of
     /// the cap. Returns the bytes remaining. Never fails.
     pub fn enforce_limit(&self) -> u64 {
@@ -165,6 +201,41 @@ struct Entry {
     path: PathBuf,
     size: u64,
     modified: SystemTime,
+}
+
+/// BC7 blocks for one animation: each frame is `ceil(w/4) * ceil(h/4)` 16-byte
+/// blocks, frames laid out back to back — what a `Bc7RgbaUnorm` array texture
+/// uploads directly (`blocks_per_row` is its row pitch, `rows` its row count).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blocks {
+    pub width: u32,
+    pub height: u32,
+    pub count: usize,
+    /// `bc7enc_rdo` uber level the blocks were encoded with (0..=4).
+    pub uber_level: u32,
+    pub data: Vec<u8>,
+}
+
+impl Blocks {
+    /// Bytes one frame occupies in [`Blocks::data`].
+    pub fn frame_bytes(&self) -> usize {
+        (self.width.div_ceil(4) as usize) * (self.height.div_ceil(4) as usize) * 16
+    }
+
+    /// Blocks per row (the upload row pitch).
+    pub fn blocks_per_row(&self) -> u32 {
+        self.width.div_ceil(4)
+    }
+
+    /// Block rows per frame.
+    pub fn rows(&self) -> u32 {
+        self.height.div_ceil(4)
+    }
+
+    /// Whether `data` matches the declared geometry.
+    pub fn is_consistent(&self) -> bool {
+        self.count > 0 && self.data.len() == self.frame_bytes() * self.count
+    }
 }
 
 /// Cache key: sha256 of `resolved path | size | mtime_ns | version`, like the
@@ -274,6 +345,71 @@ fn read_u32(reader: &mut impl Read) -> Result<u32> {
     let mut bytes = [0u8; 4];
     reader.read_exact(&mut bytes)?;
     Ok(u32::from_le_bytes(bytes))
+}
+
+const BLOCKS_MAGIC: &[u8; 8] = b"ANIMBC7\0";
+const BLOCKS_VERSION: u32 = 1;
+
+fn read_blocks(path: &Path) -> Result<Blocks> {
+    let mut file = BufReader::new(File::open(path)?);
+    let mut magic = [0u8; BLOCKS_MAGIC.len()];
+    file.read_exact(&mut magic)?;
+    if &magic != BLOCKS_MAGIC {
+        return Err(Error::Cache("not an AnimaEngine BC7 sidecar".into()));
+    }
+    let version = read_u32(&mut file)?;
+    if version != BLOCKS_VERSION {
+        return Err(Error::Cache(format!("blocks version {version}")));
+    }
+
+    let width = read_u32(&mut file)?;
+    let height = read_u32(&mut file)?;
+    let count = read_u32(&mut file)? as usize;
+    let uber_level = read_u32(&mut file)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+
+    let blocks = Blocks {
+        width,
+        height,
+        count,
+        uber_level,
+        data,
+    };
+    if !blocks.is_consistent() {
+        return Err(Error::Cache(format!(
+            "BC7 sidecar holds {} bytes, expected {}",
+            blocks.data.len(),
+            blocks.frame_bytes() * blocks.count.max(1)
+        )));
+    }
+    Ok(blocks)
+}
+
+fn write_blocks(path: &Path, blocks: &Blocks) -> Result<()> {
+    if !blocks.is_consistent() {
+        return Err(Error::Cache(
+            "refusing to write an inconsistent BC7 sidecar".into(),
+        ));
+    }
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    ensure_dir(dir)?;
+
+    let tmp = dir.join(format!(".{}.bc7.tmp", std::process::id()));
+    {
+        let mut file = BufWriter::new(File::create(&tmp)?);
+        file.write_all(BLOCKS_MAGIC)?;
+        file.write_all(&BLOCKS_VERSION.to_le_bytes())?;
+        file.write_all(&blocks.width.to_le_bytes())?;
+        file.write_all(&blocks.height.to_le_bytes())?;
+        file.write_all(&(blocks.count as u32).to_le_bytes())?;
+        file.write_all(&blocks.uber_level.to_le_bytes())?;
+        file.write_all(&blocks.data)?;
+        file.flush()?;
+    }
+
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 /// Bump the entry's mtime so LRU eviction keeps hot entries.
@@ -390,6 +526,56 @@ mod tests {
 
         assert!(cache.read(&src).is_none());
         assert!(!entry.exists());
+    }
+
+    #[test]
+    fn bc7_sidecar_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = source(dir.path(), "clip.gif", b"data");
+        let cache = FrameCache::new(dir.path().join("cache"));
+        let blocks = Blocks {
+            width: 8,
+            height: 4,
+            count: 2,
+            uber_level: 4,
+            data: vec![7u8; 64],
+        };
+        assert!(blocks.is_consistent());
+        cache.write_blocks(&src, &blocks).unwrap();
+
+        let loaded = cache.read_blocks(&src).unwrap();
+        assert_eq!(loaded, blocks);
+        assert_eq!(loaded.blocks_per_row(), 2);
+        assert_eq!(loaded.rows(), 1);
+        assert_eq!(loaded.frame_bytes(), 32);
+    }
+
+    #[test]
+    fn bc7_sidecar_rejects_inconsistent_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = source(dir.path(), "clip.gif", b"data");
+        let cache = FrameCache::new(dir.path().join("cache"));
+        let blocks = Blocks {
+            width: 8,
+            height: 4,
+            count: 3,
+            uber_level: 4,
+            data: vec![0u8; 96],
+        };
+        cache.write_blocks(&src, &blocks).unwrap();
+
+        let path = cache.blocks_path(&src).unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.truncate(bytes.len() - 8);
+        fs::write(&path, &bytes).unwrap();
+        assert!(cache.read_blocks(&src).is_none());
+        assert!(!path.exists());
+
+        let too_short = Blocks {
+            data: vec![0u8; 10],
+            ..blocks
+        };
+        assert!(cache.write_blocks(&src, &too_short).is_err());
     }
 
     #[test]
