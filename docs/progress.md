@@ -848,6 +848,15 @@ search field with IME, and Workshop browse/search.
       moved on" is. The test asserts that page 2 is non-empty and not identical to page 1, and a
       comment says why the exact counts are not asserted. The window's pager inherits the same
       caveat, which is the real reason it says "about".
+- [x] Typing no longer opens the list. Every keystroke called `open_picker`, so the installed list
+      popped up under the cursor while the user was still typing a word — one character was enough.
+      `Message::Search` only filters now, and the picker opens on **Enter** (`on_submit`, which iced's
+      `text_input` has had all along) or on the button next to the field. The Steam search is
+      deliberately unchanged: type the whole thing, press `搜索 Steam`.
+      The popup was also labelled `Workshop` while showing what is installed on this machine, which
+      is exactly why it read as "a Workshop search just fired". It says `Installed` now — in the
+      picker's title, the button that opens it, and the button that comes back from Steam results.
+      One i18n key, 820 source strings.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

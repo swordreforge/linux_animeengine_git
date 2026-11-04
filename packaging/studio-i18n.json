@@ -26,7 +26,8 @@
     "hidden": "hidden",
     "locked": "locked",
     "Click an asset to preview it": "Click an asset to preview it",
-    "Pick an item to see its details": "Pick an item to see its details"
+    "Pick an item to see its details": "Pick an item to see its details",
+    "Installed": "Installed"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -55,7 +56,8 @@
     "hidden": "已隐藏",
     "locked": "已锁定",
     "Click an asset to preview it": "点击资源即可预览首帧",
-    "Pick an item to see its details": "选择一个条目查看详情"
+    "Pick an item to see its details": "选择一个条目查看详情",
+    "Installed": "已安装"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -84,7 +86,8 @@
     "hidden": "已隱藏",
     "locked": "已鎖定",
     "Click an asset to preview it": "點擊資源即可預覽首幀",
-    "Pick an item to see its details": "選擇一個項目查看詳情"
+    "Pick an item to see its details": "選擇一個項目查看詳情",
+    "Installed": "已安裝"
   },
   "ja": {
     "Refresh": "更新",
@@ -113,6 +116,7 @@
     "hidden": "非表示中",
     "locked": "ロック中",
     "Click an asset to preview it": "アセットをクリックすると先頭フレームを表示します",
-    "Pick an item to see its details": "項目を選ぶと詳細が表示されます"
+    "Pick an item to see its details": "項目を選ぶと詳細が表示されます",
+    "Installed": "インストール済み"
   }
 }

@@ -1381,9 +1381,10 @@ impl Studio {
             }
             Message::Refresh => self.refresh(),
             Message::Search(query) => {
+                // Typing only filters. Every keystroke used to open the picker, which popped the
+                // installed list up under the cursor while the user was still typing a word.
+                // Enter, or the button next to the field, is what opens it.
                 self.query = query;
-                // Typing is how you look for something, so it brings the picker up.
-                self.open_picker();
             }
             Message::ClearSearch => self.query.clear(),
             Message::SearchSteam => {
@@ -1806,6 +1807,8 @@ impl Studio {
         let mut search = row![
             text_input(&placeholder, &self.query)
                 .on_input(Message::Search)
+                // Enter opens the list; typing alone must not (see `Message::Search`).
+                .on_submit(Message::OpenPicker)
                 // iced_material has no text_input catalog, but it does ship this style.
                 .style(iced_material::text_input::default)
                 .width(Length::Fill)
@@ -1824,9 +1827,10 @@ impl Studio {
                 .style(secondary)
                 .on_press(Message::SearchSteam),
         );
-        // The list lives in the floating picker now, so the search row is the way to it.
+        // The list lives in the floating picker now, so the search row is the way to it: this
+        // opens it on what is installed.
         search = search.push(
-            button(text(self.i18n.tr("Workshop")))
+            button(text(self.i18n.tr("Installed")))
                 .style(if self.picker { primary } else { secondary })
                 .on_press(Message::OpenPicker),
         );
@@ -1999,9 +2003,11 @@ impl Studio {
         let title = if self.remote.is_some() {
             format!("{} · {count}", self.i18n.tr("Search"))
         } else {
+            // Not "Workshop": this list is what is installed on this machine, and calling it the
+            // Workshop made it look as if a search had run.
             format!(
                 "{} · {count}/{}",
-                self.i18n.tr("Workshop"),
+                self.i18n.tr("Installed"),
                 self.snapshot.len()
             )
         };
@@ -2030,7 +2036,7 @@ impl Studio {
                 forward
             });
             header = header.push(
-                button(text(self.i18n.tr("Workshop")))
+                button(text(self.i18n.tr("Installed")))
                     .style(secondary)
                     .on_press(Message::ShowInstalled),
             );
@@ -2760,21 +2766,25 @@ mod tests {
     }
 
     #[test]
-    fn typing_opens_the_picker_and_choosing_closes_it() {
+    fn typing_filters_without_opening_the_picker() {
         let mut studio = Studio::boot();
         assert!(!studio.picker);
 
-        // Looking for something is what the picker is for, so typing brings it up.
+        // A keystroke is not a request to see the list: it popped up under the cursor while the
+        // user was still typing the word.
+        let _ = studio.update(Message::Search("t".to_string()));
+        assert_eq!(studio.query, "t");
+        assert!(!studio.picker);
+
         let _ = studio.update(Message::Search("teto".to_string()));
+        assert!(!studio.picker);
+
+        // Enter (and the button next to the field) is what opens it.
+        let _ = studio.update(Message::OpenPicker);
         assert!(studio.picker);
 
         // Choosing ends the search; the task this returns is dropped, not run.
         let _ = studio.update(Message::Select(3799603054));
-        assert!(!studio.picker);
-
-        let _ = studio.update(Message::OpenPicker);
-        assert!(studio.picker);
-        let _ = studio.update(Message::ClosePicker);
         assert!(!studio.picker);
     }
 
