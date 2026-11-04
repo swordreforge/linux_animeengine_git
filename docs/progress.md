@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **138** default (135 lib + 3 CLI); **143** with `bc7` (the `bc7`
+- `cargo test`: **140** default (137 lib + 3 CLI); **145** with `bc7` (the `bc7`
   feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -457,6 +457,13 @@ Interaction and control:
       user's niri config — it prints the `include` line), `--uninstall` removes
       everything, and `desktop-file-validate` + `appstreamcli validate` run
       automatically (both pass). Verified in a scratch prefix and for real
+- [x] i18n completion: language-neutral keys are no longer counted
+      (`is_untranslatable`: empty, no letters, or a lowercase identifier — the
+      arrows, `25%`/`50%`/`75%` and ids like `process_gif`), and the source
+      language (`en`) never counts as missing because the key *is* its text. With
+      those rules `zh-CN`/`zh-TW` are complete; `ja` was missing four real strings,
+      which `packaging/i18n-additions.json` supplies and `anima-i18n merge` applies.
+      After the merge all four primary languages verify clean (exit 0)
 - [ ] AppImage / Flatpak: a Flatpak needs the sandbox decisions for `~/.steam` and
       steamcmd. `libsteam_api.so` stays out until the callback path is used (the
       download path is SteamCMD-only, no SDK)

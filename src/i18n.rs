@@ -275,6 +275,48 @@ pub fn install_catalog_into(source: &Path, dir: &Path) -> Result<PathBuf> {
     Ok(destination)
 }
 
+/// The language whose strings are the catalog *keys*: it is complete by
+/// definition, because looking up an English string returns it unchanged.
+pub const SOURCE_LANGUAGE: &str = "en";
+
+/// Whether a source string needs a translation at all.
+///
+/// The catalog mixes real UI text with language-neutral entries: symbols
+/// (`←`, `→`), percentages (`25%`) and programmatic identifiers (`process_gif`,
+/// `mouse`). Counting those as missing would make a release impossible to
+/// complete, so [`verify_catalog`] and [`missing_sources`] skip them.
+///
+/// The rule is deliberately simple — empty, no letters at all, or a lowercase
+/// identifier — and can be revisited if a real string ever matches it.
+pub fn is_untranslatable(source: &str) -> bool {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if !trimmed.chars().any(char::is_alphabetic) {
+        return true; // `←`, `→`, `25%`
+    }
+    trimmed
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Merge `additions` into `base` (per language, additions win) and return how
+/// many entries were added or changed.
+pub fn merge_catalog(base: &mut Catalog, additions: &Catalog) -> usize {
+    let mut changed = 0;
+    for (language, entries) in additions {
+        let target = base.entry(language.clone()).or_default();
+        for (source, value) in entries {
+            if target.get(source) != Some(value) {
+                target.insert(source.clone(), value.clone());
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
 /// Languages this port ships and verifies first. The catalog carries more; these
 /// are the ones a release is expected to be complete in, and what
 /// `anima-i18n install --primary` trims a catalog down to.
@@ -311,7 +353,7 @@ pub fn missing_sources(catalog: &Catalog, language: &str) -> Vec<String> {
 
     let mut missing: Vec<String> = sources
         .into_iter()
-        .filter(|source| !entries.contains_key(*source))
+        .filter(|source| !is_untranslatable(source) && !entries.contains_key(*source))
         .map(str::to_string)
         .collect();
     missing.sort();
@@ -323,17 +365,24 @@ pub fn install_catalog_data(catalog: &Catalog) -> Result<PathBuf> {
     install_catalog_data_into(catalog, &crate::paths::user_data_dir())
 }
 
-/// [`install_catalog_data`] into an explicit directory (used by tests).
-pub fn install_catalog_data_into(catalog: &Catalog, dir: &Path) -> Result<PathBuf> {
+/// Write `catalog` to `path` atomically (re-serialised, so duplicate keys are
+/// normalised on the way in).
+pub fn write_catalog(path: &Path, catalog: &Catalog) -> Result<()> {
     if catalog.is_empty() {
         return Err(crate::Error::Decode(
-            "refusing to install an empty catalog".into(),
+            "refusing to write an empty catalog".into(),
         ));
     }
+    if let Some(dir) = path.parent() {
+        crate::paths::ensure_dir(dir)?;
+    }
+    crate::paths::save_json(path, catalog)
+}
+
+/// [`install_catalog_data`] into an explicit directory (used by tests).
+pub fn install_catalog_data_into(catalog: &Catalog, dir: &Path) -> Result<PathBuf> {
     let destination = dir.join(CATALOG_FILE);
-    crate::paths::ensure_dir(dir)?;
-    // Re-serialised, so a catalog with duplicate keys is normalised on the way in.
-    crate::paths::save_json(&destination, catalog)?;
+    write_catalog(&destination, catalog)?;
     Ok(destination)
 }
 
@@ -393,6 +442,13 @@ pub fn verify_catalog(catalog: &Catalog) -> Option<CatalogReport> {
     for entries in catalog.values() {
         sources.extend(entries.keys().map(String::as_str));
     }
+    // Language-neutral entries (`←`, `25%`, `process_gif`) are nobody's job.
+    let mut translatable: Vec<&str> = sources
+        .iter()
+        .copied()
+        .filter(|source| !is_untranslatable(source))
+        .collect();
+    translatable.sort_unstable();
 
     let mut languages: Vec<LanguageReport> = catalog
         .iter()
@@ -400,14 +456,18 @@ pub fn verify_catalog(catalog: &Catalog) -> Option<CatalogReport> {
             language: language.clone(),
             primary: is_primary(language),
             entries: entries.len(),
-            missing: sources
-                .iter()
-                .copied()
-                .filter(|source| !entries.contains_key(*source))
-                .count(),
+            // The source language is the key itself, so it never misses anything.
+            missing: if language == SOURCE_LANGUAGE {
+                0
+            } else {
+                translatable
+                    .iter()
+                    .filter(|source| !entries.contains_key(**source))
+                    .count()
+            },
             empty: entries
-                .values()
-                .filter(|value| value.trim().is_empty())
+                .iter()
+                .filter(|(source, value)| !is_untranslatable(source) && value.trim().is_empty())
                 .count(),
             untranslated: entries
                 .iter()
@@ -678,6 +738,53 @@ mod tests {
             missing_sources(&catalog, "zh-CN"),
             vec!["Hello".to_string()]
         );
+    }
+
+    #[test]
+    fn untranslatable_keys_and_the_source_language() {
+        assert!(is_untranslatable(""));
+        assert!(is_untranslatable("  "));
+        assert!(is_untranslatable("←") && is_untranslatable("25%"));
+        assert!(is_untranslatable("process_gif") && is_untranslatable("mouse"));
+        assert!(!is_untranslatable("No GIF selected."));
+        assert!(!is_untranslatable("Hello"));
+
+        let catalog: Catalog = serde_json::from_str(
+            r#"{"en":{"Hello":"Hello"},"fr":{"Hello":"Bonjour","←":"←"},"ja":{}}"#,
+        )
+        .unwrap();
+        let report = verify_catalog(&catalog).unwrap();
+        let find = |language: &str| {
+            report
+                .languages
+                .iter()
+                .find(|entry| entry.language == language)
+                .unwrap()
+                .clone()
+        };
+
+        // `fr` lacks nothing translatable: the arrow is not a translation job.
+        assert_eq!(find("fr").missing, 0);
+        assert!(find("fr").is_complete());
+        // The source language is its own key, so it never misses anything.
+        assert_eq!(find("en").missing, 0);
+        assert!(find("en").is_complete());
+        // `ja` really is missing the greeting.
+        assert_eq!(find("ja").missing, 1);
+        assert!(!find("ja").is_complete());
+        assert_eq!(missing_sources(&catalog, "ja"), vec!["Hello".to_string()]);
+    }
+
+    #[test]
+    fn merge_adds_and_counts_changes() {
+        let mut base: Catalog = serde_json::from_str(r#"{"ja":{"A":"1"}}"#).unwrap();
+        let additions: Catalog =
+            serde_json::from_str(r#"{"ja":{"A":"1","B":"2"},"de":{"A":"3"}}"#).unwrap();
+
+        assert_eq!(merge_catalog(&mut base, &additions), 2);
+        assert_eq!(base["ja"]["B"], "2");
+        assert_eq!(base["de"]["A"], "3");
+        assert_eq!(merge_catalog(&mut base, &additions), 0, "idempotent");
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! anima-i18n status                          # active language and catalog
 //! anima-i18n verify [file] [--all] [--missing]
 //! anima-i18n install <file> [--primary|--languages=a,b]
+//! anima-i18n merge <fragment.json> [catalog]   # apply translation additions
 //! ```
 //!
 //! `verify` fails while a **primary** language (en, zh-CN, zh-TW, ja) is
@@ -40,6 +41,7 @@ fn main() -> ExitCode {
         }
         Some("verify") => verify(&arguments[1..]),
         Some("install") => install(&arguments[1..]),
+        Some("merge") => merge(&arguments[1..]),
         _ => usage(),
     }
 }
@@ -47,7 +49,7 @@ fn main() -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: anima-i18n <candidates|status|verify [file] [--all] [--missing]|\
-         install <file> [--primary|--languages=a,b]>"
+         install <file> [--primary|--languages=a,b]|merge <fragment.json> [catalog]>"
     );
     ExitCode::FAILURE
 }
@@ -141,6 +143,53 @@ fn verify(arguments: &[String]) -> ExitCode {
     } else {
         eprintln!("incomplete: {}", incomplete.join(", "));
         ExitCode::FAILURE
+    }
+}
+
+/// Merge a fragment (such as `packaging/i18n-additions.json`) into a catalog and
+/// write it back. Language-neutral entries are not touched; additions win.
+fn merge(arguments: &[String]) -> ExitCode {
+    let mut paths = arguments
+        .iter()
+        .filter(|argument| !argument.starts_with('-'));
+    let Some(fragment) = paths.next().map(PathBuf::from) else {
+        return usage();
+    };
+    let base_path = paths.next().map(PathBuf::from).or_else(|| {
+        i18n::catalog_candidates()
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+    });
+    let Some(base_path) = base_path else {
+        eprintln!("no catalog to merge into");
+        return ExitCode::FAILURE;
+    };
+
+    let additions = i18n::load_catalog(&fragment);
+    if additions.is_empty() {
+        eprintln!("{} is not a usable fragment", fragment.display());
+        return ExitCode::FAILURE;
+    }
+    let mut base = i18n::load_catalog(&base_path);
+    if base.is_empty() {
+        eprintln!("{} is empty or unreadable", base_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    let changed = i18n::merge_catalog(&mut base, &additions);
+    match i18n::write_catalog(&base_path, &base) {
+        Ok(()) => {
+            println!(
+                "{}: {changed} entr{} merged",
+                base_path.display(),
+                if changed == 1 { "y" } else { "ies" }
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("merge failed: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 
