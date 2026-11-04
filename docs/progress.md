@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **126** default (123 lib + 3 CLI), **129** with
+- `cargo test`: **129** default (126 lib + 3 CLI), **132** with
   `workshop-web,steamworks`.
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -193,6 +193,11 @@ Interaction and control:
   playback (tune with the env vars; the default 1 GiB keeps roughly 1/4 of it).
 - `anim_meta.json` fps: with `{"<canonical path>": {"fps": 60}}` the overlay
   logged `restored instance: ... fps 0 (meta 60)` — instance `fps` still wins.
+- Frame cache: entries are version 3 (magic + header + one zstd stream of raw
+  RGBA). `examples/cache_bench.rs` on `miku12.apng` (64 frames, 1500x1125): zstd
+  write 0.63 s / read 0.23 s / 46.3 MiB vs PNG-in-ZIP write 1.66 s / read 0.57 s
+  / 43.5 MiB. Version 2 (PNG) entries still on disk were 192 MiB and 144 MiB for
+  two large animations; they are orphaned by the key change and LRU-evicted.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -335,7 +340,12 @@ Interaction and control:
       playing time is preserved). `ANIMA_MAX_DECODE_MB` (default 1024) and
       `ANIMA_MAX_FRAMES` (default 4096) tune it; a decimated decode is **not**
       cached, so the cache always holds a complete decode
-- [ ] Cache encodes PNGs (CPU heavy for large frames); consider zstd raw frames
+- [x] Cache stores the raw frames in one zstd stream (level 3) instead of a
+      PNG-per-frame ZIP (entry format version 3, `b"ANIMCACH"` magic). Measured on
+      `miku12.apng` (64 frames, 1500x1125, 412 MiB raw): zstd write 0.63 s / read
+      0.23 s at 46.3 MiB versus PNG write 1.66 s / read 0.57 s at 43.5 MiB — about
+      2.5x faster for 6% more bytes (`examples/cache_bench.rs`); PNG encoding was
+      the reason a big animation took minutes to cache
 - [ ] Skip caching or clean stale `.tmp` files for interrupted background writes
 - [ ] Ship the i18n catalog as a data file; verify all locales
 - [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
@@ -387,8 +397,9 @@ Interaction and control:
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (126 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (129)
+cargo test                                        # pure logic (129 tests)
+cargo test --features "workshop-web,steamworks"   # + Steam adapters (132)
+cargo run --release --example cache_bench -- <animation>   # zstd vs PNG cache
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
 
@@ -428,4 +439,4 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray +
   menu) → `anima-workshop play` (download → sync → overlay) → workshop upload
   (`workshop.vdf` + `workshop_build_item`) → bounded decode + frame-timing
-  fidelity.
+  fidelity → zstd frame cache (PNG dropped).

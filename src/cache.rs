@@ -1,25 +1,29 @@
 //! Frame cache — ported from `monoModule.py`.
 //!
 //! Decoding and compositing an animation (GIF delta frames, APNG blend/dispose,
-//! …) is expensive. The first decode writes the *composited* RGBA frames —
-//! PNG-encoded, inside a ZIP — to a file keyed by a content hash of the source.
-//! Later loads read that ZIP instead of re-decoding. A size cap evicts the
-//! least-recently-used entries, mirroring the Python `_cleanup_cache`.
+//! …) is expensive. The first decode writes the *composited* RGBA frames to a
+//! file keyed by a content hash of the source; later loads read that file instead
+//! of re-decoding. A size cap evicts the least-recently-used entries, mirroring
+//! the Python `_cleanup_cache`.
 //!
-//! Layout of an entry (`.animacache`):
+//! Layout of an entry (`.animacache`), little-endian:
 //!
 //! ```text
-//! meta.json          { version, width, height, count, delays_ms }
-//! frames/000000.png  composited frame 0
-//! frames/000001.png  …
+//! b"ANIMCACH"                       8-byte magic
+//! u32 version, width, height, count
+//! u32 delays[count]
+//! zstd stream of count * width * height * 4 raw RGBA bytes
 //! ```
+//!
+//! One zstd stream over the raw frames replaced the old PNG-per-frame ZIP:
+//! PNG-encoding large frames cost far more CPU than it saved in bytes (see
+//! `examples/cache_bench.rs`).
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use image::ImageEncoder;
 use sha2::{Digest, Sha256};
 
 use crate::anim::{Animation, Frame};
@@ -29,18 +33,11 @@ use crate::{Error, Result};
 /// Default cache size cap (512 MiB), matching the Python build.
 pub const DEFAULT_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
-const CACHE_VERSION: u64 = 2;
+const CACHE_VERSION: u64 = 3;
 const EXTENSION: &str = "animacache";
-const META_NAME: &str = "meta.json";
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CacheMeta {
-    version: u64,
-    width: u32,
-    height: u32,
-    count: usize,
-    delays_ms: Vec<u32>,
-}
+const MAGIC: &[u8; 8] = b"ANIMCACH";
+/// zstd level: fast enough to hide behind playback, still finds frame redundancy.
+const COMPRESSION_LEVEL: i32 = 3;
 
 /// A content-addressed store of composited animation frames.
 pub struct FrameCache {
@@ -170,8 +167,8 @@ struct Entry {
     modified: SystemTime,
 }
 
-/// Cache key: sha256 of `resolved path | size | mtime_ns | v2`, like the Python
-/// `_cache_key`. Changes whenever the source file changes.
+/// Cache key: sha256 of `resolved path | size | mtime_ns | version`, like the
+/// Python `_cache_key`. Changes whenever the source file changes.
 pub fn cache_key(source: &Path) -> Result<String> {
     let resolved = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
     let meta = fs::metadata(&resolved)?;
@@ -206,38 +203,40 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn read_entry(path: &Path) -> Result<Animation> {
-    let file = File::open(path)?;
-    let mut archive = zip::ZipArchive::new(BufReader::new(file)).map_err(zip_err)?;
+    let mut file = BufReader::new(File::open(path)?);
 
-    let meta: CacheMeta = {
-        let mut meta_file = archive.by_name(META_NAME).map_err(zip_err)?;
-        let mut raw = String::new();
-        meta_file.read_to_string(&mut raw)?;
-        serde_json::from_str(&raw)?
-    };
-    if meta.version != CACHE_VERSION {
-        return Err(Error::Cache(format!("cache version {}", meta.version)));
+    let mut magic = [0u8; MAGIC.len()];
+    file.read_exact(&mut magic)?;
+    if &magic != MAGIC {
+        return Err(Error::Cache("not an AnimaEngine cache entry".into()));
+    }
+    let version = read_u32(&mut file)?;
+    if u64::from(version) != CACHE_VERSION {
+        return Err(Error::Cache(format!("cache version {version}")));
     }
 
-    let mut frames = Vec::with_capacity(meta.count);
-    for index in 0..meta.count {
-        let mut png = Vec::new();
-        archive
-            .by_name(&format!("frames/{index:06}.png"))
-            .map_err(zip_err)?
-            .read_to_end(&mut png)?;
-        let image = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
-            .map_err(decode_err)?
-            .to_rgba8();
-        frames.push(Frame {
-            rgba: image.into_raw(),
-            delay_ms: meta.delays_ms.get(index).copied().unwrap_or(0),
-        });
+    let width = read_u32(&mut file)?;
+    let height = read_u32(&mut file)?;
+    let count = read_u32(&mut file)? as usize;
+    let mut delays = Vec::with_capacity(count);
+    for _ in 0..count {
+        delays.push(read_u32(&mut file)?);
+    }
+
+    // Stream the frames straight out of the zstd payload: no second full-size
+    // buffer of the whole animation.
+    let frame_bytes = width as usize * height as usize * 4;
+    let mut decoder = zstd::stream::read::Decoder::new(file).map_err(cache_err)?;
+    let mut frames = Vec::with_capacity(count);
+    for delay_ms in delays {
+        let mut rgba = vec![0u8; frame_bytes];
+        decoder.read_exact(&mut rgba)?;
+        frames.push(Frame { rgba, delay_ms });
     }
 
     Ok(Animation {
-        width: meta.width,
-        height: meta.height,
+        width,
+        height,
         frames,
     })
 }
@@ -248,41 +247,33 @@ fn write_entry(path: &Path, animation: &Animation) -> Result<()> {
 
     let tmp = dir.join(format!(".{}.tmp", std::process::id()));
     {
-        let file = File::create(&tmp)?;
-        let mut zip = zip::ZipWriter::new(BufWriter::new(file));
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-
-        let meta = CacheMeta {
-            version: CACHE_VERSION,
-            width: animation.width,
-            height: animation.height,
-            count: animation.frames.len(),
-            delays_ms: animation.frames.iter().map(|f| f.delay_ms).collect(),
-        };
-        zip.start_file(META_NAME, options).map_err(zip_err)?;
-        zip.write_all(&serde_json::to_vec(&meta)?)?;
-
-        for (index, frame) in animation.frames.iter().enumerate() {
-            zip.start_file(format!("frames/{index:06}.png"), options)
-                .map_err(zip_err)?;
-            zip.write_all(&encode_png(frame, animation.width, animation.height)?)?;
+        let mut file = BufWriter::new(File::create(&tmp)?);
+        file.write_all(MAGIC)?;
+        file.write_all(&(CACHE_VERSION as u32).to_le_bytes())?;
+        file.write_all(&animation.width.to_le_bytes())?;
+        file.write_all(&animation.height.to_le_bytes())?;
+        file.write_all(&(animation.frames.len() as u32).to_le_bytes())?;
+        for frame in &animation.frames {
+            file.write_all(&frame.delay_ms.to_le_bytes())?;
         }
 
-        let mut inner = zip.finish().map_err(zip_err)?;
-        inner.flush()?;
+        let mut encoder =
+            zstd::stream::write::Encoder::new(file, COMPRESSION_LEVEL).map_err(cache_err)?;
+        for frame in &animation.frames {
+            encoder.write_all(&frame.rgba)?;
+        }
+        let mut file = encoder.finish().map_err(cache_err)?;
+        file.flush()?;
     }
 
     fs::rename(&tmp, path)?;
     Ok(())
 }
 
-fn encode_png(frame: &Frame, width: u32, height: u32) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut out)
-        .write_image(&frame.rgba, width, height, image::ExtendedColorType::Rgba8)
-        .map_err(decode_err)?;
-    Ok(out)
+fn read_u32(reader: &mut impl Read) -> Result<u32> {
+    let mut bytes = [0u8; 4];
+    reader.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 /// Bump the entry's mtime so LRU eviction keeps hot entries.
@@ -292,12 +283,8 @@ fn touch(path: &Path) {
     }
 }
 
-fn zip_err(err: zip::result::ZipError) -> Error {
+fn cache_err(err: std::io::Error) -> Error {
     Error::Cache(err.to_string())
-}
-
-fn decode_err(err: image::ImageError) -> Error {
-    Error::Decode(err.to_string())
 }
 
 #[cfg(test)]
@@ -367,10 +354,56 @@ mod tests {
         cache.write(&src, &animation).unwrap();
 
         let entry = cache.entry_path(&src).unwrap();
-        fs::write(&entry, b"not a zip").unwrap();
+        fs::write(&entry, b"not an animacache").unwrap();
 
         assert!(cache.read(&src).is_none());
         assert!(!entry.exists());
+    }
+
+    #[test]
+    fn entry_header_describes_the_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = source(dir.path(), "clip.gif", b"data");
+        let cache = FrameCache::new(dir.path().join("cache"));
+        cache.write(&src, &two_frame_animation()).unwrap();
+
+        let bytes = fs::read(cache.entry_path(&src).unwrap()).unwrap();
+        assert_eq!(&bytes[..8], MAGIC);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 3);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(bytes[20..24].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 50);
+    }
+
+    #[test]
+    fn entry_claiming_more_frames_than_it_has_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = source(dir.path(), "clip.gif", b"data");
+        let cache = FrameCache::new(dir.path().join("cache"));
+        cache.write(&src, &two_frame_animation()).unwrap();
+
+        let entry = cache.entry_path(&src).unwrap();
+        let mut bytes = fs::read(&entry).unwrap();
+        bytes[20..24].copy_from_slice(&9u32.to_le_bytes());
+        fs::write(&entry, &bytes).unwrap();
+
+        assert!(cache.read(&src).is_none());
+        assert!(!entry.exists());
+    }
+
+    #[test]
+    fn frames_and_delays_survive_the_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = source(dir.path(), "clip.gif", b"data");
+        let cache = FrameCache::new(dir.path().join("cache"));
+        let animation = two_frame_animation();
+        cache.write(&src, &animation).unwrap();
+
+        let loaded = cache.read(&src).unwrap();
+        assert_eq!(loaded.frames[0].delay_ms, 50);
+        assert_eq!(loaded.frames[1].delay_ms, 70);
+        assert_eq!(loaded.frames[0].rgba, animation.frames[0].rgba);
     }
 
     #[test]
