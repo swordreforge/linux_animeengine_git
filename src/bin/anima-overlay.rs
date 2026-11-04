@@ -178,15 +178,17 @@ mod menu {
         CycleInput,
         ScaleDown,
         ScaleUp,
+        ToggleMirror,
         ToggleLock,
         Reset,
         Quit,
     }
 
-    const ITEMS: [Action; 6] = [
+    const ITEMS: [Action; 7] = [
         Action::CycleInput,
         Action::ScaleDown,
         Action::ScaleUp,
+        Action::ToggleMirror,
         Action::ToggleLock,
         Action::Reset,
         Action::Quit,
@@ -219,7 +221,7 @@ mod menu {
         pub open: bool,
         pub hover: Option<usize>,
         panel: Rect,
-        buttons: [Rect; 6],
+        buttons: [Rect; 7],
     }
 
     impl Menu {
@@ -228,7 +230,7 @@ mod menu {
                 open: false,
                 hover: None,
                 panel: empty_rect(),
-                buttons: [empty_rect(); 6],
+                buttons: [empty_rect(); 7],
             }
         }
 
@@ -238,8 +240,8 @@ mod menu {
             let sh = surface.1 as f32;
             let pad = 3.0;
             let bw = 48.0_f32.min((sw - 2.0 * pad).max(16.0));
-            let bh = ((sh - 2.0 * pad) / 6.0).clamp(10.0, 32.0);
-            let total = bh * 6.0;
+            let bh = ((sh - 2.0 * pad) / ITEMS.len() as f32).clamp(4.0, 32.0);
+            let total = bh * ITEMS.len() as f32;
             let ox = (x as f32 + 8.0).clamp(pad, (sw - bw - pad).max(pad));
             let oy = (y as f32 + 8.0).clamp(pad, (sh - total - pad).max(pad));
             self.panel = Rect {
@@ -368,6 +370,74 @@ mod menu {
                                 white,
                             );
                         }
+                    }
+                    Action::ToggleMirror => {
+                        let s = r * 1.35;
+                        let t = 1.2;
+                        // Mirror axis with unequal halves on either side.
+                        for edge in [
+                            Rect {
+                                x: cx - s,
+                                y: cy - s,
+                                w: s * 2.0,
+                                h: t,
+                            },
+                            Rect {
+                                x: cx - s,
+                                y: cy + s - t,
+                                w: s * 2.0,
+                                h: t,
+                            },
+                            Rect {
+                                x: cx - s,
+                                y: cy - s,
+                                w: t,
+                                h: s * 2.0,
+                            },
+                            Rect {
+                                x: cx + s - t,
+                                y: cy - s,
+                                w: t,
+                                h: s * 2.0,
+                            },
+                        ] {
+                            push_rect(&mut out, frame, edge, white);
+                        }
+                        let half = s - 1.5 * t;
+                        let tall = s * 2.0 - 2.0 * t;
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - t / 2.0,
+                                y: cy - s,
+                                w: t,
+                                h: s * 2.0,
+                            },
+                            white,
+                        );
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx - s + t,
+                                y: cy - s + t,
+                                w: half,
+                                h: tall,
+                            },
+                            [1.0, 1.0, 1.0, 0.5],
+                        );
+                        push_rect(
+                            &mut out,
+                            frame,
+                            Rect {
+                                x: cx + t / 2.0,
+                                y: cy - s + t,
+                                w: half,
+                                h: tall,
+                            },
+                            [1.0, 1.0, 1.0, 0.15],
+                        );
                     }
                     Action::ScaleDown => {
                         push_rect(
@@ -1141,6 +1211,7 @@ fn menu_action(state: &mut OverlayState, action: menu::Action) {
         }
         menu::Action::ScaleDown => current.nudge_scale(-10),
         menu::Action::ScaleUp => current.nudge_scale(10),
+        menu::Action::ToggleMirror => current.toggle_flip_h(),
         menu::Action::ToggleLock => current.toggle_locked(),
         menu::Action::Reset => current.request_reset(),
         menu::Action::Quit => current.request_quit(),

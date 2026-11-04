@@ -142,7 +142,8 @@ Interaction and control:
 - `examples/scan_workshop.rs` — scan a real workshop content dir and print what
   the app would see.
 - `anima-workshop` (bin, no extra features): `roots`, `libraries`, `list`,
-  `show <id>`, `download <id...>` (SteamCMD), `sync`; `web <id...>` with
+  `show <id>`, `download <id...>` (SteamCMD), `play <id> [asset]` (install if
+  needed, then run it in `anima-overlay`), `sync`; `web <id...>` with
   `--features workshop-web`.
 
 ## Verification
@@ -171,6 +172,10 @@ Interaction and control:
   `transform 0° flip_h true`; the surface is resized to the rotated size
   (output-fit, aspect preserved) and the transform is written back to
   `secondary_instances.json`.
+- Download → sync → playback loop: `anima-workshop play 3828587753` resolved the
+  installed item, picked its first asset and launched the overlay
+  (`[workshop] .../TETO12.apng → .../anima-overlay`), which kept running until
+  the 6 s test timeout. An uninstalled item would be downloaded first.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -396,4 +401,5 @@ anima-overlay-ctl --instance /path/a.apng mode full  # target a single instance
   frame-count region throttling/coarsening (+ optional auto step and configurable,
   runtime-tunable rectangle budgets) → in-surface right-click menu →
   Steam root/library discovery + `anima-workshop` CLI → SteamCMD download path →
-  SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray).
+  SteamCmd as a `WorkshopSource` (sync) → runtime rotate/mirror (ctl + tray +
+  menu) → `anima-workshop play` (download → sync → overlay).

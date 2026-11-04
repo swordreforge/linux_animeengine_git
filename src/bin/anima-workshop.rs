@@ -6,6 +6,7 @@
 //! anima-workshop list               # installed items + asset counts
 //! anima-workshop show <id>          # one item's directory and assets
 //! anima-workshop download <id...>   # via SteamCMD (STEAMCMD, STEAMCMD_DIR)
+//! anima-workshop play <id> [asset]  # install if needed, run in anima-overlay
 //! anima-workshop sync               # subscribed items, downloading missing ones
 //! anima-workshop web <id...>        # metadata (needs --features workshop-web)
 //! ```
@@ -36,6 +37,7 @@ fn main() -> ExitCode {
             None => usage(),
         },
         Some("download") => download(&args[1..]),
+        Some("play") => play(&args[1..]),
         Some("sync") => sync(),
         Some("web") => web(&args[1..]),
         _ => usage(),
@@ -44,7 +46,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|sync|web <id...>>"
+        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|play <id> [asset]|sync|web <id...>>"
     );
     ExitCode::FAILURE
 }
@@ -128,6 +130,80 @@ fn download(ids: &[String]) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Resolve an item, downloading it first if needed, then run it in the overlay.
+fn play(args: &[String]) -> ExitCode {
+    use anima_engine_rs::workshop::WorkshopSource;
+
+    let Some(id) = args.first().and_then(|value| value.parse::<u64>().ok()) else {
+        return usage();
+    };
+    let selector = args.get(1);
+
+    let dir = content_roots()
+        .into_iter()
+        .map(|root| root.join(id.to_string()))
+        .find(|path| path.is_dir())
+        .or_else(|| {
+            let steamcmd = anima_engine_rs::steamcmd::SteamCmd::detect()?;
+            match steamcmd.ensure_installed(id) {
+                Ok(path) => path,
+                Err(err) => {
+                    eprintln!("download of {id} failed: {err}");
+                    None
+                }
+            }
+        });
+    let Some(dir) = dir else {
+        eprintln!("item {id} is not installed and could not be downloaded");
+        return ExitCode::FAILURE;
+    };
+
+    let assets = workshop::scan_item(&dir);
+    let asset = match selector {
+        Some(needle) => assets
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(needle.as_str()))
+            })
+            .cloned(),
+        None => assets.first().cloned(),
+    };
+    let Some(asset) = asset else {
+        match selector {
+            Some(needle) => eprintln!("item {id} has no asset matching {needle:?}"),
+            None => eprintln!("item {id} has no playable asset"),
+        }
+        return ExitCode::FAILURE;
+    };
+
+    let overlay = overlay_binary();
+    eprintln!("[workshop] {} → {}", asset.display(), overlay.display());
+    match std::process::Command::new(&overlay).arg(&asset).status() {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(err) => {
+            eprintln!("could not launch {}: {err}", overlay.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Locate the overlay binary: `ANIMA_OVERLAY`, then a sibling, then `PATH`.
+fn overlay_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("ANIMA_OVERLAY") {
+        return PathBuf::from(path);
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join("anima-overlay");
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    PathBuf::from("anima-overlay")
 }
 
 /// Sync the Steam client's subscriptions, downloading anything missing through
