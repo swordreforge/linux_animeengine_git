@@ -498,13 +498,27 @@ Interaction and control:
       Verified: the spawned process logged `decoded 64 frame(s) at 1500x1125` and restored
       its instance, and a headless test proves the "already has an instance" lookup lines
       up with the real control files.
+- [x] **Liveness** (reported bug: open once, quit from the tray, then Play does nothing).
+      A control file outlives its process — it carries the *desired* state on purpose — so
+      the window's "the file exists ⇒ it is running" test was wrong, and after a tray quit
+      Play just rewrote a file nobody was reading. The overlay now writes `<slug>.pid`
+      (`<pid> <process name>`, `ControlState::announce`) at startup and clears it on exit,
+      and the window asks `ControlState::is_running`, which checks `/proc/<pid>` and
+      compares the recorded name against `comm` **by prefix** (Linux truncates `comm` to 15
+      bytes) so a recycled pid cannot pass. The panel marks each instance `●`/`○`, and the
+      poll fingerprint includes the `.pid` files, so starting or stopping an instance
+      refreshes the panel even when no control file changes.
+      Verified end to end on the reported cycle: open → `announced …/5e98d4bd8c627b31.pid`
+      holding `303954 anima-overlay` with the pid alive → quit through the control channel
+      (what the tray does) → **0 markers left** → open again → announced and decoded again
+      (that step silently did nothing before the fix). The two new unit tests cover the
+      round-trip and the recycled-pid case.
 - [ ] Not yet: Workshop **metadata is not cached on disk**. `fetch_meta` hits the keyless
       Steam API once per item per session and only the preview image is persisted
       (`~/.local/share/AnimaEngine/thumbnails/<id>.img`), so titles and view counts vanish
       offline and are re-fetched after every restart; a `<id>.json` next to the image with
-      a TTL would fix both. Also: a search field with IME, API-key browse/search, list-row
-      thumbnails once the library is big, and a process-liveness check for the overlay
-      panel (it lists control files, not running processes).
+      a TTL would fix both. Also: a search field with IME, API-key browse/search, and
+      list-row thumbnails once the library is big.
 
 ### Steam / Workshop
 

@@ -2294,6 +2294,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         menu: menu::Menu::new(),
         control_path: control_path.clone(),
     };
+    // Tell everyone else that this instance is alive: a control file alone cannot
+    // distinguish "running" from "ran once" (see `ControlState::is_running`).
+    match ControlState::announce(&state.control_path) {
+        Ok(path) => eprintln!("[overlay] announced {}", path.display()),
+        Err(error) => eprintln!("[overlay] could not announce liveness: {error}"),
+    }
     event_queue.roundtrip(&mut state)?;
     // Configures the input region for the restored mode (Opaque builds the
     // per-pixel region; PassThrough installs the empty one).
@@ -2939,6 +2945,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Safety net: keep the last geometry even if we exit mid-interaction.
     persist_geometry(&state);
+    // ...and stop claiming to be alive, so the window spawns a new instance instead of
+    // writing into a file nobody reads.
+    ControlState::clear_announce(&state.control_path);
 
     Ok(())
 }

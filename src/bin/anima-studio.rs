@@ -153,6 +153,9 @@ struct OverlayInstance {
     label: String,
     path: PathBuf,
     state: ControlState,
+    /// Whether a process actually owns this control file right now
+    /// (`ControlState::is_running` — the file outlives the process).
+    running: bool,
 }
 
 /// What the overlay panel can ask for. Every one of these bumps the generation, exactly
@@ -181,6 +184,16 @@ impl std::fmt::Display for InstanceLabel {
     }
 }
 
+/// `● running` / `○ stopped` in front of the label: the only thing that tells a live
+/// instance from one whose file is left over.
+fn instance_label(instance: &OverlayInstance) -> String {
+    format!(
+        "{} {}",
+        if instance.running { "●" } else { "○" },
+        instance.label
+    )
+}
+
 /// A cheap fingerprint of everything the panel shows: each control file and the persisted
 /// instance list, as `path:mtime:size`. Comparing it is much cheaper than rebuilding the
 /// instance list every tick, and it also catches an overlay changing its own state — a
@@ -203,6 +216,13 @@ fn overlay_signature() -> String {
         .iter()
         .filter_map(|path| stamp(path))
         .collect();
+    // Liveness markers too: an instance starting or stopping must refresh the panel even
+    // when nobody writes its control file.
+    parts.extend(
+        ControlState::announcements()
+            .iter()
+            .filter_map(|path| stamp(path)),
+    );
     parts.extend(stamp(&SecondaryState::user_path()));
     parts.sort();
     let mut out = String::new();
@@ -255,6 +275,7 @@ fn overlay_instances() -> Vec<OverlayInstance> {
             OverlayInstance {
                 label,
                 state: ControlState::load(&path),
+                running: ControlState::is_running(&path),
                 path,
             }
         })
@@ -820,11 +841,11 @@ impl Studio {
         panel = panel.push(pick_list(
             self.overlay
                 .iter()
-                .map(|instance| InstanceLabel(instance.label.clone()))
+                .map(|instance| InstanceLabel(instance_label(instance)))
                 .collect::<Vec<_>>(),
             self.overlay_selected
                 .and_then(|index| self.overlay.get(index))
-                .map(|instance| InstanceLabel(instance.label.clone())),
+                .map(|instance| InstanceLabel(instance_label(instance))),
             |label: InstanceLabel| Message::SelectOverlay(label.0),
         ));
 
@@ -918,7 +939,10 @@ impl Studio {
     fn play_on_overlay(&mut self, asset: &Path) {
         let key = anima_engine_rs::paths::canonical_path(&asset.to_string_lossy());
         let control = ControlState::path_for(Some(&key));
-        if control.is_file() {
+        // The control file survives the process, so "it exists" is not "it is running":
+        // ask the liveness marker instead, or a Play after the tray quit would write into
+        // a file nobody is reading and nothing would open.
+        if ControlState::is_running(&control) {
             let next = ControlState::load(&control).set_hidden(false);
             self.note = match next.save(&control) {
                 Ok(()) => format!("showing {} on the overlay", file_name(asset)),

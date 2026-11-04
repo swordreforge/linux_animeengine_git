@@ -205,6 +205,91 @@ impl ControlState {
         paths
     }
 
+    /// Liveness marker for one instance: `<slug>.pid` next to its control file.
+    ///
+    /// A control file cannot tell "this instance is running" from "this instance ran
+    /// once" — it survives the process, on purpose, because it carries the desired state.
+    /// So the overlay announces itself on startup and clears the marker on exit, and
+    /// everything else asks [`is_running`] before assuming anyone is listening.
+    pub fn announce_path(control: &Path) -> PathBuf {
+        control.with_extension("pid")
+    }
+
+    /// The name this process announces. Compared against `/proc/<pid>/comm`, which is
+    /// what keeps a recycled pid from being mistaken for an overlay.
+    pub fn announce_name() -> String {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "anima-overlay".to_string())
+    }
+
+    /// Write this process's marker for `control`.
+    pub fn announce(control: &Path) -> std::io::Result<PathBuf> {
+        let path = Self::announce_path(control);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            &path,
+            format!("{} {}\n", std::process::id(), Self::announce_name()),
+        )?;
+        Ok(path)
+    }
+
+    /// Remove the marker. Best effort: a killed process leaves a stale one behind, which
+    /// [`is_running`] still reports correctly.
+    pub fn clear_announce(control: &Path) {
+        let _ = std::fs::remove_file(Self::announce_path(control));
+    }
+
+    /// Is the process that owns `control` still alive?
+    pub fn is_running(control: &Path) -> bool {
+        let path = Self::announce_path(control);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let mut parts = text.split_whitespace();
+        let Some(pid) = parts.next().and_then(|pid| pid.parse::<u32>().ok()) else {
+            return false;
+        };
+        let expected = parts.next().unwrap_or("anima-overlay");
+        let proc_dir = PathBuf::from(format!("/proc/{pid}"));
+        if proc_dir.is_dir() {
+            // `/proc/<pid>/comm` is truncated to 15 bytes, so compare prefixes.
+            return std::fs::read_to_string(proc_dir.join("comm"))
+                .map(|comm| {
+                    let comm = comm.trim();
+                    !comm.is_empty() && (expected == comm || expected.starts_with(comm))
+                })
+                .unwrap_or(true);
+        }
+        // No procfs (not Linux): fall back to a fresh heartbeat.
+        std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| SystemTime::now().duration_since(time).ok())
+            .is_some_and(|age| age.as_secs() < 15)
+    }
+
+    /// Every liveness marker on disk, so a caller can notice an instance starting or
+    /// stopping rather than only its control file changing.
+    pub fn announcements() -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(paths::user_data_dir().join(CONTROL_DIR)) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "pid"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
     /// Fresh state with a current generation, used at overlay startup so stale
     /// flags from a previous session are not re-applied.
     pub fn fresh() -> Self {
@@ -498,6 +583,33 @@ mod tests {
         assert!(a.ends_with(format!("{slug}.json")));
         assert!(default.ends_with("default.json"));
         assert_eq!(ControlState::path(), default);
+    }
+
+    #[test]
+    fn announce_and_is_running_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let control = dir.path().join("abcdef0123456789.json");
+        assert!(!ControlState::is_running(&control), "no marker yet");
+
+        ControlState::announce(&control).unwrap();
+        assert!(ControlState::is_running(&control), "our own pid is alive");
+        assert!(ControlState::announce_path(&control).ends_with("abcdef0123456789.pid"));
+
+        ControlState::clear_announce(&control);
+        assert!(!ControlState::is_running(&control), "cleared");
+    }
+
+    #[test]
+    fn a_recycled_pid_is_not_an_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let control = dir.path().join("abcdef0123456789.json");
+        // This pid is alive (ours) but the name does not match.
+        std::fs::write(
+            ControlState::announce_path(&control),
+            format!("{} definitely-not-an-overlay\n", std::process::id()),
+        )
+        .unwrap();
+        assert!(!ControlState::is_running(&control));
     }
 
     #[test]
