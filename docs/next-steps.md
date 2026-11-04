@@ -61,6 +61,10 @@ replacement story; two trays while both exist during the transition.
 
 ## 2. Cache Workshop metadata on disk
 
+**Status: done** (`thumbnails/<id>.json` with a `fetched` stamp, a day long, stale-served when
+Steam is unreachable and marked in the pane; both branches verified — see `progress.md`).
+Left over: pruning entries whose item is no longer installed.
+
 **Why.** `fetch_meta` hits the keyless Steam API once per item per session; only the
 preview *image* is cached (`thumbnails/<id>.img`). Titles and view counts therefore
 disappear offline and are re-fetched after every restart.

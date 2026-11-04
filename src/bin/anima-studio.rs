@@ -33,6 +33,7 @@ use anima_engine_rs::workshop_web::WorkshopWeb;
 use iced::widget::button::{danger, primary, secondary, text as text_button};
 use iced::widget::{button, column, container, image, pick_list, row, scrollable, space, text};
 use iced::{Element, Length, Subscription, Task};
+use serde::{Deserialize, Serialize};
 
 const APP_TITLE: &str = "AnimaEngine";
 /// Wayland app id / X11 class. It matches `packaging/anima-engine-studio.desktop`, which
@@ -120,12 +121,47 @@ impl std::fmt::Display for Language {
 }
 
 /// Steam metadata for one item (keyless `GetPublishedFileDetails`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Meta {
+    #[serde(default)]
     title: String,
+    #[serde(default)]
     subscriptions: u64,
+    #[serde(default)]
     views: u64,
+    #[serde(default)]
     preview_url: String,
+    /// True when these values come from the cache because the API could not refresh them
+    /// (offline). Never stored: it describes this run, not the data.
+    #[serde(skip)]
+    stale: bool,
+}
+
+/// What `thumbnails/<id>.json` holds: the answer and when Steam gave it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedMeta {
+    /// Unix seconds of the answer.
+    fetched: u64,
+    details: Meta,
+}
+
+/// How long a cached answer is trusted before Steam is asked again.
+const META_TTL_SECS: u64 = 24 * 60 * 60;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// A clock that moved backwards counts as fresh rather than throwing the cache away.
+fn cache_is_fresh(fetched: u64, now: u64) -> bool {
+    now.saturating_sub(fetched) < META_TTL_SECS
+}
+
+fn meta_cache_path(id: u64) -> PathBuf {
+    thumb_dir().join(format!("{id}.json"))
 }
 
 /// A decoded preview. The handle is built **once**, when the item loads: every
@@ -315,7 +351,7 @@ fn thumb_dir() -> PathBuf {
     user_data_dir().join("thumbnails")
 }
 
-/// Keyless metadata fetch.
+/// Ask Steam (keyless `GetPublishedFileDetails`).
 fn fetch_meta(id: u64) -> Option<Meta> {
     let web = WorkshopWeb::new().ok()?;
     let details = web.fetch_published_file_details(&[id]).ok()?;
@@ -325,7 +361,52 @@ fn fetch_meta(id: u64) -> Option<Meta> {
         subscriptions: first.subscriptions,
         views: first.views,
         preview_url: first.preview_url,
+        stale: false,
     })
+}
+
+/// Metadata for `id`: the cache while it is fresh, otherwise Steam — and when Steam is not
+/// reachable the stale cache is still better than showing nothing (it is marked `stale` so
+/// the pane can say so).
+fn meta_for(id: u64) -> Option<Meta> {
+    let path = meta_cache_path(id);
+    let cached: Option<CachedMeta> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+    let now = now_secs();
+
+    if let Some(cached) = &cached
+        && cache_is_fresh(cached.fetched, now)
+    {
+        eprintln!(
+            "[studio] metadata {id}: cache ({}s old)",
+            now.saturating_sub(cached.fetched)
+        );
+        return Some(cached.details.clone());
+    }
+
+    match fetch_meta(id) {
+        Some(meta) => {
+            let entry = CachedMeta {
+                fetched: now,
+                details: meta.clone(),
+            };
+            if let Err(error) = ensure_dir(&thumb_dir()) {
+                eprintln!("[studio] could not create the metadata cache: {error}");
+            } else if let Err(error) = anima_engine_rs::paths::atomic_write_json(&path, &entry) {
+                eprintln!("[studio] could not cache the metadata: {error}");
+            }
+            eprintln!("[studio] metadata {id}: fetched");
+            Some(meta)
+        }
+        None => cached.map(|cached| {
+            eprintln!("[studio] metadata {id}: stale cache, Steam unreachable");
+            Meta {
+                stale: true,
+                ..cached.details
+            }
+        }),
+    }
 }
 
 /// `preview.*` in the item directory, else the cached CDN image, else fetch it.
@@ -365,7 +446,7 @@ fn preview_bytes(id: u64, dir: &Path, url: Option<&str>) -> Result<Vec<u8>, Stri
 
 /// Blocking work for one item: metadata, then a preview decoded to RGBA.
 fn load_item(id: u64, dir: PathBuf) -> Loaded {
-    let meta = fetch_meta(id);
+    let meta = meta_for(id);
     let url = meta.as_ref().map(|meta| meta.preview_url.clone());
     let thumb = preview_bytes(id, &dir, url.as_deref()).and_then(|bytes| {
         // `::image` — the crate, not the `iced::widget::image` function imported above.
@@ -777,16 +858,17 @@ impl Studio {
 
                 if let Some(meta) = self.meta.get(&id) {
                     pane = pane.push(text(meta.title.clone()).size(20));
-                    pane = pane.push(
-                        text(format!(
-                            "{} {} · {} {}",
-                            meta.subscriptions,
-                            self.i18n.tr("subscriptions"),
-                            meta.views,
-                            self.i18n.tr("views")
-                        ))
-                        .size(12),
+                    let mut line = format!(
+                        "{} {} · {} {}",
+                        meta.subscriptions,
+                        self.i18n.tr("subscriptions"),
+                        meta.views,
+                        self.i18n.tr("views")
                     );
+                    if meta.stale {
+                        line.push_str(&format!(" · {}", self.i18n.tr("cached")));
+                    }
+                    pane = pane.push(text(line).size(12));
                 }
 
                 pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
@@ -1150,6 +1232,42 @@ mod tests {
 
     /// The fingerprint must be stable while nothing changes, and cover the control dir.
     #[test]
+    fn the_metadata_cache_expires_after_a_day() {
+        let now = 1_000_000u64;
+        assert!(cache_is_fresh(now, now), "just fetched");
+        assert!(cache_is_fresh(now - (META_TTL_SECS - 1), now), "23h59m");
+        assert!(!cache_is_fresh(now - META_TTL_SECS, now), "a day old");
+        // A clock that jumped backwards must not invalidate everything.
+        assert!(cache_is_fresh(now + 60, now));
+    }
+
+    #[test]
+    fn cached_metadata_round_trips_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("42.json");
+        let entry = CachedMeta {
+            fetched: 1234,
+            details: Meta {
+                title: "hatsune".to_string(),
+                subscriptions: 3,
+                views: 2,
+                preview_url: "https://example.invalid/p.png".to_string(),
+                stale: true,
+            },
+        };
+        anima_engine_rs::paths::atomic_write_json(&path, &entry).unwrap();
+        let back: CachedMeta =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.fetched, 1234);
+        assert_eq!(back.details.title, "hatsune");
+        assert_eq!(back.details.subscriptions, 3);
+        assert!(
+            !back.details.stale,
+            "`stale` describes this run, so it is not written"
+        );
+    }
+
+    #[test]
     fn overlay_signature_is_stable_and_covers_the_control_dir() {
         let first = overlay_signature();
         assert_eq!(first, overlay_signature());
@@ -1187,8 +1305,48 @@ mod tests {
         );
         assert!(cached.is_file(), "the preview was not cached");
 
-        // Second load must not need the network.
+        // The metadata is cached too, and a second load must reuse it rather than asking
+        // Steam again: the `fetched` stamp would move if it had been rewritten.
+        let meta_cache = meta_cache_path(id);
+        assert!(meta_cache.is_file(), "the metadata was not cached");
+        let stamp = std::fs::read_to_string(&meta_cache).unwrap();
+        assert!(stamp.contains("fetched"));
+
         let second = load_item(id, dir);
         assert!(second.thumb.is_ok());
+        assert_eq!(
+            std::fs::read_to_string(&meta_cache).unwrap(),
+            stamp,
+            "the cache was refetched instead of reused"
+        );
+    }
+
+    /// Opt-in, and it needs a proxy that goes nowhere:
+    ///   HTTPS_PROXY=http://127.0.0.1:9 cargo test --features studio --bin anima-studio -- \
+    ///     --ignored --nocapture offline
+    /// Run the online test once first so the cache exists.
+    #[test]
+    #[ignore = "proxy: point HTTPS_PROXY at a closed port"]
+    fn offline_serves_the_stale_cache() {
+        let studio = Studio::boot();
+        let (id, _) = studio
+            .snapshot
+            .items
+            .iter()
+            .next()
+            .map(|(id, item)| (*id, item.path.clone()))
+            .expect("no Workshop item installed");
+        // Age the cache past the TTL, so the branch under test is "Steam is unreachable and
+        // the copy we have is old" rather than "the copy is fresh".
+        let path = meta_cache_path(id);
+        let mut entry: CachedMeta =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        entry.fetched = now_secs() - META_TTL_SECS - 60;
+        anima_engine_rs::paths::atomic_write_json(&path, &entry).unwrap();
+
+        let meta = meta_for(id).expect("the cache should still answer");
+        assert!(meta.stale, "useless data must be labelled stale");
+        assert!(!meta.title.is_empty());
+        eprintln!("[studio] offline: served \"{}\" from the cache", meta.title);
     }
 }

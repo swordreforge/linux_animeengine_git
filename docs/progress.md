@@ -528,12 +528,18 @@ search field with IME, and Workshop browse/search.
       state line carries `●`/`○`.
       Verified: with two overlays up, a focus claim for the running one made the window log
       `[studio] following overlay …/head spinning_0_20261022_034140.apng`.
-- [ ] Not yet: Workshop **metadata is not cached on disk**. `fetch_meta` hits the keyless
-      Steam API once per item per session and only the preview image is persisted
-      (`~/.local/share/AnimaEngine/thumbnails/<id>.img`), so titles and view counts vanish
-      offline and are re-fetched after every restart; a `<id>.json` next to the image with
-      a TTL would fix both. Also: a search field with IME, API-key browse/search, and
-      list-row thumbnails once the library is big.
+- [x] Workshop **metadata is cached on disk**: `thumbnails/<id>.json` holds Steam's answer
+      plus a `fetched` stamp, trusted for a day. A fresh entry is used without touching the
+      network, a stale one triggers a refetch, and when Steam is unreachable the old copy is
+      served anyway — marked `stale` so the pane appends `· 缓存`. The flag is
+      `#[serde(skip)]`: it describes this run, not the data.
+      Verified both branches: online logged `metadata …: fetched` then `cache (1s old)` with
+      the stamp unchanged (a second load does not refetch), and offline (cache aged past the
+      TTL plus a proxy pointing at a closed port) logged `stale cache, Steam unreachable` and
+      served `"teto face inspection"`. The TTL boundary is unit-tested, including a clock that
+      jumps backwards. Not done: pruning entries for items that are no longer installed.
+- [ ] Not yet: a search field with IME (which first needs selection keyed by id rather than
+      index), API-key browse/search, and list-row thumbnails once the library is big.
 
 ### Overlay lifecycle (`anima-shepherd`)
 
