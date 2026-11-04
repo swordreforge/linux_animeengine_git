@@ -1111,6 +1111,18 @@ search field with IME, and Workshop browse/search.
       the region and cut it by line number. One attempt in between wrote **nothing at all** because it
       crashed before the write — the safe failure — which is exactly why those scripts print what they are
       about to cut.
+- [x] The waiting row shows **how much has landed**, measured from the files themselves. The `.acf` keeps
+      a *final* size and writes it only when the download finishes, so a percentage computed from it would
+      be a guess dressed as a measurement — but bytes on disk grow as Steam works, and a number that moves is
+      a progress readout that cannot lie. The tooltip says what the number is, because "12.4 MB" with no
+      total is only honest if it says so.
+      Measured only for the items Steam still owes: walking a finished item's directory every second would be
+      work for nothing, and it happens on the same one-second tick that re-reads the `.acf`. A directory that
+      does not exist yet counts as zero bytes, which is the normal case for the first seconds of a download
+      and is asserted in the test.
+- [ ] A percentage would need a total, and while Steam is downloading there is nowhere honest to get one:
+      the `.acf` has no size until it is done, and the keyless `GetPublishedFileDetails` response is the
+      obvious candidate to check for a `file_size` field if a bar is wanted later.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

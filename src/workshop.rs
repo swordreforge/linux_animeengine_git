@@ -43,6 +43,31 @@ pub fn library_folders(vdf_text: &str) -> Result<Vec<PathBuf>> {
     Ok(block)
 }
 
+/// Bytes of one item's files on disk. This is the only progress signal there is while Steam works: the
+/// `.acf` records a *final* size once it finishes, so a percentage would be invented, but the number here
+/// grows as the download lands and that growth is the progress.
+pub fn item_bytes(content_root: &Path, id: u64) -> u64 {
+    fn walk(dir: &Path, total: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                walk(&entry.path(), total);
+            } else if let Ok(meta) = entry.metadata() {
+                *total += meta.len();
+            }
+        }
+    }
+
+    let mut total = 0;
+    walk(&content_root.join(id.to_string()), &mut total);
+    total
+}
+
 /// `<library>/steamapps/workshop/appworkshop_<appid>.acf`.
 pub fn acf_path(library: &Path) -> PathBuf {
     library
@@ -496,6 +521,21 @@ mod tests {
 	}
 }
 "#;
+
+    #[test]
+    fn item_bytes_adds_up_the_tree() {
+        let root = std::env::temp_dir().join(format!("anima-bytes-{}", std::process::id()));
+        let item = root.join("42").join("sub");
+        std::fs::create_dir_all(&item).unwrap();
+        std::fs::write(item.join("a.bin"), vec![0u8; 1500]).unwrap();
+        std::fs::write(root.join("42").join("b.bin"), vec![0u8; 500]).unwrap();
+
+        assert_eq!(item_bytes(&root, 42), 2000);
+        // A directory that is not there yet is zero bytes, not a panic: this runs for every item Steam
+        // is still fetching, most of which have no directory at all for the first few seconds.
+        assert_eq!(item_bytes(&root, 43), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn parses_library_folders() {

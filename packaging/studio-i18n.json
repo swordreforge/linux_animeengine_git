@@ -81,7 +81,9 @@
     "fetches another copy here with SteamCMD": "fetches another copy here with SteamCMD",
     "Downloading…": "Downloading…",
     "downloaded": "downloaded",
-    "the Steam client has this item": "the Steam client has this item"
+    "the Steam client has this item": "the Steam client has this item",
+    "downloading · {}": "downloading · {}",
+    "Steam is downloading this one; this is how much has landed so far": "Steam is downloading this one; this is how much has landed so far"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -165,7 +167,9 @@
     "fetches another copy here with SteamCMD": "用 SteamCMD 在这里再取一份副本",
     "Downloading…": "下载中…",
     "downloaded": "已下载",
-    "the Steam client has this item": "Steam 客户端已经拥有这一项"
+    "the Steam client has this item": "Steam 客户端已经拥有这一项",
+    "downloading · {}": "下载中 · {}",
+    "Steam is downloading this one; this is how much has landed so far": "Steam 正在下载这一项；这是已经落盘的量"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -249,7 +253,9 @@
     "fetches another copy here with SteamCMD": "用 SteamCMD 在這裡再取一份副本",
     "Downloading…": "下載中…",
     "downloaded": "已下載",
-    "the Steam client has this item": "Steam 客戶端已經擁有這一項"
+    "the Steam client has this item": "Steam 客戶端已經擁有這一項",
+    "downloading · {}": "下載中 · {}",
+    "Steam is downloading this one; this is how much has landed so far": "Steam 正在下載這一項；這是已經落盤的量"
   },
   "ja": {
     "Refresh": "更新",
@@ -333,6 +339,8 @@
     "fetches another copy here with SteamCMD": "SteamCMD でここに別のコピーを取得します",
     "Downloading…": "ダウンロード中…",
     "downloaded": "ダウンロード済み",
-    "the Steam client has this item": "Steam クライアントにこの項目があります"
+    "the Steam client has this item": "Steam クライアントにこの項目があります",
+    "downloading · {}": "ダウンロード中 · {}",
+    "Steam is downloading this one; this is how much has landed so far": "Steam がダウンロード中です。これは現在までに保存された量です"
   }
 }

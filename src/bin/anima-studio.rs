@@ -112,16 +112,23 @@ const WORKSHOP_POLL_MS: u64 = 1000;
 /// The download cell: it exists while the Steam client owes the item a download, and reports once it does
 /// not. Nothing to press either way — the download is the client's, and its progress is what Steam writes
 /// into the manifest — which is why this widget never has an `on_press` and always renders disabled.
-fn download_state(studio: &Studio, pending: bool) -> El<'_> {
+fn download_state(studio: &Studio, pending: bool, bytes: u64) -> El<'_> {
     tooltip(
         button(text(if pending {
-            studio.i18n.tr("Downloading…")
+            // The number that moves is the progress. No percentage: the `.acf` has no total until the
+            // download ends, so a percentage here would be a guess dressed as a measurement.
+            fill(
+                &studio.i18n.tr("downloading · {}"),
+                &[format!("{:.1} MB", bytes as f64 / 1_048_576.0)],
+            )
         } else {
             studio.i18n.tr("downloaded")
         }))
         .style(if pending { secondary } else { primary }),
         text(if pending {
-            studio.i18n.tr("Steam is downloading this one")
+            studio
+                .i18n
+                .tr("Steam is downloading this one; this is how much has landed so far")
         } else {
             studio.i18n.tr("the Steam client has this item")
         }),
@@ -1342,6 +1349,9 @@ struct Studio {
     /// Per-item ACF state, refreshed with the snapshot. `ItemState::pending` is Steam saying it still owes
     /// this item a download, which is the only progress signal available from outside the client.
     states: std::collections::BTreeMap<u64, anima_engine_rs::workshop::ItemState>,
+    /// Bytes on disk for the items Steam still owes, measured with the states: the only progress there is,
+    /// since the `.acf` records a final size only once the download finishes.
+    progress: std::collections::BTreeMap<u64, u64>,
     /// The selected Workshop item, by id: an index moves when the list changes under it.
     selected_item: Option<u64>,
     /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
@@ -1426,6 +1436,7 @@ impl Studio {
             i18n: I18n::discover(),
             snapshot: WorkshopSnapshot::default(),
             states: std::collections::BTreeMap::new(),
+            progress: std::collections::BTreeMap::new(),
             selected_item: None,
             query: String::new(),
             follow: true,
@@ -1473,14 +1484,28 @@ impl Studio {
     /// Re-read the client's `.acf` alone. This is the whole of "progress": one small file, and the only
     /// thing that changes while Steam works through a download queue.
     fn refresh_states(&mut self, roots: &[PathBuf]) {
-        self.states = anima_engine_rs::workshop::libraries_from_roots(roots)
-            .iter()
-            .find_map(|library| {
-                let text =
-                    std::fs::read_to_string(anima_engine_rs::workshop::acf_path(library)).ok()?;
-                anima_engine_rs::workshop::installed_items(&text).ok()
-            })
+        let library = anima_engine_rs::workshop::libraries_from_roots(roots)
+            .into_iter()
+            .find(|library| anima_engine_rs::workshop::acf_path(library).is_file());
+        let Some(library) = library else {
+            self.states.clear();
+            self.progress.clear();
+            return;
+        };
+        let acf = std::fs::read_to_string(anima_engine_rs::workshop::acf_path(&library));
+        self.states = acf
+            .ok()
+            .and_then(|text| anima_engine_rs::workshop::installed_items(&text).ok())
             .unwrap_or_default();
+        // Measured only for the items Steam still owes. Walking a finished item's tree every second would
+        // be work for nothing, and this is the number the row shows while it waits.
+        let content = anima_engine_rs::workshop::content_root(&library);
+        self.progress = self
+            .states
+            .iter()
+            .filter(|(_, state)| state.pending())
+            .map(|(id, _)| (*id, anima_engine_rs::workshop::item_bytes(&content, *id)))
+            .collect();
     }
 
     fn refresh(&mut self) {
@@ -2163,7 +2188,8 @@ impl Studio {
                 // button is the whole story — and once the client has the item, Steam's copy *is* the
                 // copy, so the cell reports instead of offering a second one.
                 if subscribed {
-                    actions = actions.push(download_state(self, pending));
+                    let bytes = self.progress.get(&id).copied().unwrap_or(0);
+                    actions = actions.push(download_state(self, pending, bytes));
                 }
                 // One button whose word says which way the toggle goes. The state is the Steam client's
                 // own list, so it cannot drift from what Steam thinks — and the tooltip says where the
@@ -2267,7 +2293,11 @@ impl Studio {
                         // Present only once the client has it: there is no download to offer before
                         // that, and afterwards the client's copy is the copy.
                         if subscribed {
-                            download_state(self, pending)
+                            download_state(
+                                self,
+                                pending,
+                                self.progress.get(&id).copied().unwrap_or(0),
+                            )
                         } else {
                             space().into()
                         },
