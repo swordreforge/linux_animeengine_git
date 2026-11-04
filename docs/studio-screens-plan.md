@@ -1,9 +1,10 @@
 # The studio's tabs: a header strip, one column per screen
 
-Status: **steps 1 and 2 done.** The strip, the `Tab` field, the `Message::Tab` arm, the shared
-`frame()` and the picker gate are in, and 设置 / 诊断 carry their content. 工坊 is untouched — checked
-by screenshot after the change: the same two panes, the same search row, the same panel, the same
-empty state. 浮层 is still a placeholder.
+Status: **steps 1–2 done; the picker float is gone.** 设置 and 诊断 carry their content, 浮层 is the old
+panel as a page of its own (`tab_overlays`), and the workshop results are **inline** in the left
+column — no popup. Deleted with the float: `picker_layer`, `scrim`, `picker_in`, `open_picker`, the
+`picker` / `picker_motion` fields, and the two tests whose only subject was the popup's behaviour. The
+open question this file carried about "float or inline" is answered, by the user, in favour of inline.
 
 Revised on purpose, and the revision is the interesting part. The first draft of this file proposed a
 navigation rail with four destinations and a table of per-screen state — heavier than the idea needs,

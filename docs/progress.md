@@ -943,6 +943,16 @@ search field with IME, and Workshop browse/search.
       override and the note saying so when it is set. 診断 (诊断) prints version, roots, installed count,
       catalog, shepherd state, the D-Bus name, the thumbnail directory and the palette path, with a
       `Copy all` for bug reports. 823 source strings, four languages.
+- [x] The picker float is gone. The workshop results are inline in the left column, as asked: the
+      search row, then `已安装 · 9/9` (or `搜索 · N` with `‹ n/T ›` while Steam results are up), then the
+      rows themselves — and the `浮层` panel moved to a tab of its own (`tab_overlays`). Deleted with
+      the float: `picker_layer`, `scrim`, `picker_in`, `open_picker`, the `picker` / `picker_motion`
+      fields, the two messages that only opened and closed it, the two tests whose only subject was its
+      behaviour, and the `stack!` layer the frame used to build. `frame()` is now just header, strip,
+      body, status.
+      What it looks like: the rows read as Steam titles — `Kipfel touch the screen`, `Cute Dancing GIFs`,
+      `kasane teto hooked trend` — instead of file names, which is the metadata batch from earlier doing
+      its job somewhere visible.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

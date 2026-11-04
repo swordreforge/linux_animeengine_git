@@ -34,8 +34,7 @@ use std::time::Instant;
 
 use iced::animation::{Animation, Easing};
 use iced::widget::{
-    button, column, container, image, pick_list, row, scrollable, space, stack, text, text_input,
-    tooltip,
+    button, column, container, image, pick_list, row, scrollable, space, text, text_input, tooltip,
 };
 use iced::{Element, Length, Subscription, Task};
 use iced_material::button::{filled as primary, outlined as secondary, text as text_button};
@@ -356,24 +355,6 @@ fn path_tip<'a>(path: &Path) -> Element<'a, Message, iced_material::Theme> {
         .into()
 }
 
-/// The click-catcher behind the floating picker: a scrim that takes the press which dismisses
-/// it. Esc would be nicer, but iced 0.14 removed the key-press API (see docs/next-steps.md).
-fn scrim(
-    _theme: &iced_material::Theme,
-    _status: iced::widget::button::Status,
-) -> iced::widget::button::Style {
-    iced::widget::button::Style {
-        background: Some(
-            iced::Color {
-                a: 0.35,
-                ..iced::Color::BLACK
-            }
-            .into(),
-        ),
-        ..Default::default()
-    }
-}
-
 /// Newtype so `pick_list` shows the native name while carrying the catalog code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Language(String);
@@ -636,14 +617,16 @@ const FRAME_MS: u64 = 16;
 const SPINNER_STEP_MS: u64 = 90;
 /// How long a preview takes to come up. Short on purpose: it removes the pop, it is not a show.
 const FADE_MS: u64 = 160;
-/// How long the picker takes to arrive. A touch longer than a fade, because it travels.
-const PICKER_MS: u64 = 200;
-
-/// The loading spinner. Four quadrants in step: enough at this size, and it needs no rotation
-/// support — iced cannot rotate text, and an image would mean shipping one.
-fn spinner_frame(elapsed_ms: u64) -> &'static str {
-    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
-    FRAMES[(elapsed_ms / SPINNER_STEP_MS % FRAMES.len() as u64) as usize]
+/// The spinner's phase and the preview fades both need a frame, and nothing else does: when
+/// this is false the window's subscription is a single one-second poll.
+fn fade_in(at: Instant, motion: bool) -> Animation<f32> {
+    if !motion {
+        return Animation::new(1.0);
+    }
+    Animation::new(0.0)
+        .duration(std::time::Duration::from_millis(FADE_MS))
+        .easing(Easing::EaseOutCubic)
+        .go(1.0, at)
 }
 
 /// Motion is decoration, and not everyone can use it. The preference is stored in `studio.json` and
@@ -674,28 +657,11 @@ fn resolve_reduce_motion(env: Option<&str>, stored: bool) -> bool {
     }
 }
 
-/// The spinner's phase and the preview fades both need a frame, and nothing else does: when
-/// this is false the window's subscription is a single one-second poll.
-fn fade_in(at: Instant, motion: bool) -> Animation<f32> {
-    if !motion {
-        return Animation::new(1.0);
-    }
-    Animation::new(0.0)
-        .duration(std::time::Duration::from_millis(FADE_MS))
-        .easing(Easing::EaseOutCubic)
-        .go(1.0, at)
-}
-
-/// The picker's entrance. `EaseOutBack` is the springy one: it goes slightly past the resting
-/// place and settles back, which is what the slide reads as.
-fn picker_in(at: Instant, motion: bool) -> Animation<f32> {
-    if !motion {
-        return Animation::new(1.0);
-    }
-    Animation::new(0.0)
-        .duration(std::time::Duration::from_millis(PICKER_MS))
-        .easing(Easing::EaseOutBack)
-        .go(1.0, at)
+/// The loading spinner. Four quadrants in step: enough at this size, and it needs no rotation
+/// support — iced cannot rotate text, and an image would mean shipping one.
+fn spinner_frame(elapsed_ms: u64) -> &'static str {
+    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+    FRAMES[(elapsed_ms / SPINNER_STEP_MS % FRAMES.len() as u64) as usize]
 }
 
 /// `● running` / `○ stopped` in front of the animation's **file name**: a full Steam path is a
@@ -827,10 +793,6 @@ enum Message {
     /// Ask for another page of the same search.
     RemotePage(u32),
     ShowInstalled,
-    /// Open the floating picker: typing, or the button in the search row.
-    OpenPicker,
-    /// Dismiss it without choosing: the ×, or a press anywhere outside it.
-    ClosePicker,
     /// Turn "follow the overlay you touched" on or off.
     ToggleFollow,
     Select(u64),
@@ -1254,10 +1216,6 @@ struct Studio {
     /// the results while a search is in flight used to let the answer arrive later and switch the
     /// list back to Steam, over whatever the user had moved on to.
     remote_request: u64,
-    /// Whether the floating picker is up. The workshop list used to be a permanent region of
-    /// the left column, where it squeezed the overlay panel; now it floats over the left half
-    /// and the panel owns the column.
-    picker: bool,
     note: String,
     meta: HashMap<u64, Meta>,
     thumbs: HashMap<u64, Thumb>,
@@ -1280,8 +1238,6 @@ struct Studio {
     /// because the two panes swap independently.
     item_fade: Animation<f32>,
     asset_fade: Animation<f32>,
-    /// How far the picker's entrance has come. Started once per opening, not per keystroke.
-    picker_motion: Animation<f32>,
     /// The status line: how far its fade has come, and what it said when the fade started.
     note_fade: Animation<f32>,
     shown_seen: String,
@@ -1325,7 +1281,6 @@ impl Studio {
             remote_query: None,
             remote_loading: false,
             remote_request: 0,
-            picker: false,
             note: String::new(),
             meta: HashMap::new(),
             thumbs: HashMap::new(),
@@ -1338,7 +1293,6 @@ impl Studio {
             // Start settled: nothing fades in until something actually arrives.
             item_fade: Animation::new(1.0),
             asset_fade: Animation::new(1.0),
-            picker_motion: Animation::new(1.0),
             note_fade: Animation::new(1.0),
             shown_seen: String::new(),
             motion: motion_enabled(),
@@ -1664,7 +1618,6 @@ impl Studio {
                 self.remote_cursors = vec![None];
                 self.remote_next = None;
                 self.remote_total = 0;
-                self.open_picker();
                 return self.goto_remote_page(1);
             }
             Message::RemotePage(page) => return self.goto_remote_page(page),
@@ -1691,7 +1644,6 @@ impl Studio {
                     count => format!("{count} Workshop result(s)"),
                 };
                 self.remote = Some(loaded.rows);
-                self.open_picker();
             }
             Message::RemoteResults(request, _, Err(error)) => {
                 if request != self.remote_request {
@@ -1701,15 +1653,8 @@ impl Studio {
                 self.remote = None;
                 self.remote_note = error;
             }
-            // The button that opens the list and the button that comes back from Steam results mean
-            // the same thing: the installed list. They went through different code, so "installed"
-            // meant one of two things depending on which one you pressed.
+            // Back to the installed list, from the Steam results.
             Message::ShowInstalled => self.leave_remote(),
-            Message::OpenPicker => {
-                self.leave_remote();
-                self.open_picker();
-            }
-            Message::ClosePicker => self.picker = false,
             Message::Select(id) => {
                 // A different item means a different set of assets: the one on show, and the
                 // parameters staged for it, belong to the old item and go with it.
@@ -1717,8 +1662,6 @@ impl Studio {
                     self.previewed_asset = None;
                     self.staged = None;
                 }
-                // Choosing is what the picker is for, so choosing closes it.
-                self.picker = false;
                 self.selected_item = Some(id);
                 // A remote result has no directory yet; its preview comes from the CDN.
                 let dir = self
@@ -1884,9 +1827,7 @@ impl Studio {
         // kept in the shape of the code rather than in a comment.
         if self.tab != Tab::Workshop {
             let body: El<'_> = match self.tab {
-                Tab::Overlays => {
-                    self.tab_placeholder("Overlays get a row each here, with their own parameters.")
-                }
+                Tab::Overlays => self.tab_overlays(),
                 Tab::Settings => self.tab_settings(),
                 _ => self.tab_diagnostics(),
             };
@@ -2102,8 +2043,6 @@ impl Studio {
         let mut search = row![
             text_input(&placeholder, &self.query)
                 .on_input(Message::Search)
-                // Enter opens the list; typing alone must not (see `Message::Search`).
-                .on_submit(Message::OpenPicker)
                 // iced_material has no text_input catalog, but it does ship this style.
                 .style(iced_material::text_input::default)
                 .width(Length::Fill)
@@ -2122,15 +2061,8 @@ impl Studio {
                 .style(secondary)
                 .on_press(Message::SearchSteam),
         );
-        // The list lives in the floating picker now, so the search row is the way to it: this
-        // opens it on what is installed.
-        search = search.push(
-            button(text(self.i18n.tr("Installed")))
-                .style(if self.picker { primary } else { secondary })
-                .on_press(Message::OpenPicker),
-        );
 
-        let left = column![search, self.overlay_panel()]
+        let left = column![search, self.result_panel()]
             .width(Length::FillPortion(2))
             .spacing(10);
 
@@ -2179,24 +2111,7 @@ impl Studio {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        let Some(picker) = self.picker_layer() else {
-            return scene.into();
-        };
-        // The picker floats over the left half: the scene behind it, then a scrim that takes
-        // the press that dismisses it, then the picker itself.
-        stack![
-            scene,
-            button(space())
-                .style(scrim)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .on_press(Message::ClosePicker),
-            container(row![picker, space().width(Length::FillPortion(1))])
-                .padding(16)
-                .width(Length::Fill)
-                .height(Length::Fill),
-        ]
-        .into()
+        scene.into()
     }
 
     /// The tab strip, on its own row under the header rather than inside it: the header already
@@ -2228,12 +2143,6 @@ impl Studio {
             });
         }
         strip.into()
-    }
-
-    /// An honest empty tab: a glyph and a sentence saying what will live there, rather than a blank
-    /// pane that reads as a bug.
-    fn tab_placeholder(&self, note: &str) -> El<'_> {
-        placeholder("▤", note.to_string(), Length::Fill).into()
     }
 
     /// The Steam key and the motion switch, writing `studio.json` immediately. The stored key is never
@@ -2350,6 +2259,75 @@ impl Studio {
         ]
     }
 
+    /// The list, where it is read: installed items, or the Steam results, in the left column of the
+    /// workshop tab. It used to float over the window in a popup; the results belong where the search
+    /// is, not behind an extra layer to dismiss.
+    fn result_panel(&self) -> El<'_> {
+        let installed = self.filtered_installed();
+        let count = match &self.remote {
+            Some(rows) => rows.len(),
+            None => installed.len(),
+        };
+        let title = if self.remote.is_some() {
+            format!("{} · {count}", self.i18n.tr("Search"))
+        } else {
+            format!(
+                "{} · {count}/{}",
+                self.i18n.tr("Installed"),
+                self.snapshot.len()
+            )
+        };
+        let mut header = row![text(title).size(14), space().width(Length::Fill)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+        if self.remote.is_some() {
+            let pages = page_count(self.remote_total, REMOTE_PER_PAGE);
+            let page = if self.remote_loading {
+                format!("{}/{} …", self.remote_page, pages)
+            } else {
+                format!("{}/{}", self.remote_page, pages)
+            };
+            header = header.push(text(page).size(11));
+            // No press handler is iced's disabled state, which is how the pager says "no more".
+            let back = button(text("‹")).style(secondary);
+            header = header.push(if self.remote_page > 1 {
+                back.on_press(Message::RemotePage(self.remote_page - 1))
+            } else {
+                back
+            });
+            let forward = button(text("›")).style(secondary);
+            header = header.push(if self.remote_next.is_some() {
+                forward.on_press(Message::RemotePage(self.remote_page + 1))
+            } else {
+                forward
+            });
+            header = header.push(
+                button(text(self.i18n.tr("Installed")))
+                    .style(secondary)
+                    .on_press(Message::ShowInstalled),
+            );
+        }
+        column![
+            header,
+            divider(Length::Fill, Length::Fixed(1.0)),
+            scrollable(self.result_rows(&installed))
+                .style(iced_material::scrollable::default)
+                .height(Length::Fill),
+        ]
+        .spacing(8)
+        .into()
+    }
+
+    /// The instances, as a page of their own: every overlay in one place instead of a narrow panel
+    /// squeezed under a list.
+    fn tab_overlays(&self) -> El<'_> {
+        scrollable(
+            column![text(self.i18n.tr("Overlay")).size(20), self.overlay_panel()].spacing(10),
+        )
+        .style(iced_material::scrollable::default)
+        .into()
+    }
+
     /// The installed items whose title, id or asset names match the query.
     fn filtered_installed(&self) -> Vec<(&u64, &WorkshopItem)> {
         self.snapshot
@@ -2437,96 +2415,6 @@ impl Studio {
             list = list.push(text("—").size(12));
         }
         list.into()
-    }
-
-    /// The floating workspace: the workshop browser over the left half of the window. It exists
-    /// because the list used to be a permanent region of the left column, where it both squeezed
-    /// the overlay panel and had no height to show more than a row or two.
-    fn picker_layer(&self) -> Option<El<'_>> {
-        // The picker belongs to the workshop tab, so it cannot float over the settings form.
-        if !self.picker || self.tab != Tab::Workshop {
-            return None;
-        }
-        let installed = self.filtered_installed();
-        let count = match &self.remote {
-            Some(rows) => rows.len(),
-            None => installed.len(),
-        };
-        // A count and a total, so the pager can say "2/37" without the user walking to the end to
-        // find out how many pages there are.
-        let title = if self.remote.is_some() {
-            format!("{} · {count}", self.i18n.tr("Search"))
-        } else {
-            // Not "Workshop": this list is what is installed on this machine, and calling it the
-            // Workshop made it look as if a search had run.
-            format!(
-                "{} · {count}/{}",
-                self.i18n.tr("Installed"),
-                self.snapshot.len()
-            )
-        };
-        let mut header = row![text(title).size(14), space().width(Length::Fill)]
-            .spacing(8)
-            .align_y(iced::Alignment::Center);
-        if self.remote.is_some() {
-            let pages = page_count(self.remote_total, REMOTE_PER_PAGE);
-            let page = if self.remote_loading {
-                format!("{}/{} …", self.remote_page, pages)
-            } else {
-                format!("{}/{}", self.remote_page, pages)
-            };
-            header = header.push(text(page).size(11));
-            // No press handler means no affordance, which is the disabled state iced gives us.
-            let back = button(text("‹")).style(secondary);
-            header = header.push(if self.remote_page > 1 {
-                back.on_press(Message::RemotePage(self.remote_page - 1))
-            } else {
-                back
-            });
-            let forward = button(text("›")).style(secondary);
-            header = header.push(if self.remote_next.is_some() {
-                forward.on_press(Message::RemotePage(self.remote_page + 1))
-            } else {
-                forward
-            });
-            header = header.push(
-                button(text(self.i18n.tr("Installed")))
-                    .style(secondary)
-                    .on_press(Message::ShowInstalled),
-            );
-        }
-        header = header.push(
-            button(text("×"))
-                .style(secondary)
-                .on_press(Message::ClosePicker),
-        );
-
-        let mut body = column![
-            scrollable(self.result_rows(&installed))
-                .style(iced_material::scrollable::default)
-                .height(Length::Fill)
-        ]
-        .spacing(8);
-        if !self.remote_note.is_empty() {
-            body = body.push(text(self.remote_note.clone()).size(11));
-        }
-        // The entrance: a short travel from the left with a little overshoot, so the picker lands
-        // rather than stopping. iced offers no way to fade a container, so the slide carries it.
-        let progress = self.eased(&self.picker_motion);
-        let slide = 10.0 * (1.0 - progress);
-        Some(
-            container(column![header, divider(Length::Fill, Length::Fixed(1.0)), body].spacing(10))
-                .style(iced_material::container::surface_container_low)
-                .padding(iced::Padding {
-                    top: 12.0,
-                    right: 12.0,
-                    bottom: 12.0,
-                    left: 12.0 + slide,
-                })
-                .width(Length::FillPortion(1))
-                .height(Length::Fill)
-                .into(),
-        )
     }
 
     /// The overlay control panel. Same channel as the tray, the portal and the CLI:
@@ -2907,7 +2795,6 @@ impl Studio {
         }
         self.item_fade.is_animating(self.now)
             || self.asset_fade.is_animating(self.now)
-            || self.picker_motion.is_animating(self.now)
             || self.note_fade.is_animating(self.now)
             || self
                 .thumbs
@@ -2917,15 +2804,6 @@ impl Studio {
                 .asset_previews
                 .values()
                 .any(|thumb| matches!(thumb, Thumb::Loading))
-    }
-
-    /// Open the picker, running its entrance only when it was closed: typing keeps it open, and
-    /// restarting the slide on every keystroke would make the list twitch under the cursor.
-    fn open_picker(&mut self) {
-        if !self.picker {
-            self.picker_motion = picker_in(self.now, self.motion);
-        }
-        self.picker = true;
     }
 
     /// How opaque a fade is right now, clamped to [0, 1]: an overshooting curve is right for a
@@ -3285,10 +3163,9 @@ mod tests {
         studio.remote_total = 70;
         studio.remote_next = Some("cursor".to_string());
 
-        // Enter, and the button next to the field, both mean the installed list — they used to
-        // mean "whatever was on screen last", which with Steam results up was Steam results.
-        let _ = studio.update(Message::OpenPicker);
-        assert!(studio.picker);
+        // Back to the installed list, from the Steam results. This used to mean "whatever was on
+        // screen last", which with Steam results up was Steam results.
+        let _ = studio.update(Message::ShowInstalled);
         assert!(
             studio.remote.is_none(),
             "the installed path kept showing Steam results"
@@ -3317,30 +3194,6 @@ mod tests {
             studio.remote.is_none(),
             "a reply to an abandoned search hijacked the list"
         );
-        assert!(!studio.picker);
-    }
-
-    #[test]
-    fn typing_filters_without_opening_the_picker() {
-        let mut studio = Studio::boot();
-        assert!(!studio.picker);
-
-        // A keystroke is not a request to see the list: it popped up under the cursor while the
-        // user was still typing the word.
-        let _ = studio.update(Message::Search("t".to_string()));
-        assert_eq!(studio.query, "t");
-        assert!(!studio.picker);
-
-        let _ = studio.update(Message::Search("teto".to_string()));
-        assert!(!studio.picker);
-
-        // Enter (and the button next to the field) is what opens it.
-        let _ = studio.update(Message::OpenPicker);
-        assert!(studio.picker);
-
-        // Choosing ends the search; the task this returns is dropped, not run.
-        let _ = studio.update(Message::Select(3799603054));
-        assert!(!studio.picker);
     }
 
     #[test]
@@ -3456,35 +3309,9 @@ mod tests {
         let still = fade_in(at, false);
         assert_eq!(still.interpolate_with(|value| value, at), 1.0);
         assert!(!still.is_animating(at));
-        assert_eq!(
-            picker_in(at, false).interpolate_with(|value| value, at),
-            1.0
-        );
 
         // With motion on, the same calls start at the bottom and are still running.
         assert_eq!(fade_in(at, true).interpolate_with(|value| value, at), 0.0);
-        assert!(picker_in(at, true).is_animating(at));
-    }
-
-    #[test]
-    fn the_picker_entrance_runs_once_per_opening() {
-        let mut studio = Studio::boot();
-        let at = Instant::now();
-        studio.now = at;
-        studio.open_picker();
-        assert!(studio.picker);
-
-        // Halfway in, the entrance has travelled somewhere.
-        let middle = at + std::time::Duration::from_millis(PICKER_MS / 2);
-        studio.now = middle;
-        let travelled = studio.eased(&studio.picker_motion);
-        assert!(travelled > 0.0 && travelled < 1.5, "was {travelled}");
-
-        // Opening again while it is open must not restart the slide: the value at the same
-        // instant has to be the same one.
-        studio.open_picker();
-        studio.now = middle;
-        assert_eq!(studio.eased(&studio.picker_motion), travelled);
     }
 
     #[test]
