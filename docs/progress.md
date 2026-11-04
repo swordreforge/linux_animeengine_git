@@ -672,12 +672,24 @@ search field with IME, and Workshop browse/search.
       It is read **once at boot**, so a wallpaper change shows up on the next launch —
       watching the file (notify) is the follow-up. The theme *type* is still `iced::Theme`, so no
       view signature changed.
-- [ ] Turning the theme type over is the real Material step, in this order: `Element<…,
-      iced_material::Theme>` through `view`/`overlay_panel`/`divider`; every `.style(closure)`
-      retyped; the four button styles rewritten against `theme.colors()`; explicit styles for
-      `text_input`/`pick_list`/`scrollable`/`text`, because iced's defaults are defined for
-      `iced::Theme` and stop compiling otherwise; then optionally the `iced_material` widgets
-      themselves for real MD3 shapes and elevation.
+- [ ] Turning the theme type over is the real Material step. What is now **verified** about
+      `iced_material` 0.14.2, which decides the order:
+      - it implements iced's `Catalog` for `Theme` on `button`, `container`, `pick_list`,
+        `scrollable` and `text` — so those keep their default styles and the "every text call
+        needs a style" worry is unfounded; `text_input` has **no** `Catalog` (only
+        `text_editor`), so the search box needs one explicit style;
+      - its button styles are `elevated`, `filled`, `filled_tonal`, `outlined`, `text` — there is
+        no `danger`, so the two destructive buttons need one ~10-line style built from
+        `theme.colors().error`;
+      - its `Theme` wants its own `ColorScheme` (each role carries colour/text/container), **not**
+        an `iced::Palette`, so the noctalia parser has to be retargeted to build a `ColorScheme`
+        before the type can switch. That is the first move, and it is the part that is easy to
+        underestimate.
+      Order: (1) parse noctalia into `ColorScheme`; (2) `type El<'a> = Element<'a, Message,
+      iced_material::Theme>` through the three view signatures and `divider`; (3) map our
+      `primary/secondary/danger/text_button` onto `filled/outlined/<own danger>/text`; (4) a
+      `text_input` style; (5) build green, then — as the second commit — swap in the
+      `iced_material` widgets for real MD3 shapes and elevation.
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 
