@@ -327,6 +327,41 @@ pub fn dead_markers(markers: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> 
         .collect()
 }
 
+/// Backups that `prune` left beside a JSON file, oldest first.
+pub fn prune_backups(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".before-prune-")
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect();
+    out.sort();
+    out.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Keep only the newest `keep` backups; returns the ones removed.
+pub fn trim_backups(dir: &Path, keep: usize) -> Vec<PathBuf> {
+    let backups = prune_backups(dir);
+    let drop = backups.len().saturating_sub(keep);
+    let mut removed = Vec::new();
+    for path in backups.into_iter().take(drop) {
+        if std::fs::remove_file(&path).is_ok() {
+            removed.push(path);
+        }
+    }
+    removed
+}
+
 /// Cache files named `<digits>.<ext>` whose Workshop item is no longer installed.
 pub fn orphaned_cache(
     cache_dir: &Path,
@@ -581,6 +616,25 @@ mod tests {
         assert!(dead.contains(&PathBuf::from("/c/unknown-dead.json")));
         assert!(!dead.contains(&PathBuf::from("/c/ok.json")));
         assert!(!dead.contains(&PathBuf::from("/c/unknown-live.json")));
+    }
+
+    #[test]
+    fn backups_are_trimmed_to_the_newest_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut made = Vec::new();
+        for index in 0..4 {
+            let path = dir.path().join(format!("state.json.before-prune-{index}"));
+            std::fs::write(&path, b"x").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            made.push(path);
+        }
+        assert_eq!(prune_backups(dir.path()).len(), 4);
+        assert_eq!(trim_backups(dir.path(), 2).len(), 2);
+        assert_eq!(
+            prune_backups(dir.path()),
+            made[2..].to_vec(),
+            "the newest pair survives"
+        );
     }
 
     #[test]

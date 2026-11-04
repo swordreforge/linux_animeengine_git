@@ -9,7 +9,8 @@
 //! anima-shepherd disable <animation>
 //! anima-shepherd stop <animation>     # ask that instance to quit (control channel)
 //! anima-shepherd forget <animation>   # drop its control file, markers and registry entry
-//! anima-shepherd prune [--dry-run]    # drop everything that points at a missing animation
+//! anima-shepherd prune [--dry-run] [--no-backup]
+//!                                     # drop everything that points at a missing animation
 //! anima-shepherd quit                 # stop supervising; the overlays keep playing
 //! ```
 //!
@@ -44,7 +45,10 @@ fn main() -> ExitCode {
         Some("disable") => with_animation(&args, |animation| set(animation, false)),
         Some("stop") => with_animation(&args, stop),
         Some("forget") => with_animation(&args, forget),
-        Some("prune") => prune(args.iter().any(|arg| arg == "--dry-run")),
+        Some("prune") => prune(
+            args.iter().any(|arg| arg == "--dry-run"),
+            !args.iter().any(|arg| arg == "--no-backup"),
+        ),
         Some("quit") => quit(),
         Some("help" | "-h" | "--help") => {
             usage();
@@ -66,7 +70,8 @@ fn main() -> ExitCode {
 fn usage() {
     eprintln!(
         "usage: anima-shepherd [run [--once]|status|list|enable <animation>|\
-         disable <animation>|stop <animation>|forget <animation>|prune [--dry-run]|quit]"
+         disable <animation>|stop <animation>|forget <animation>|\
+         prune [--dry-run] [--no-backup]|quit]"
     );
 }
 
@@ -137,7 +142,7 @@ fn quit() -> Result<(), String> {
 
 /// Drop every reference that points at a missing animation. Nothing whose animation still
 /// exists is ever touched, and both JSON files are backed up before they are rewritten.
-fn prune(dry_run: bool) -> Result<(), String> {
+fn prune(dry_run: bool, backup: bool) -> Result<(), String> {
     let registry_path = shepherd::registry_path();
     let persisted_path = anima_engine_rs::state::SecondaryState::user_path();
     let mut registry = Registry::load(&registry_path);
@@ -201,15 +206,28 @@ fn prune(dry_run: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0);
-    for path in [&registry_path, &persisted_path] {
-        let backup = PathBuf::from(format!("{}.before-prune-{stamp}", path.display()));
-        if let Err(error) = std::fs::copy(path, &backup) {
-            eprintln!("[shepherd] could not back up {}: {error}", path.display());
+    if backup {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        for path in [&registry_path, &persisted_path] {
+            let target = PathBuf::from(format!("{}.before-prune-{stamp}", path.display()));
+            if let Err(error) = std::fs::copy(path, &target) {
+                eprintln!("[shepherd] could not back up {}: {error}", path.display());
+            }
         }
+        // One pair is enough: the rest are the same two files from earlier runs.
+        let dir = registry_path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let dropped = shepherd::trim_backups(&dir, 2);
+        if !dropped.is_empty() {
+            println!("kept the newest backup pair (dropped {})", dropped.len());
+        }
+    } else {
+        println!("(no backup: --no-backup)");
     }
 
     registry

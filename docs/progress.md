@@ -596,6 +596,11 @@ search field with IME, and Workshop browse/search.
       Verified with fake animations: the dry run listed exactly one registry path, one control
       file and one stale focus marker; the real run removed 2 files and 1 reference and left
       the 16 real control files alone; afterwards `prune` says `nothing to prune`.
+- [x] `prune` takes `--no-backup` (for a machine that already has a backup), and by default
+      it keeps only the newest pair: after taking the copies it calls `trim_backups(dir, 2)`,
+      so repeated prunes no longer accumulate `*.before-prune-*` files. Verified: six old
+      backups became two (`kept the newest backup pair (dropped 6)`) and a `--no-backup` run
+      left the count unchanged while printing `(no backup: --no-backup)`.
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 
