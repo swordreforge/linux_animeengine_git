@@ -775,10 +775,28 @@ search field with IME, and Workshop browse/search.
       geometry, i.e. fighting iced's layout, for maybe 10% of the feel over a per-row fade), and
       reduced-motion support (iced does not expose the system setting — it would have to be an env
       var or a setting of ours; worth doing before this ships widely).
-- [ ] The known flake, disclosed rather than hidden: `shepherd::tests::live_instances_cover_every_control_file`
-      reads the **real** control directory while other tests in the same process write it, so it
-      fails roughly one run in three (it passes on its own). The fix is a test-side lock around
-      the tests that touch the real data directory — not done here.
+- [x] The picker arrives instead of appearing: a 200ms slide in from the left on `EaseOutBack`,
+      whose overshoot is what makes it land rather than stop. It runs once per *opening* — typing
+      keeps the picker up, and restarting the slide on every keystroke would make the list twitch
+      under the cursor — and the travel is carried by the container's left padding, because iced
+      offers no way to fade or offset a container (`.opacity` exists for `image` and a few others,
+      not for this).
+- [x] `ANIMA_NO_MOTION=1` turns all of it off: fades resolve instantly, the spinner holds a still
+      glyph, the picker does not slide, and **no frame subscription is ever started** — `animating()`
+      returns false before it looks at anything else, so this is structural rather than a matter of
+      measuring. Measured anyway: the window runs 2 scheduler ticks in 3s with the switch set, which
+      is the one-second overlay poll and nothing more. iced does not expose the desktop's own
+      reduced-motion setting, so this environment variable is the switch we have.
+- [ ] Not done, and why: the status line still does not fade when the note changes. `note` is
+      assigned in about twenty places, and a fade has to start in the same message as the assignment
+      that changed it, so those writes need to go through one setter first. That is its own small
+      change, not a rider on this one.
+- [x] The flake is fixed, and it was exactly what it looked like: `live_instances_cover_every_control_file`
+      compares two scans of the **real** control directory, and `an_intentional_quit_stops_supervision`
+      creates and removes a control file in the same process — a directory scan is not atomic, so a
+      write landing between the two reads broke the comparison about one run in three. The tests that
+      touch that directory now take a module-level `CONTROL_DIR` mutex (poison-tolerant, so one
+      failing test cannot cascade), and six consecutive full runs of the lib suite are green.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

@@ -587,6 +587,8 @@ const FRAME_MS: u64 = 16;
 const SPINNER_STEP_MS: u64 = 90;
 /// How long a preview takes to come up. Short on purpose: it removes the pop, it is not a show.
 const FADE_MS: u64 = 160;
+/// How long the picker takes to arrive. A touch longer than a fade, because it travels.
+const PICKER_MS: u64 = 200;
 
 /// The loading spinner. Four quadrants in step: enough at this size, and it needs no rotation
 /// support — iced cannot rotate text, and an image would mean shipping one.
@@ -595,12 +597,34 @@ fn spinner_frame(elapsed_ms: u64) -> &'static str {
     FRAMES[(elapsed_ms / SPINNER_STEP_MS % FRAMES.len() as u64) as usize]
 }
 
+/// Motion is decoration, and not everyone can use it. `ANIMA_NO_MOTION=1` turns all of it off:
+/// the fades resolve immediately, the spinner holds still and the picker does not slide. iced
+/// does not expose the desktop's own setting, so this is the switch we have.
+fn motion_enabled() -> bool {
+    std::env::var_os("ANIMA_NO_MOTION").is_none()
+}
+
 /// The spinner's phase and the preview fades both need a frame, and nothing else does: when
 /// this is false the window's subscription is a single one-second poll.
-fn fade_in(at: Instant) -> Animation<f32> {
+fn fade_in(at: Instant, motion: bool) -> Animation<f32> {
+    if !motion {
+        return Animation::new(1.0);
+    }
     Animation::new(0.0)
         .duration(std::time::Duration::from_millis(FADE_MS))
         .easing(Easing::EaseOutCubic)
+        .go(1.0, at)
+}
+
+/// The picker's entrance. `EaseOutBack` is the springy one: it goes slightly past the resting
+/// place and settles back, which is what the slide reads as.
+fn picker_in(at: Instant, motion: bool) -> Animation<f32> {
+    if !motion {
+        return Animation::new(1.0);
+    }
+    Animation::new(0.0)
+        .duration(std::time::Duration::from_millis(PICKER_MS))
+        .easing(Easing::EaseOutBack)
         .go(1.0, at)
 }
 
@@ -1044,6 +1068,10 @@ struct Studio {
     /// because the two panes swap independently.
     item_fade: Animation<f32>,
     asset_fade: Animation<f32>,
+    /// How far the picker's entrance has come. Started once per opening, not per keystroke.
+    picker_motion: Animation<f32>,
+    /// Whether motion is allowed at all (see [`motion_enabled`]).
+    motion: bool,
     pending_remove: Option<u64>,
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
@@ -1083,6 +1111,8 @@ impl Studio {
             // Start settled: nothing fades in until something actually arrives.
             item_fade: Animation::new(1.0),
             asset_fade: Animation::new(1.0),
+            picker_motion: Animation::new(1.0),
+            motion: motion_enabled(),
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
@@ -1248,13 +1278,13 @@ impl Studio {
             Message::Search(query) => {
                 self.query = query;
                 // Typing is how you look for something, so it brings the picker up.
-                self.picker = true;
+                self.open_picker();
             }
             Message::ClearSearch => self.query.clear(),
             Message::SearchSteam => {
                 let query = search_text(&self.query);
                 self.remote_note = "searching the Workshop…".to_string();
-                self.picker = true;
+                self.open_picker();
                 return Task::perform(async move { fetch_remote(query) }, Message::RemoteResults);
             }
             Message::RemoteResults(Ok(rows)) => {
@@ -1263,7 +1293,7 @@ impl Studio {
                     count => format!("{count} Workshop result(s)"),
                 };
                 self.remote = Some(rows);
-                self.picker = true;
+                self.open_picker();
             }
             Message::RemoteResults(Err(error)) => {
                 self.remote = None;
@@ -1272,9 +1302,9 @@ impl Studio {
             Message::ShowInstalled => {
                 self.remote = None;
                 self.remote_note.clear();
-                self.picker = true;
+                self.open_picker();
             }
-            Message::OpenPicker => self.picker = true,
+            Message::OpenPicker => self.open_picker(),
             Message::ClosePicker => self.picker = false,
             Message::Select(id) => {
                 // A different item means a different set of assets: the one on show, and the
@@ -1300,7 +1330,7 @@ impl Studio {
                     self.meta.insert(id, meta);
                 }
                 if thumb.is_ok() && self.selected_item == Some(id) {
-                    self.item_fade = fade_in(self.now);
+                    self.item_fade = fade_in(self.now, self.motion);
                 }
                 self.thumbs.insert(
                     id,
@@ -1395,7 +1425,7 @@ impl Studio {
             Message::SelectAsset(asset) => return self.select_asset(asset),
             Message::AssetPreview(asset, loaded) => {
                 if loaded.is_ok() {
-                    self.asset_fade = fade_in(self.now);
+                    self.asset_fade = fade_in(self.now, self.motion);
                 }
                 self.asset_previews.insert(
                     asset,
@@ -1472,7 +1502,7 @@ impl Studio {
                     }
                     Some(Thumb::Loading) => {
                         pane = pane.push(placeholder(
-                            spinner_frame(self.spin_ms),
+                            self.spinner(),
                             "…".to_string(),
                             Length::Fixed(PREVIEW_HEIGHT),
                         ));
@@ -1602,7 +1632,7 @@ impl Studio {
                     }
                     Some(Thumb::Loading) => {
                         pane = pane.push(placeholder(
-                            spinner_frame(self.spin_ms),
+                            self.spinner(),
                             "…".to_string(),
                             Length::Fixed(PREVIEW_HEIGHT),
                         ));
@@ -1859,10 +1889,19 @@ impl Studio {
         if !self.remote_note.is_empty() {
             body = body.push(text(self.remote_note.clone()).size(11));
         }
+        // The entrance: a short travel from the left with a little overshoot, so the picker lands
+        // rather than stopping. iced offers no way to fade a container, so the slide carries it.
+        let progress = self.eased(&self.picker_motion);
+        let slide = 10.0 * (1.0 - progress);
         Some(
             container(column![header, divider(Length::Fill, Length::Fixed(1.0)), body].spacing(10))
                 .style(iced_material::container::surface_container_low)
-                .padding(12)
+                .padding(iced::Padding {
+                    top: 12.0,
+                    right: 12.0,
+                    bottom: 12.0,
+                    left: 12.0 + slide,
+                })
                 .width(Length::FillPortion(1))
                 .height(Length::Fill)
                 .into(),
@@ -2151,7 +2190,7 @@ impl Studio {
             }
             Some(Thumb::Loading) => {
                 area = area.push(placeholder(
-                    spinner_frame(self.spin_ms),
+                    self.spinner(),
                     "…".to_string(),
                     Length::Fixed(PREVIEW_HEIGHT),
                 ));
@@ -2239,10 +2278,15 @@ impl Studio {
     }
 
     /// Whether anything is moving: a spinner needs frames, and so does an unfinished fade.
-    /// Nothing else does, so an idle window asks for no frames at all.
+    /// Nothing else does, so an idle window asks for no frames at all — and with motion off,
+    /// nothing ever does.
     fn animating(&self) -> bool {
+        if !self.motion {
+            return false;
+        }
         self.item_fade.is_animating(self.now)
             || self.asset_fade.is_animating(self.now)
+            || self.picker_motion.is_animating(self.now)
             || self
                 .thumbs
                 .values()
@@ -2253,10 +2297,33 @@ impl Studio {
                 .any(|thumb| matches!(thumb, Thumb::Loading))
     }
 
-    /// How opaque a fade is right now.
+    /// Open the picker, running its entrance only when it was closed: typing keeps it open, and
+    /// restarting the slide on every keystroke would make the list twitch under the cursor.
+    fn open_picker(&mut self) {
+        if !self.picker {
+            self.picker_motion = picker_in(self.now, self.motion);
+        }
+        self.picker = true;
+    }
+
+    /// How opaque a fade is right now, clamped to [0, 1]: an overshooting curve is right for a
+    /// position and wrong for an opacity.
     fn fade(&self, animation: &Animation<f32>) -> f32 {
-        let value: f32 = animation.interpolate_with(|value| value, self.now);
-        value.clamp(0.0, 1.0)
+        self.eased(animation).clamp(0.0, 1.0)
+    }
+
+    /// A curve's value right now, unclamped so an overshoot can be seen (and used as travel).
+    fn eased(&self, animation: &Animation<f32>) -> f32 {
+        animation.interpolate_with(|value| value, self.now)
+    }
+
+    /// The spinner's current glyph: one frame of the cycle, or a still one when motion is off.
+    fn spinner(&self) -> &'static str {
+        if self.motion {
+            spinner_frame(self.spin_ms)
+        } else {
+            "▦"
+        }
     }
 
     /// The panel follows the control files on its own; the Refresh buttons are for
@@ -2555,9 +2622,46 @@ mod tests {
     }
 
     #[test]
+    fn no_motion_settles_everything_at_once() {
+        let at = Instant::now();
+        let still = fade_in(at, false);
+        assert_eq!(still.interpolate_with(|value| value, at), 1.0);
+        assert!(!still.is_animating(at));
+        assert_eq!(
+            picker_in(at, false).interpolate_with(|value| value, at),
+            1.0
+        );
+
+        // With motion on, the same calls start at the bottom and are still running.
+        assert_eq!(fade_in(at, true).interpolate_with(|value| value, at), 0.0);
+        assert!(picker_in(at, true).is_animating(at));
+    }
+
+    #[test]
+    fn the_picker_entrance_runs_once_per_opening() {
+        let mut studio = Studio::boot();
+        let at = Instant::now();
+        studio.now = at;
+        studio.open_picker();
+        assert!(studio.picker);
+
+        // Halfway in, the entrance has travelled somewhere.
+        let middle = at + std::time::Duration::from_millis(PICKER_MS / 2);
+        studio.now = middle;
+        let travelled = studio.eased(&studio.picker_motion);
+        assert!(travelled > 0.0 && travelled < 1.5, "was {travelled}");
+
+        // Opening again while it is open must not restart the slide: the value at the same
+        // instant has to be the same one.
+        studio.open_picker();
+        studio.now = middle;
+        assert_eq!(studio.eased(&studio.picker_motion), travelled);
+    }
+
+    #[test]
     fn a_fade_starts_transparent_and_ends_opaque() {
         let started = Instant::now();
-        let fade = fade_in(started);
+        let fade = fade_in(started, true);
 
         let at_start: f32 = fade.interpolate_with(|value| value, started);
         assert_eq!(at_start, 0.0);

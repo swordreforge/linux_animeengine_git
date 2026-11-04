@@ -443,6 +443,19 @@ pub fn stale_markers() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    /// What keeps the tests that touch the *real* control directory from running next to each
+    /// other. A directory scan is not atomic, so one test's transient control file makes another
+    /// test's two enumerations disagree — which is exactly how this suite used to flake.
+    static CONTROL_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`CONTROL_DIR`], surviving a poisoned lock: a panic in one test should not turn every
+    /// later test into a second panic.
+    fn control_dir_lock() -> std::sync::MutexGuard<'static, ()> {
+        CONTROL_DIR
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn registry_with(entries: &[(&str, bool)]) -> Registry {
         Registry {
             instances: entries
@@ -612,6 +625,7 @@ mod tests {
 
     #[test]
     fn an_intentional_quit_stops_supervision() {
+        let _guard = control_dir_lock();
         // Needs a real control file (there is no directory override), so it uses an animation
         // path unique to this test and removes what it wrote.
         let dir = tempfile::tempdir().unwrap();
@@ -660,6 +674,9 @@ mod tests {
 
     #[test]
     fn live_instances_cover_every_control_file() {
+        // The assertion compares two scans of a live directory, so nothing else may write to it
+        // in between.
+        let _guard = control_dir_lock();
         let live = live_instances();
         assert_eq!(live.len(), ControlState::instances().len());
         for instance in &live {
@@ -730,6 +747,7 @@ mod tests {
 
     #[test]
     fn dead_markers_and_orphaned_cache() {
+        let _guard = control_dir_lock();
         let dir = tempfile::tempdir().unwrap();
         let dead = dir.path().join("dead.pid");
         std::fs::write(&dead, format!("{} anima-overlay\n", u32::MAX)).unwrap();
