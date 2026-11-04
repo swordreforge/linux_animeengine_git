@@ -826,11 +826,28 @@ search field with IME, and Workshop browse/search.
       `visibility` and `banned` as **`false`/`true`** where `GetPublishedFileDetails` reports `0`/`1`,
       so the response failed to parse at all — `invalid type: boolean \`false\`, expected i64`. Those
       three fields go through an `int_or_bool` deserializer now, which reads either shape.
-      Verified against the live API: a search for "teto" returns **50 rows with `total` 70**, the
-      second page returns **20** (50 + 20 = 70, exactly the total), the total does not move between
-      pages, and the two pages share no ids — the cursor is doing what the old `page=1` could not.
+      Verified against the live API: a search for "teto" returns **50 rows with `total` 70**, and the
+      second page follows the cursor. The first run made it look as if the pages tile the result set
+      exactly (50 + 20 = 70) — the entry below says why that was luck rather than a property.
       The ignored `searches_the_workshop_and_pages_with_the_cursor` keeps that honest, and is the
       reason to have such a test at all: it caught the parse failure before a user could.
+- [x] The Steam Web API key can come from a settings file now, which is what makes the window usable
+      when it is started from a desktop entry or a Flatpak — no shell has exported anything there.
+      `studio.json` (the studio's own settings, kept apart from the game's `settings.json`) holds
+      `steam_api_key`; `resolve_api_key` reads the environment first and the file second, because an
+      exported variable is the deliberate, temporary override, and it treats blank as absent so an
+      empty export cannot shadow a good file. The missing-key message names both, with the file's
+      shortened path and the URL to get a key.
+      Proved on this machine: the key was written to `~/.local/share/AnimaEngine/studio.json` (mode
+      600) and three live runs of the ignored search test pass with `STEAM_WEB_API_KEY` explicitly
+      unset — which is the desktop-launch case.
+- [x] The live test also taught a lesson about what a cursor guarantees, and the assertions were
+      changed to match it: page 2 came back with **26, then 14, then 26** rows across three runs of
+      the same query, because Steam's Workshop list is live and ranked and shifts between two
+      requests, so a cursor can repeat or skip an item. "50 + 20 = 70" is not a property; "the window
+      moved on" is. The test asserts that page 2 is non-empty and not identical to page 1, and a
+      comment says why the exact counts are not asserted. The window's pager inherits the same
+      caveat, which is the real reason it says "about".
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

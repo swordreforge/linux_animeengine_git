@@ -167,6 +167,25 @@ pub fn build_details_form(ids: &[u64]) -> String {
     form
 }
 
+/// Where the studio's own settings live (`studio.json` in the user data directory).
+pub fn studio_settings_path() -> std::path::PathBuf {
+    crate::paths::user_data_dir().join(crate::settings::STUDIO_SETTINGS_FILE)
+}
+
+/// The key to use, given what the environment and the settings file each had to say.
+///
+/// The environment wins: it is a deliberate, temporary override. The file is what makes the window
+/// work when it is started from a desktop entry or a Flatpak, where no shell exported anything.
+/// Blank on either side counts as absent — an empty variable, or an empty string in the file, is a
+/// mistake rather than a key.
+pub fn resolve_api_key(env: Option<String>, file: Option<String>) -> Option<String> {
+    [env, file]
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
 /// Keep this many ids per request (the endpoint caps request size).
 pub const MAX_IDS_PER_REQUEST: usize = 100;
 
@@ -189,11 +208,12 @@ mod web {
     }
 
     impl WorkshopWeb {
-        /// Build from `STEAM_WEB_API_KEY` (optional) and the public API root.
+        /// Build from `STEAM_WEB_API_KEY`, else `studio.json`, and the public API root.
         pub fn new() -> Result<Self> {
-            let key = std::env::var(API_KEY_ENV)
-                .ok()
-                .filter(|value| !value.trim().is_empty());
+            use crate::settings::ConfigFile;
+
+            let file = crate::settings::StudioSettings::load(&studio_settings_path()).steam_api_key;
+            let key = resolve_api_key(std::env::var(API_KEY_ENV).ok(), Some(file));
             Self::with_base_url(DEFAULT_BASE_URL, key)
         }
 
@@ -399,6 +419,22 @@ mod tests {
             web.query_files_page(3474900, None, 20, None),
             Err(Error::Http(_))
         ));
+    }
+
+    #[test]
+    fn the_environment_key_wins_over_the_file() {
+        let key = |env: Option<&str>, file: Option<&str>| {
+            resolve_api_key(env.map(str::to_string), file.map(str::to_string))
+        };
+        assert_eq!(key(Some("ENV"), Some("FILE")).as_deref(), Some("ENV"));
+        assert_eq!(key(None, Some("FILE")).as_deref(), Some("FILE"));
+        assert_eq!(key(None, None), None);
+        // Blank is absent, not a key: an empty export must not shadow a good file.
+        assert_eq!(key(Some("   "), Some("FILE")).as_deref(), Some("FILE"));
+        assert_eq!(key(Some(""), None), None);
+        assert_eq!(key(None, Some("  ")), None);
+        // The key is trimmed, because a pasted one often carries whitespace.
+        assert_eq!(key(Some(" KEY\n"), None).as_deref(), Some("KEY"));
     }
 
     #[test]

@@ -510,10 +510,13 @@ fn page_count(total: u64, per_page: u32) -> u32 {
 fn fetch_remote(query: Option<String>, cursor: Option<String>) -> Result<RemotePage, String> {
     let web = WorkshopWeb::new().map_err(|error| error.to_string())?;
     if !web.has_api_key() {
+        // Name both places it can live, and say which file: a status line that only complains is
+        // not much of a status line. The path is shortened because it is the long part.
         return Err(format!(
-            "{} is not set — browsing the Workshop needs a Steam Web API key \
-             (https://steamcommunity.com/dev/apikey); installed items work without one",
-            anima_engine_rs::workshop_web::API_KEY_ENV
+            "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web \
+             API key (https://steamcommunity.com/dev/apikey); installed items work without one",
+            anima_engine_rs::workshop_web::API_KEY_ENV,
+            shorten(&anima_engine_rs::workshop_web::studio_settings_path())
         ));
     }
     let page = web
@@ -2633,13 +2636,19 @@ mod tests {
 
     #[test]
     fn a_missing_api_key_is_explained() {
-        if std::env::var(anima_engine_rs::workshop_web::API_KEY_ENV).is_ok() {
+        // The key can come from the environment or from `studio.json`, so ask the same question the
+        // code asks rather than checking the environment alone.
+        if WorkshopWeb::new()
+            .map(|web| web.has_api_key())
+            .unwrap_or(false)
+        {
             return; // this machine has a key; nothing to assert
         }
         let error = fetch_remote(None, None).expect_err("no key means an error, not an empty list");
         assert!(error.contains("STEAM_WEB_API_KEY"), "{error}");
-        // The message has to say where to get one, or it is just a complaint.
+        // The message has to say where to get one and where to put it, or it is just a complaint.
         assert!(error.contains("steamcommunity.com/dev/apikey"), "{error}");
+        assert!(error.contains("studio.json"), "{error}");
         eprintln!("[studio] no key: {error}");
     }
 
@@ -2692,15 +2701,16 @@ mod tests {
             second.rows.len(),
             second.total
         );
-        assert_eq!(second.total, first.total, "the total moved between pages");
-        // A cursor that did nothing would hand back the same items, which is the failure this
-        // whole change exists to prevent.
-        let first_ids: std::collections::HashSet<u64> =
-            first.rows.iter().map(|row| row.id).collect();
+        // What a cursor actually guarantees: the window moved on. It does *not* guarantee the pages
+        // tile the result set — Steam's list is live and ranked, so it can shift between two
+        // requests and let a page repeat or skip an item. `50 + 20 = 70` looked like a property
+        // until the ranking moved and page 2 came back with 26 rows instead of 20.
+        assert!(!second.rows.is_empty(), "page 2 was empty");
         assert!(
-            second.rows.iter().all(|row| !first_ids.contains(&row.id)),
-            "page 2 repeated page 1 — the cursor was ignored"
+            second.rows != first.rows,
+            "page 2 is page 1 again — the cursor was ignored"
         );
+        assert!(second.total >= second.rows.len() as u64);
     }
 
     #[test]

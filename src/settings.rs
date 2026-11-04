@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 
 pub const SETTINGS_FILE: &str = "settings.json";
+/// The main window's own settings, kept apart from the game's [`Settings`].
+pub const STUDIO_SETTINGS_FILE: &str = "studio.json";
 pub const ANIM_META_FILE: &str = "anim_meta.json";
 pub const WINDOW_POSITION_FILE: &str = "window_position.json";
 pub const USER_FILE: &str = "user.json";
@@ -127,6 +129,23 @@ impl Default for Settings {
 }
 
 impl ConfigFile for Settings {}
+
+/// `studio.json` — settings for the main window (`anima-studio`), as opposed to the game's
+/// [`Settings`].
+///
+/// The Steam Web API key lives here rather than only in the environment so the window works when
+/// it is started from a desktop entry or a Flatpak, where no shell has exported anything. The
+/// environment still wins when it is set: it is the deliberate, temporary override.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StudioSettings {
+    /// Get one at <https://steamcommunity.com/dev/apikey>; only browsing the Workshop needs it.
+    #[serde(default)]
+    pub steam_api_key: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl ConfigFile for StudioSettings {}
 
 /// One entry of `anim_meta.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -300,6 +319,36 @@ mod tests {
         let reloaded = Settings::load(&path);
         assert_eq!(reloaded.extra["nested"]["a"], 1);
         assert_eq!(reloaded.fps, "60");
+    }
+
+    #[test]
+    fn studio_settings_roundtrip_and_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(STUDIO_SETTINGS_FILE);
+
+        // No file yet: defaults, and no key.
+        assert_eq!(StudioSettings::load(&path).steam_api_key, "");
+
+        let settings = StudioSettings {
+            steam_api_key: "ABC123".to_string(),
+            ..StudioSettings::default()
+        };
+        settings.save(&path).unwrap();
+        assert_eq!(StudioSettings::load(&path).steam_api_key, "ABC123");
+
+        // Unknown keys survive a load/save cycle, like `settings.json` does.
+        let path = write(
+            dir.path(),
+            STUDIO_SETTINGS_FILE,
+            r#"{"steam_api_key":"K","later":7}"#,
+        );
+        let loaded = StudioSettings::load(&path);
+        assert_eq!(loaded.steam_api_key, "K");
+        loaded.save(&path).unwrap();
+        assert_eq!(
+            StudioSettings::load(&path).extra["later"],
+            serde_json::json!(7)
+        );
     }
 
     #[test]
