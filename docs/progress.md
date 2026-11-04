@@ -586,6 +586,16 @@ search field with IME, and Workshop browse/search.
       explicitly as `Open main window (not installed — build --features studio)` when it cannot
       find it. `anima-studio` is installed beside the other binaries, and the shepherd logs
       where it looked: `[shepherd] main window: …/anima-studio`.
+- [x] `anima-shepherd prune [--dry-run]` and `forget <animation>`, so the manual sweep that
+      cleaned ten files once is a command. The decisions are pure functions over an injected
+      `exists`, tested without touching the disk: registry and persisted paths whose animation
+      is gone, control files whose animation is gone (or whose slug means nothing and no
+      process owns it), markers whose pid is gone, and cache entries whose Workshop item is no
+      longer installed. `prune` prints the plan, backs up both JSON files, then applies;
+      `forget` refuses while the instance is running and never touches the animation file.
+      Verified with fake animations: the dry run listed exactly one registry path, one control
+      file and one stale focus marker; the real run removed 2 files and 1 reference and left
+      the 16 real control files alone; afterwards `prune` says `nothing to prune`.
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 

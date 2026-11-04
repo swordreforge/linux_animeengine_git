@@ -299,6 +299,59 @@ pub fn live_instances() -> Vec<Live> {
     out
 }
 
+/// Animation paths (registry or persisted) whose file is gone.
+///
+/// `exists` decides; the caller passes `Path::is_file`, the tests pass a set. Nothing that
+/// still exists is ever reported.
+pub fn dead_animations(paths: &[String], exists: impl Fn(&str) -> bool) -> Vec<String> {
+    paths.iter().filter(|path| !exists(path)).cloned().collect()
+}
+
+/// Control files worth deleting: the animation is gone, or the slug belongs to nothing the
+/// persisted list can explain and no process owns it.
+pub fn dead_control_files(live: &[Live], exists: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+    live.iter()
+        .filter(|instance| match &instance.animation {
+            Some(animation) => !exists(animation),
+            None => !instance.running,
+        })
+        .map(|instance| instance.control.clone())
+        .collect()
+}
+
+/// Markers whose process is gone.
+pub fn dead_markers(markers: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    markers
+        .into_iter()
+        .filter(|marker| !crate::control::marker_running(marker))
+        .collect()
+}
+
+/// Cache files named `<digits>.<ext>` whose Workshop item is no longer installed.
+pub fn orphaned_cache(
+    cache_dir: &Path,
+    installed: &std::collections::HashSet<String>,
+) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .is_some_and(|stem| {
+                    !stem.is_empty()
+                        && stem.chars().all(|character| character.is_ascii_digit())
+                        && !installed.contains(&stem)
+                })
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// Markers whose process is gone. Only written by the process that owns them, so this is
 /// for tidying up, not for supervision.
 pub fn stale_markers() -> Vec<PathBuf> {
@@ -492,6 +545,66 @@ mod tests {
             live.len(),
             live.iter().filter(|instance| instance.running).count()
         );
+    }
+
+    #[test]
+    fn dead_references_are_the_ones_that_point_nowhere() {
+        let exists = |path: &str| path == "/ok.apng";
+        let paths = vec!["/ok.apng".to_string(), "/gone.apng".to_string()];
+        assert_eq!(dead_animations(&paths, exists), vec!["/gone.apng"]);
+
+        let live = vec![
+            Live {
+                animation: Some("/ok.apng".into()),
+                control: PathBuf::from("/c/ok.json"),
+                running: false,
+            },
+            Live {
+                animation: Some("/gone.apng".into()),
+                control: PathBuf::from("/c/gone.json"),
+                running: false,
+            },
+            Live {
+                animation: None,
+                control: PathBuf::from("/c/unknown-dead.json"),
+                running: false,
+            },
+            Live {
+                animation: None,
+                control: PathBuf::from("/c/unknown-live.json"),
+                running: true,
+            },
+        ];
+        let dead = dead_control_files(&live, exists);
+        assert_eq!(dead.len(), 2, "{dead:?}");
+        assert!(dead.contains(&PathBuf::from("/c/gone.json")));
+        assert!(dead.contains(&PathBuf::from("/c/unknown-dead.json")));
+        assert!(!dead.contains(&PathBuf::from("/c/ok.json")));
+        assert!(!dead.contains(&PathBuf::from("/c/unknown-live.json")));
+    }
+
+    #[test]
+    fn dead_markers_and_orphaned_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let dead = dir.path().join("dead.pid");
+        std::fs::write(&dead, format!("{} anima-overlay\n", u32::MAX)).unwrap();
+        let alive = dir.path().join("alive.pid");
+        crate::control::write_marker(&alive, &ControlState::announce_name()).unwrap();
+        let mut markers = vec![dead.clone(), alive];
+        markers.sort();
+        assert_eq!(dead_markers(markers), vec![dead]);
+
+        let cache = tempfile::tempdir().unwrap();
+        for name in ["123.img", "456.json", "789", "notes.txt", "abc.img"] {
+            std::fs::write(cache.path().join(name), b"x").unwrap();
+        }
+        let installed = std::collections::HashSet::from(["123".to_string()]);
+        let orphans = orphaned_cache(cache.path(), &installed);
+        let names: Vec<String> = orphans
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["456.json", "789"], "{names:?}");
     }
 
     #[test]

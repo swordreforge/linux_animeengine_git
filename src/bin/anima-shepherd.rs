@@ -8,6 +8,8 @@
 //! anima-shepherd enable <animation>   # keep it running from now on
 //! anima-shepherd disable <animation>
 //! anima-shepherd stop <animation>     # ask that instance to quit (control channel)
+//! anima-shepherd forget <animation>   # drop its control file, markers and registry entry
+//! anima-shepherd prune [--dry-run]    # drop everything that points at a missing animation
 //! anima-shepherd quit                 # stop supervising; the overlays keep playing
 //! ```
 //!
@@ -41,6 +43,8 @@ fn main() -> ExitCode {
         Some("enable") => with_animation(&args, |animation| set(animation, true)),
         Some("disable") => with_animation(&args, |animation| set(animation, false)),
         Some("stop") => with_animation(&args, stop),
+        Some("forget") => with_animation(&args, forget),
+        Some("prune") => prune(args.iter().any(|arg| arg == "--dry-run")),
         Some("quit") => quit(),
         Some("help" | "-h" | "--help") => {
             usage();
@@ -62,7 +66,7 @@ fn main() -> ExitCode {
 fn usage() {
     eprintln!(
         "usage: anima-shepherd [run [--once]|status|list|enable <animation>|\
-         disable <animation>|stop <animation>|quit]"
+         disable <animation>|stop <animation>|forget <animation>|prune [--dry-run]|quit]"
     );
 }
 
@@ -129,6 +133,188 @@ fn quit() -> Result<(), String> {
     }
     println!("asked shepherd {pid} to stop; the overlays keep playing");
     Ok(())
+}
+
+/// Drop every reference that points at a missing animation. Nothing whose animation still
+/// exists is ever touched, and both JSON files are backed up before they are rewritten.
+fn prune(dry_run: bool) -> Result<(), String> {
+    let registry_path = shepherd::registry_path();
+    let persisted_path = anima_engine_rs::state::SecondaryState::user_path();
+    let mut registry = Registry::load(&registry_path);
+    let mut persisted = anima_engine_rs::state::SecondaryState::load(&persisted_path);
+    let live = shepherd::live_instances();
+    let exists = |path: &str| std::path::Path::new(path).is_file();
+
+    let registry_paths: Vec<String> = registry
+        .instances
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
+    let persisted_paths: Vec<String> = persisted
+        .instances
+        .iter()
+        .map(|instance| instance.path.clone())
+        .collect();
+    let dead_registry = shepherd::dead_animations(&registry_paths, exists);
+    let dead_persisted = shepherd::dead_animations(&persisted_paths, exists);
+    let dead_controls = shepherd::dead_control_files(&live, exists);
+
+    let mut markers = ControlState::announcements();
+    markers.extend(ControlState::focus_files());
+    let dead_marker = shepherd::dead_markers(markers);
+
+    let cache = shepherd::orphaned_cache(&thumbnails_dir(), &installed_item_ids());
+
+    let files: Vec<PathBuf> = dead_controls
+        .iter()
+        .chain(dead_marker.iter())
+        .chain(cache.iter())
+        .cloned()
+        .collect();
+    let references = dead_registry.len() + dead_persisted.len();
+
+    if files.is_empty() && references == 0 {
+        println!("nothing to prune");
+        return Ok(());
+    }
+
+    println!("prune plan:");
+    for path in &dead_registry {
+        println!("  registry  {path}");
+    }
+    for path in &dead_persisted {
+        println!("  instance  {path}");
+    }
+    for path in &dead_controls {
+        println!("  control   {}", path.display());
+    }
+    for path in &dead_marker {
+        println!("  marker    {}", path.display());
+    }
+    for path in &cache {
+        println!("  cache     {}", path.display());
+    }
+    println!("{references} reference(s), {} file(s)", files.len());
+
+    if dry_run {
+        println!("(dry run — nothing removed)");
+        return Ok(());
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    for path in [&registry_path, &persisted_path] {
+        let backup = PathBuf::from(format!("{}.before-prune-{stamp}", path.display()));
+        if let Err(error) = std::fs::copy(path, &backup) {
+            eprintln!("[shepherd] could not back up {}: {error}", path.display());
+        }
+    }
+
+    registry
+        .instances
+        .retain(|entry| !dead_registry.contains(&entry.path));
+    registry
+        .save(&registry_path)
+        .map_err(|error| error.to_string())?;
+    persisted
+        .instances
+        .retain(|instance| !dead_persisted.contains(&instance.path));
+    persisted
+        .save(&persisted_path)
+        .map_err(|error| error.to_string())?;
+
+    let mut removed = 0;
+    for path in &files {
+        match std::fs::remove_file(path) {
+            Ok(()) => removed += 1,
+            Err(error) => eprintln!("[shepherd] could not remove {}: {error}", path.display()),
+        }
+    }
+    println!("removed {removed} file(s) and {references} reference(s)");
+    Ok(())
+}
+
+/// Forget one animation: its control file, markers and registry entry. The animation file
+/// itself is never touched, and a running instance has to be quit first.
+fn forget(animation: &str) -> Result<(), String> {
+    let key = paths::canonical_path(animation);
+    let control = ControlState::path_for(Some(&key));
+    if ControlState::is_running(&control) {
+        return Err(format!("{key} is still running — quit it first"));
+    }
+
+    let mut removed = 0;
+    for path in [
+        control.clone(),
+        ControlState::announce_path(&control),
+        ControlState::focus_path(&control),
+    ] {
+        if path.is_file() {
+            std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+            removed += 1;
+        }
+    }
+
+    let registry_path = shepherd::registry_path();
+    let mut registry = Registry::load(&registry_path);
+    let before = registry.instances.len();
+    registry
+        .instances
+        .retain(|entry| paths::canonical_path(&entry.path) != key);
+    if registry.instances.len() != before {
+        registry
+            .save(&registry_path)
+            .map_err(|error| error.to_string())?;
+        removed += 1;
+    }
+
+    let persisted_path = anima_engine_rs::state::SecondaryState::user_path();
+    let mut persisted = anima_engine_rs::state::SecondaryState::load(&persisted_path);
+    let before = persisted.instances.len();
+    persisted
+        .instances
+        .retain(|instance| paths::canonical_path(&instance.path) != key);
+    if persisted.instances.len() != before {
+        persisted
+            .save(&persisted_path)
+            .map_err(|error| error.to_string())?;
+        removed += 1;
+    }
+
+    println!("forgot {key} ({removed} thing(s); the animation file is untouched)");
+    Ok(())
+}
+
+/// Cache and previews live beside the control files.
+fn thumbnails_dir() -> PathBuf {
+    paths::user_data_dir().join("thumbnails")
+}
+
+/// Workshop ids that still have a directory, from every content root we know.
+fn installed_item_ids() -> std::collections::HashSet<String> {
+    let mut roots: Vec<PathBuf> = anima_engine_rs::workshop::discover_libraries()
+        .into_iter()
+        .map(|library| anima_engine_rs::workshop::content_root(&library))
+        .collect();
+    if let Some(steamcmd) = anima_engine_rs::steamcmd::SteamCmd::detect() {
+        roots.push(steamcmd.content_root());
+    }
+
+    let mut ids = std::collections::HashSet::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.is_empty() && name.chars().all(|character| character.is_ascii_digit()) {
+                ids.insert(name);
+            }
+        }
+    }
+    ids
 }
 
 fn status() {
