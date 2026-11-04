@@ -2254,7 +2254,7 @@ impl Studio {
                         button(text(self.i18n.tr("Remove local copy")))
                             .style(danger)
                             .on_press(Message::Remove(id)),
-                        button(text("Cancel"))
+                        button(text(self.i18n.tr("Cancel")))
                             .style(secondary)
                             .on_press(Message::CancelRemove),
                     ]
@@ -2307,23 +2307,26 @@ impl Studio {
 
         let stored = StudioSettings::load(&anima_engine_rs::workshop_web::studio_settings_path());
         let key_state = if stored.steam_api_key.trim().is_empty() {
-            "not set"
+            self.i18n.tr("not set")
         } else {
-            "stored"
+            self.i18n.tr("stored")
         };
         column![
             text(self.i18n.tr("Settings")).size(20),
-            text(format!("Steam API key · {key_state}")).size(12),
-            text_input("paste the key and press Enter", &self.key_draft)
-                .on_input(Message::KeyDraft)
-                .on_submit(Message::SaveKey)
-                .style(iced_material::text_input::default)
-                .width(Length::Fill),
+            text(format!("{} · {}", self.i18n.tr("Steam API key"), key_state)).size(12),
+            text_input(
+                &self.i18n.tr("paste the key and press Enter"),
+                &self.key_draft
+            )
+            .on_input(Message::KeyDraft)
+            .on_submit(Message::SaveKey)
+            .style(iced_material::text_input::default)
+            .width(Length::Fill),
             row![
                 button(text(self.i18n.tr("Save")))
                     .style(primary)
                     .on_press(Message::SaveKey),
-                text("get one at steamcommunity.com/dev/apikey").size(11),
+                text(self.i18n.tr("get one at steamcommunity.com/dev/apikey")).size(11),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -2333,14 +2336,18 @@ impl Studio {
                 toggle(
                     self,
                     self.motion,
-                    "turn motion off",
-                    "turn motion on",
+                    &self.i18n.tr("turn motion off"),
+                    &self.i18n.tr("turn motion on"),
                     Message::ToggleReduceMotion,
                 ),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
-            text("Stored in studio.json; ANIMA_NO_MOTION overrides it.").size(11),
+            text(
+                self.i18n
+                    .tr("Stored in studio.json; ANIMA_NO_MOTION overrides it.")
+            )
+            .size(11),
             divider(Length::Fill, Length::Fixed(1.0)),
             text(format!(
                 "Palette: {}",
@@ -2349,7 +2356,11 @@ impl Studio {
                     .unwrap_or_else(|| "-".to_string())
             ))
             .size(11),
-            text("A wallpaper change needs this window restarted.").size(11),
+            text(
+                self.i18n
+                    .tr("A wallpaper change needs this window restarted.")
+            )
+            .size(11),
         ]
         .spacing(10)
         .into()
@@ -2493,7 +2504,7 @@ impl Studio {
         let mut rows = column![heading].spacing(10);
         if self.overlay.is_empty() {
             return rows
-                .push(text("no control file yet — start an overlay first").size(11))
+                .push(text(self.i18n.tr("no control file yet — start an overlay first")).size(11))
                 .into();
         }
         // Running first: those are the rows with something to change, and the rest are read-only.

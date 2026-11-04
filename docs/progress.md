@@ -1016,6 +1016,15 @@ search field with IME, and Workshop browse/search.
       selection moved, so coming back to an armed item showed `Confirm remove` straight away — a warning
       that had already been forgotten. With a modal there is no window in which the selection can move
       while it is armed, and both buttons clear it.
+- [x] i18n caught up with the last few sessions. A dozen UI strings had been written straight into the
+      code — the removal warning's body, `Cancel`, the settings explanations, the empty overlays tab, the
+      motion toggle's labels, and the key's "stored"/"not set" state — all English, some of them the only
+      English left on their screen. They go through `tr()` now, in four languages: **834 source strings**,
+      all four primary languages complete.
+      Deliberately still English, and this is a choice rather than an oversight: the **diagnostics block**
+      (its whole purpose is being pasted into a bug report — a translated key list would be less useful,
+      not more) and the **status-line notes** (about twenty of them, written at the point they describe;
+      localising those deserves its own pass instead of being swept in here).
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

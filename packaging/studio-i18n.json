@@ -32,7 +32,19 @@
     "Diagnostics": "Diagnostics",
     "Save": "Save",
     "Reduce motion": "Reduce motion",
-    "Copy all": "Copy all"
+    "Copy all": "Copy all",
+    "Cancel": "Cancel",
+    "paste the key and press Enter": "paste the key and press Enter",
+    "get one at steamcommunity.com/dev/apikey": "get one at steamcommunity.com/dev/apikey",
+    "Steam API key": "Steam API key",
+    "stored": "stored",
+    "not set": "not set",
+    "Stored in studio.json; ANIMA_NO_MOTION overrides it.": "Stored in studio.json; ANIMA_NO_MOTION overrides it.",
+    "A wallpaper change needs this window restarted.": "A wallpaper change needs this window restarted.",
+    "no control file yet — start an overlay first": "no control file yet — start an overlay first",
+    "turn motion off": "turn motion off",
+    "turn motion on": "turn motion on",
+    "This deletes the copy under the SteamCMD root. It does not unsubscribe in Steam, and your own Steam library is never touched.": "This deletes the copy under the SteamCMD root. It does not unsubscribe in Steam, and your own Steam library is never touched."
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -67,7 +79,19 @@
     "Diagnostics": "诊断",
     "Save": "保存",
     "Reduce motion": "减少动态效果",
-    "Copy all": "全部复制"
+    "Copy all": "全部复制",
+    "Cancel": "取消",
+    "paste the key and press Enter": "粘贴 key 后按回车",
+    "get one at steamcommunity.com/dev/apikey": "在此获取：steamcommunity.com/dev/apikey",
+    "Steam API key": "Steam API key",
+    "stored": "已保存",
+    "not set": "未设置",
+    "Stored in studio.json; ANIMA_NO_MOTION overrides it.": "存于 studio.json；ANIMA_NO_MOTION 会覆盖它",
+    "A wallpaper change needs this window restarted.": "换壁纸后需重启此窗口",
+    "no control file yet — start an overlay first": "还没有控制文件 —— 先启动一个浮层",
+    "turn motion off": "关闭动效",
+    "turn motion on": "开启动效",
+    "This deletes the copy under the SteamCMD root. It does not unsubscribe in Steam, and your own Steam library is never touched.": "这会删除 SteamCMD 目录下的副本。不会在 Steam 里退订，也不会碰你自己的 Steam 库。"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -102,7 +126,19 @@
     "Diagnostics": "診斷",
     "Save": "儲存",
     "Reduce motion": "減少動態效果",
-    "Copy all": "全部複製"
+    "Copy all": "全部複製",
+    "Cancel": "取消",
+    "paste the key and press Enter": "貼上 key 後按 Enter",
+    "get one at steamcommunity.com/dev/apikey": "在此取得：steamcommunity.com/dev/apikey",
+    "Steam API key": "Steam API key",
+    "stored": "已儲存",
+    "not set": "未設定",
+    "Stored in studio.json; ANIMA_NO_MOTION overrides it.": "存於 studio.json；ANIMA_NO_MOTION 會覆蓋它",
+    "A wallpaper change needs this window restarted.": "換壁紙後需重啟此視窗",
+    "no control file yet — start an overlay first": "尚無控制檔案 —— 先啟動一個浮層",
+    "turn motion off": "關閉動態效果",
+    "turn motion on": "開啟動態效果",
+    "This deletes the copy under the SteamCMD root. It does not unsubscribe in Steam, and your own Steam library is never touched.": "這會刪除 SteamCMD 目錄下的副本。不會在 Steam 裡退訂，也不會碰你自己的 Steam 庫。"
   },
   "ja": {
     "Refresh": "更新",
@@ -137,6 +173,18 @@
     "Diagnostics": "診断",
     "Save": "保存",
     "Reduce motion": "視差効果を減らす",
-    "Copy all": "すべてコピー"
+    "Copy all": "すべてコピー",
+    "Cancel": "キャンセル",
+    "paste the key and press Enter": "キーを貼り付けて Enter",
+    "get one at steamcommunity.com/dev/apikey": "取得先: steamcommunity.com/dev/apikey",
+    "Steam API key": "Steam API キー",
+    "stored": "保存済み",
+    "not set": "未設定",
+    "Stored in studio.json; ANIMA_NO_MOTION overrides it.": "studio.json に保存。ANIMA_NO_MOTION が優先されます",
+    "A wallpaper change needs this window restarted.": "壁紙を変えたらこのウィンドウを再起動してください",
+    "no control file yet — start an overlay first": "コントロールファイルがまだありません — 先にオーバーレイを起動してください",
+    "turn motion off": "視差効果をオフに",
+    "turn motion on": "視差効果をオンに",
+    "This deletes the copy under the SteamCMD root. It does not unsubscribe in Steam, and your own Steam library is never touched.": "SteamCMD ルートのコピーを削除します。Steam の登録解除は行わず、あなたの Steam ライブラリには触れません。"
   }
 }
