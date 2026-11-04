@@ -9,9 +9,11 @@
 //! * **Subscribe / Unsubscribe**: one button, labelled for the way the toggle will go, which opens
 //!   `steam://url/CommunityFilePage/<id>`. The toggle is the Steam client's to make, and the label
 //!   follows the client's own list so it cannot claim a state Steam disagrees with.
-//! * **Download**: SteamCMD (`anonymous`), on a detached thread. Works either way, because these are
-//!   workshop *items* (wallpaper-style artwork), not paid add-ons — the anonymous login fetches any
-//!   public item, subscribed or not.
+//! * **Download**: SteamCMD (`anonymous`), on a detached thread, fetching a second copy under our own
+//!   root. Greyed until the Steam client has the item, because that is the order the real flow has: the
+//!   workshop *item* (wallpaper-style artwork, not a paid add-on) is subscribed in Steam, Steam does its
+//!   own download, and `ItemState::pending` — the wanted manifest past the installed one — is how that
+//!   download is visible from out here.
 //! * **Remove local copy**: only for items under *our* SteamCMD root, behind a
 //!   confirmation click. It never touches the user's own Steam library.
 //!
@@ -1311,6 +1313,9 @@ fn load_item(id: u64, dir: PathBuf) -> Loaded {
 struct Studio {
     i18n: I18n,
     snapshot: WorkshopSnapshot,
+    /// Per-item ACF state, refreshed with the snapshot. `ItemState::pending` is Steam saying it still owes
+    /// this item a download, which is the only progress signal available from outside the client.
+    states: std::collections::BTreeMap<u64, anima_engine_rs::workshop::ItemState>,
     /// The selected Workshop item, by id: an index moves when the list changes under it.
     selected_item: Option<u64>,
     /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
@@ -1394,6 +1399,7 @@ impl Studio {
         let mut studio = Self {
             i18n: I18n::discover(),
             snapshot: WorkshopSnapshot::default(),
+            states: std::collections::BTreeMap::new(),
             selected_item: None,
             query: String::new(),
             follow: true,
@@ -1442,6 +1448,14 @@ impl Studio {
         let mut watcher = WorkshopWatcher::discover();
         let _ = watcher.poll();
         self.snapshot = watcher.snapshot().clone();
+        self.states = anima_engine_rs::workshop::libraries_from_roots(watcher.roots())
+            .iter()
+            .find_map(|library| {
+                let text =
+                    std::fs::read_to_string(anima_engine_rs::workshop::acf_path(library)).ok()?;
+                anima_engine_rs::workshop::installed_items(&text).ok()
+            })
+            .unwrap_or_default();
         // Read what the cache already knows into memory. Without this step a warm cache is used only
         // to decide *not* to fetch, leaving `meta` empty and the rows showing file names — which is
         // exactly backwards, and exactly what happened.
@@ -2222,17 +2236,32 @@ impl Studio {
                 }
 
                 pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
+                let subscribed = self.snapshot.items.contains_key(&id);
+                let pending = self.states.get(&id).is_some_and(|state| state.pending());
                 pane = pane.push(
                     row![
                         tooltip(
-                            button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
-                                .style(primary)
-                                .on_press(Message::Download(id)),
-                            text(
-                                self.i18n.tr(
-                                    "fetches a copy here with SteamCMD, no subscription needed",
-                                )
+                            button(text(if pending {
+                                self.i18n.tr("Downloading")
+                            } else {
+                                format!("{} (SteamCMD)", self.i18n.tr("Download"))
+                            }))
+                            .style(primary)
+                            // Greyed until Steam has it: a download here is a *second* copy, and a
+                            // second copy of something nobody has subscribed to is not what the button
+                            // promises. (This was written inverted once; the tooltip said "subscribe
+                            // first" while the button was live, which is how it was caught.)
+                            .on_press_maybe(
+                                (subscribed && !pending).then_some(Message::Download(id)),
                             ),
+                            text(if !subscribed {
+                                self.i18n
+                                    .tr("subscribe in Steam first — it downloads there")
+                            } else if pending {
+                                self.i18n.tr("Steam is still downloading this one")
+                            } else {
+                                self.i18n.tr("fetches another copy here with SteamCMD")
+                            }),
                             tooltip::Position::Top,
                         ),
                         tooltip(

@@ -43,6 +43,14 @@ pub fn library_folders(vdf_text: &str) -> Result<Vec<PathBuf>> {
     Ok(block)
 }
 
+/// `<library>/steamapps/workshop/appworkshop_<appid>.acf`.
+pub fn acf_path(library: &Path) -> PathBuf {
+    library
+        .join("steamapps")
+        .join("workshop")
+        .join(acf_file_name())
+}
+
 /// `<library>/steamapps/workshop/content/<appid>`.
 pub fn content_root(library: &Path) -> PathBuf {
     library
@@ -117,6 +125,19 @@ pub struct ItemState {
     pub size: u64,
     pub timeupdated: u64,
     pub manifest: u64,
+    /// The manifest the client *wants*. Steam writes it into `WorkshopItemDetails` as soon as it decides
+    /// an item needs downloading or updating, and only then moves `manifest` up to meet it — so the two
+    /// disagreeing is Steam's own way of saying "this one is owed a download", whether that download is
+    /// running now or queued behind others.
+    pub latest_manifest: u64,
+}
+
+impl ItemState {
+    /// Whether Steam still owes this item a download. `0` means the detail table had nothing to say,
+    /// which is not the same as "up to date" — it is "no opinion", and no opinion must not grey a button.
+    pub fn pending(&self) -> bool {
+        self.latest_manifest != 0 && self.latest_manifest != self.manifest
+    }
 }
 
 /// Parse the `WorkshopItemsInstalled` table out of an `.acf` document.
@@ -126,11 +147,26 @@ pub fn installed_items(acf_text: &str) -> Result<BTreeMap<u64, ItemState>> {
         .get("WorkshopItemsInstalled")
         .ok_or_else(|| Error::Parse("acf has no WorkshopItemsInstalled".to_string()))?;
 
+    // `WorkshopItemDetails` is the other half of the picture and used to be ignored here: it carries the
+    // manifest Steam wants, which is how a download in progress is visible at all.
+    let details = root.get("WorkshopItemDetails");
+    let latest = |id: &str| -> u64 {
+        details
+            .and_then(|details| details.get(id))
+            .and_then(|state| {
+                state
+                    .get("latest_manifest")
+                    .or_else(|| state.get("manifest"))
+            })
+            .and_then(vdf::Kv::as_u64)
+            .unwrap_or(0)
+    };
+
     let mut items = BTreeMap::new();
-    for (id, state) in table.entries() {
-        let id: u64 = id
+    for (key, state) in table.entries() {
+        let id: u64 = key
             .parse()
-            .map_err(|_| Error::Parse(format!("bad workshop id: {id}")))?;
+            .map_err(|_| Error::Parse(format!("bad workshop id: {key}")))?;
         items.insert(
             id,
             ItemState {
@@ -140,6 +176,7 @@ pub fn installed_items(acf_text: &str) -> Result<BTreeMap<u64, ItemState>> {
                     .and_then(vdf::Kv::as_u64)
                     .unwrap_or(0),
                 manifest: state.get("manifest").and_then(vdf::Kv::as_u64).unwrap_or(0),
+                latest_manifest: latest(key),
             },
         );
     }
@@ -445,10 +482,17 @@ mod tests {
 			"timeupdated"		"1764998743"
 			"manifest"		"659556662846826589"
 		}
+		"3700000001"
+		{
+			"size"		"4096"
+			"timeupdated"		"1764998800"
+			"manifest"		"111"
+		}
 	}
 	"WorkshopItemDetails"
 	{
 		"3425176851" { "manifest" "6840599560970356282" }
+		"3700000001" { "latest_manifest" "222" }
 	}
 }
 "#;
@@ -468,16 +512,25 @@ mod tests {
     #[test]
     fn parses_installed_items() {
         let items = installed_items(APPWORKSHOP).unwrap();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert_eq!(
             items.get(&3425176851),
             Some(&ItemState {
                 size: 237_871_746,
                 timeupdated: 1_739_236_561,
                 manifest: 6_840_599_560_970_356_282,
+                latest_manifest: 6_840_599_560_970_356_282,
             })
         );
         assert_eq!(items[&3618631640].size, 1_282_175);
+        // The detail table agreeing with the installed one is "up to date", and saying nothing at all is
+        // "no opinion" — neither is a download Steam owes.
+        assert!(!items[&3425176851].pending());
+        assert!(!items[&3618631640].pending());
+        // `latest_manifest` past `manifest` is Steam having decided to fetch something and not yet done
+        // it, which is the only way a download in flight is visible from outside the client.
+        assert_eq!(items[&3700000001].latest_manifest, 222);
+        assert!(items[&3700000001].pending(), "manifest 111 vs latest 222");
     }
 
     #[test]
@@ -567,7 +620,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             source.subscribed_ids().unwrap(),
-            vec![3425176851, 3618631640]
+            vec![3425176851, 3618631640, 3700000001]
         );
     }
 

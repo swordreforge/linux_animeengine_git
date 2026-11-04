@@ -1074,6 +1074,26 @@ search field with IME, and Workshop browse/search.
       wrong for this app.** These are workshop *items* — wallpaper-style artwork, not paid add-ons or DLC —
       and SteamCMD's anonymous login fetches any public item. The module doc said so and it was right; a
       later summary of mine did not, and this entry is the retraction.
+- [x] **Download is greyed until the Steam client has the item, and a download in flight is visible.**
+      Two things were missing and both were the user's to point out: the button was live for items nobody
+      had subscribed to, and Steam's own download had no representation at all.
+      The state comes from a table that was being **parsed and thrown away**: `WorkshopItemDetails` in
+      `appworkshop_<appid>.acf` carries `latest_manifest` — the manifest the client *wants*. Steam writes it
+      when it decides to fetch something and only moves `manifest` up to meet it once it is done, so the two
+      disagreeing is Steam's own "this one is owed a download", whether it is running now or queued behind
+      others. `ItemState::pending()` is that comparison, and it is asserted both ways in the tests
+      (a detail table that agrees, or that says nothing at all, must not grey the button).
+      Refreshed with the snapshot, so the events the watcher already receives are what make the state move;
+      no new timer.
+      Caught while writing it: the remote pane's condition went in **inverted** — live when *not*
+      subscribed — which the tooltip ("subscribe in Steam first") made obvious the moment I read the two
+      lines together.
+- [ ] **What the button triggers is still ours, not Steam's.** The flow the user describes — subscribe in
+      Steam, Steam downloads it there — is the client's own loop and cannot be started from outside it. Our
+      button runs `steamcmd` and puts a second copy under our root, which is a *different* mechanism that
+      happens to produce the same files. Worth deciding deliberately: keep both (greyed as it is now, which
+      makes the order honest), or drop the SteamCMD copy entirely and let the client own every download,
+      leaving this window only reporting `pending`.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
