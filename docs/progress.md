@@ -934,6 +934,12 @@ search field with IME, and Workshop browse/search.
       `overlay,dbus` now (plus `bc7`/`studio` as before) and both build hints in `install.sh` name
       `dbus` — otherwise a shipped shepherd would have been built without the interface and the
       feature would exist only on a developer's machine.
+- [ ] The screens plan lives in `docs/studio-screens-plan.md`: a nav rail with 工坊 / 浮层 / 设置 /
+      诊断, so the Steam key and the motion switch stop needing a hand-written file or an environment
+      variable. Written down, not started. It rests on the immediate-mode facts (there is no layout to
+      despawn, a `Task` cannot be cancelled, only the active screen is built) and records one open
+      question worth settling first: whether the workshop picker should stay a float or become an
+      inline list now that the workshop screen has room for it.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).
