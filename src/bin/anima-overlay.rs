@@ -30,13 +30,14 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anima_engine_rs::anim::{Animation, DecodeLimits, Frame, Orientation};
 use anima_engine_rs::cache::{Blocks, FrameCache};
 use anima_engine_rs::control::{ControlState, InputMode, MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
 use anima_engine_rs::settings::{ANIM_META_FILE, AnimMeta, ConfigFile};
 use anima_engine_rs::state::SecondaryState;
+use anima_engine_rs::workshop::WorkshopWatcher;
 
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
@@ -1942,6 +1943,56 @@ fn frame_delay(frame: &Frame, fps: u32) -> Duration {
     Duration::from_millis(u64::from(frame.effective_delay_ms()))
 }
 
+/// Detects that the displayed animation changed on disk, so the overlay can reload
+/// it. Two signals: the file's own size/mtime (any animation, including a file the
+/// user just re-exported) and [`WorkshopWatcher`] (an item the current file lives in
+/// was re-published). The file stat is checked every second, the Workshop scan every
+/// fifth second because it costs a `read_dir` per installed item.
+struct HotReload {
+    path: Option<PathBuf>,
+    stat: Option<(u64, Option<SystemTime>)>,
+    watcher: WorkshopWatcher,
+    last_check: Instant,
+    last_scan: Instant,
+}
+
+impl HotReload {
+    fn new(path: Option<&Path>) -> Self {
+        Self {
+            path: path.map(Path::to_path_buf),
+            stat: path.and_then(source_stat),
+            watcher: WorkshopWatcher::discover(),
+            last_check: Instant::now(),
+            last_scan: Instant::now(),
+        }
+    }
+
+    /// Whether the source changed since the last call (never for the test pattern).
+    fn changed(&mut self) -> bool {
+        let Some(path) = self.path.as_deref() else {
+            return false;
+        };
+        let mut changed = false;
+        if self.last_check.elapsed() >= Duration::from_secs(1) {
+            self.last_check = Instant::now();
+            let stat = source_stat(path);
+            changed = stat != self.stat;
+            self.stat = stat;
+        }
+        if !changed && self.last_scan.elapsed() >= Duration::from_secs(5) {
+            self.last_scan = Instant::now();
+            changed = self.watcher.poll().is_some();
+        }
+        changed
+    }
+}
+
+fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.len(), meta.modified().ok()))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).map(PathBuf::from);
     let Loaded {
@@ -2553,6 +2604,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_presented: Option<usize> = None;
     let mut last_hide = false;
     let mut region_index: Option<usize> = None;
+    let mut hot_reload = HotReload::new(path.as_deref());
 
     while !state.closed {
         // Snapshot before dispatch: every Motion in this batch shares one base.
@@ -2561,6 +2613,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.surface_size = (config.width, config.height);
 
         event_queue.dispatch_pending(&mut state)?;
+
+        // Hot reload: geometry, scale, mode and rotation all live in the persisted
+        // state and the control file, so re-execing the binary reloads the changed
+        // animation without losing the placement.
+        if hot_reload.changed() {
+            eprintln!("[overlay] animation changed on disk; reloading");
+            persist_geometry(&state);
+            let executable = std::env::current_exe()?;
+            use std::os::unix::process::CommandExt;
+            let error = std::process::Command::new(executable)
+                .args(std::env::args_os().skip(1))
+                .exec();
+            eprintln!("[overlay] reload failed, keeping the current animation: {error}");
+        }
 
         // Tray / portal commands arrive through the control file.
         let mtime = std::fs::metadata(&control_path)

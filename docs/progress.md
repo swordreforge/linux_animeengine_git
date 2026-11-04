@@ -274,6 +274,11 @@ Interaction and control:
   (`mutter_x11_interop`, `ext_background_effect_manager_v1`, `xdg_wm_base v7`,
   `wp_fractional_scale_manager_v1`, …) with **no `zwlr_*`**) — the sandbox attached
   to a different compositor, so layer-shell was legitimately absent.
+- Hot reload (end to end): a copy of `bochi455.apng` was run, then `touch`ed. The log
+  went `animation changed on disk; reloading` → a fresh decode → 
+  `restored instance: (284, 296)` (the persisted placement plus the 184/196 crop
+  offsets), so the reloaded process kept the position. Reload count was exactly 1
+  (the new baseline stat prevents a loop).
 - Workshop watch (the callbacks fallback): `anima-workshop watch --once` printed
   `watching 1 item(s) in 2 root(s)` with `3828587753 6 asset(s)`, i.e. the Steam
   library and our SteamCMD root, deduplicated by id. Unit tests drive a temporary
@@ -405,7 +410,16 @@ Interaction and control:
   (this install only ships Windows `steam_api64.dll`)
 - [ ] Subscribe / repair / unsubscribe actions in the UI (downloads already work
       through `anima-workshop download` / SteamCMD)
-- [ ] Steamworks callbacks (`ItemInstalled` / `DownloadItemResult`) still need
+- [x] Hot reload: the overlay watches the displayed animation (its size/mtime every
+      second) and the Workshop content (`WorkshopWatcher`, every fifth second) and,
+      when either changes, persists the geometry and **re-execs itself**
+      (`CommandExt::exec`). Position, scale, input mode and rotation survive because
+      they live in `secondary_instances.json` and the control file; the cost is a
+      brief surface gap while the layer surface is recreated. Verified: touching a
+      copy of `bochi455.apng` mid-run logged
+      `animation changed on disk; reloading`, the new process decoded again and
+      logged `restored instance: (284, 296)` — i.e. `100 + 184`, `100 + 196`, the
+      cropped offsets, so the placement was preserved
       `libsteam_api.so`. Without it the fallback mirrors the Python build (Steamworks
       primary, SteamCMD fallback): `WorkshopWatcher` polls the content roots and
       reports changes, exposed as `anima-workshop watch`. `diff` now also reports
