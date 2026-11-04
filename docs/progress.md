@@ -703,7 +703,7 @@ search field with IME, and Workshop browse/search.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).
-      `iced_material` 0.14.2, which decides the order:
+      For reference, the facts behind those choices (`iced_material` 0.14.2):
       - it implements iced's `Catalog` for `Theme` on `button`, `container`, `pick_list`,
         `scrollable` and `text` — so those keep their default styles and the "every text call
         needs a style" worry is unfounded; `text_input` has **no** `Catalog` (only
