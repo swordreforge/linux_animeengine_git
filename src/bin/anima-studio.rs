@@ -6,11 +6,12 @@
 //!   one, otherwise the Steam CDN image from `preview_url`, cached under
 //!   `~/.local/share/AnimaEngine/thumbnails/<id>.img` and decoded with the same
 //!   `image` crate the rest of the tree uses.
-//! * **Subscribe / Unsubscribe**: both are Steam client actions, so the buttons open
-//!   `steam://url/CommunityFilePage/<id>` where the real toggle lives. Claiming
-//!   otherwise would be a lie.
-//! * **Download**: SteamCMD (`anonymous`), on a detached thread — that is what makes
-//!   an item appear locally without the client.
+//! * **Subscribe / Unsubscribe**: one button, labelled for the way the toggle will go, which opens
+//!   `steam://url/CommunityFilePage/<id>`. The toggle is the Steam client's to make, and the label
+//!   follows the client's own list so it cannot claim a state Steam disagrees with.
+//! * **Download**: SteamCMD (`anonymous`), on a detached thread. Works either way, because these are
+//!   workshop *items* (wallpaper-style artwork), not paid add-ons — the anonymous login fetches any
+//!   public item, subscribed or not.
 //! * **Remove local copy**: only for items under *our* SteamCMD root, behind a
 //!   confirmation click. It never touches the user's own Steam library.
 //!
@@ -2114,22 +2115,35 @@ impl Studio {
                         .style(secondary)
                         .on_press(Message::CopyPath(item.path.display().to_string())),
                 );
+                let subscribed = self.snapshot.items.contains_key(&id);
                 actions = actions
-                    .push(
+                    .push(tooltip(
                         button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
                             .style(secondary)
                             .on_press(Message::Download(id)),
-                    )
-                    .push(
-                        button(text(self.i18n.tr("Subscribe")))
-                            .style(secondary)
-                            .on_press(Message::OpenPage(id)),
-                    )
-                    .push(
-                        button(text(self.i18n.tr("Unsubscribe")))
-                            .style(secondary)
-                            .on_press(Message::OpenPage(id)),
-                    );
+                        text(
+                            self.i18n
+                                .tr("fetches a copy here with SteamCMD, no subscription needed"),
+                        ),
+                        tooltip::Position::Top,
+                    ))
+                    // One button whose word says which way the toggle goes. The state is the Steam
+                    // client's own list, so it cannot drift from what Steam thinks — and the tooltip
+                    // says where the toggle actually lives, because we do not own it.
+                    .push(tooltip(
+                        toggle(
+                            self,
+                            subscribed,
+                            "Unsubscribe",
+                            "Subscribe",
+                            Message::OpenPage(id),
+                        ),
+                        text(
+                            self.i18n
+                                .tr("opens the item's page in Steam; the toggle lives there"),
+                        ),
+                        tooltip::Position::Top,
+                    ));
                 // The button does not change its meaning any more: it opens the warning, and the warning
                 // is where the yes and the no live.
                 actions = actions.push(
@@ -2210,12 +2224,31 @@ impl Studio {
                 pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
                 pane = pane.push(
                     row![
-                        button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
-                            .style(primary)
-                            .on_press(Message::Download(id)),
-                        button(text(self.i18n.tr("Subscribe")))
-                            .style(secondary)
-                            .on_press(Message::OpenPage(id)),
+                        tooltip(
+                            button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
+                                .style(primary)
+                                .on_press(Message::Download(id)),
+                            text(
+                                self.i18n.tr(
+                                    "fetches a copy here with SteamCMD, no subscription needed",
+                                )
+                            ),
+                            tooltip::Position::Top,
+                        ),
+                        tooltip(
+                            toggle(
+                                self,
+                                self.snapshot.items.contains_key(&id),
+                                "Unsubscribe",
+                                "Subscribe",
+                                Message::OpenPage(id),
+                            ),
+                            text(
+                                self.i18n
+                                    .tr("opens the item's page in Steam; the toggle lives there",)
+                            ),
+                            tooltip::Position::Top,
+                        ),
                     ]
                     .spacing(8),
                 );

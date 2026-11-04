@@ -72,7 +72,9 @@
     "could not start": "could not start",
     "could not read a first frame": "could not read a first frame",
     "no Workshop results": "no Workshop results",
-    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one"
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one",
+    "fetches a copy here with SteamCMD, no subscription needed": "fetches a copy here with SteamCMD, no subscription needed",
+    "opens the item's page in Steam; the toggle lives there": "opens the item's page in Steam; the toggle lives there"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -147,7 +149,9 @@
     "could not start": "无法启动",
     "could not read a first frame": "无法读取首帧",
     "no Workshop results": "工坊没有结果",
-    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} 未设置，且 {} 里没有 steam_api_key —— 浏览工坊需要 Steam Web API key（{}）；已安装条目不需要它"
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} 未设置，且 {} 里没有 steam_api_key —— 浏览工坊需要 Steam Web API key（{}）；已安装条目不需要它",
+    "fetches a copy here with SteamCMD, no subscription needed": "用 SteamCMD 在这里取一份副本，无需订阅",
+    "opens the item's page in Steam; the toggle lives there": "在 Steam 里打开该物品页面；订阅开关在那边"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -222,7 +226,9 @@
     "could not start": "無法啟動",
     "could not read a first frame": "無法讀取首幀",
     "no Workshop results": "工坊沒有結果",
-    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} 未設定，且 {} 裡沒有 steam_api_key —— 瀏覽工坊需要 Steam Web API key（{}）；已安裝項目不需要它"
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} 未設定，且 {} 裡沒有 steam_api_key —— 瀏覽工坊需要 Steam Web API key（{}）；已安裝項目不需要它",
+    "fetches a copy here with SteamCMD, no subscription needed": "用 SteamCMD 在這裡取一份副本，無需訂閱",
+    "opens the item's page in Steam; the toggle lives there": "在 Steam 裡開啟該物品頁面；訂閱開關在那邊"
   },
   "ja": {
     "Refresh": "更新",
@@ -297,6 +303,8 @@
     "could not start": "起動できません",
     "could not read a first frame": "先頭フレームを読めません",
     "no Workshop results": "結果がありません",
-    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} が未設定で、{} に steam_api_key もありません — ワークショップの閲覧には Steam Web API キー（{}）が必要です。インストール済みの項目には不要です"
+    "{} is not set and {} has no steam_api_key — browsing the Workshop needs a Steam Web API key ({}); installed items work without one": "{} が未設定で、{} に steam_api_key もありません — ワークショップの閲覧には Steam Web API キー（{}）が必要です。インストール済みの項目には不要です",
+    "fetches a copy here with SteamCMD, no subscription needed": "SteamCMD でここにコピーを取得します（サブスクリプション不要）",
+    "opens the item's page in Steam; the toggle lives there": "Steam でアイテムのページを開きます。登録の切り替えはそちらです"
   }
 }

@@ -1061,6 +1061,19 @@ search field with IME, and Workshop browse/search.
       role — a property a hand-picked inverse colour would not have.
       The overlay rows keep their `●`/`○`: running or not is a *state*, a different axis from selection, and
       a glyph is the right channel for it.
+- [x] **Subscribe and Unsubscribe are one button now**, labelled for the way the toggle will go. The two
+      buttons were worse than redundant: both opened the same page, neither knew the state, and the remote
+      list had only the "Subscribe" half — so the same item was described by different buttons depending on
+      which list you found it in. The state comes from `self.snapshot`, which is the Steam client's own
+      list, so the label cannot claim something Steam disagrees with.
+      Each action also carries a tooltip saying where it happens, because that is the part that was
+      invisible: **subscribe** opens the item's page in Steam and the toggle is made there, while
+      **download** fetches a copy here with SteamCMD and needs no subscription at all. Two different
+      mechanisms, one row, and nothing on screen said so.
+      A correction to something claimed earlier in this file: **"paid items will fail anonymously" was
+      wrong for this app.** These are workshop *items* — wallpaper-style artwork, not paid add-ons or DLC —
+      and SteamCMD's anonymous login fetches any public item. The module doc said so and it was right; a
+      later summary of mine did not, and this entry is the retraction.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
