@@ -993,6 +993,11 @@ search field with IME, and Workshop browse/search.
       and the overlay's crop and UV maths is written in terms of axis swaps (`Orientation::swaps_axes`).
       A finer rotation is a rendering change — arbitrary-angle UV mapping and a different bounding box —
       not a slider on top of what exists. Recorded as its own item rather than faked here.
+- [x] The per-instance rows stopped stacking. `overlay_params` builds **one wrapping row** — hide, lock,
+      click-through, the scale buttons where they apply, rotate, both flips, reset — and the instance row
+      puts Quit on the end of it. Four lines of buttons with half the width empty was the ugliest thing in
+      the first pass; `.wrap()` keeps the narrow case from overflowing without spending height when there
+      is room.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

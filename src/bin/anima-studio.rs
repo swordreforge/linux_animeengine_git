@@ -2489,18 +2489,21 @@ impl Studio {
                 .spacing(6)
                 .align_y(iced::Alignment::Center),
             );
-            details = details.push(self.overlay_params(
-                Some(state),
-                |action| Message::OverlayOn(control.clone(), action),
-                false,
-            ));
+            // One row, with Quit on the end of it: the row is wide, the buttons are short, and a button
+            // per line was four lines of height spent on empty space.
             details = details.push(
                 row![
+                    self.overlay_params(
+                        Some(state),
+                        |action| Message::OverlayOn(control.clone(), action),
+                        false,
+                    ),
                     button(text(self.i18n.tr("Quit overlay")))
                         .style(danger)
-                        .on_press(Message::OverlayOn(control.clone(), OverlayAction::Quit))
+                        .on_press(Message::OverlayOn(control.clone(), OverlayAction::Quit)),
                 ]
-                .spacing(6),
+                .spacing(6)
+                .wrap(),
             );
         }
         container(details)
@@ -2688,8 +2691,11 @@ impl Studio {
     ) -> El<'_> {
         let hidden = state.is_some_and(|state| state.hidden);
         let locked = state.is_some_and(|state| state.locked);
-        column![
-            row![
+        // One wrapping row rather than three: the panel is wide and the buttons are short, so stacking
+        // them cost four lines of height for empty space. `.wrap()` still moves them down when narrow.
+        let mut buttons = row![].spacing(6);
+        buttons = buttons
+            .push(
                 button(text(if hidden {
                     self.i18n.tr("Show")
                 } else {
@@ -2697,6 +2703,8 @@ impl Studio {
                 }))
                 .style(if hidden { primary } else { secondary })
                 .on_press(tag(OverlayAction::ToggleHidden)),
+            )
+            .push(
                 button(text(if locked {
                     self.i18n.tr("Unlock")
                 } else {
@@ -2704,58 +2712,49 @@ impl Studio {
                 }))
                 .style(if locked { primary } else { secondary })
                 .on_press(tag(OverlayAction::ToggleLocked)),
+            )
+            .push(
                 button(text(self.i18n.tr("Click-through")))
                     .style(secondary)
                     .on_press(tag(OverlayAction::ToggleClickThrough)),
-            ]
-            .spacing(6)
-            .wrap(),
-            // The scale buttons live beside a slider in the overlays tab, so they are left out there and
-            // kept here, where they are the only scale control.
-            if scale {
-                row![
+            );
+        // The scale buttons live beside a slider in the overlays tab, so they are left out there and
+        // kept here, where they are the only scale control.
+        if scale {
+            buttons = buttons
+                .push(
                     button(text("−10%"))
                         .style(secondary)
                         .on_press(tag(OverlayAction::ScaleDown)),
+                )
+                .push(
                     button(text("+10%"))
                         .style(secondary)
                         .on_press(tag(OverlayAction::ScaleUp)),
-                    button(text("⟳ 90°"))
-                        .style(secondary)
-                        .on_press(tag(OverlayAction::Rotate)),
-                    button(text(self.i18n.tr("Flip H")))
-                        .style(secondary)
-                        .on_press(tag(OverlayAction::FlipH)),
-                    button(text(self.i18n.tr("Flip V")))
-                        .style(secondary)
-                        .on_press(tag(OverlayAction::FlipV)),
-                ]
-                .spacing(6)
-                .wrap()
-            } else {
-                row![
-                    button(text("⟳ 90°"))
-                        .style(secondary)
-                        .on_press(tag(OverlayAction::Rotate)),
-                    button(text(self.i18n.tr("Flip H")))
-                        .style(secondary)
-                        .on_press(tag(OverlayAction::FlipH)),
-                    button(text(self.i18n.tr("Flip V")))
-                        .style(secondary)
-                        .on_press(tag(OverlayAction::FlipV)),
-                ]
-                .spacing(6)
-                .wrap()
-            },
-            row![
+                );
+        }
+        buttons = buttons
+            .push(
+                button(text("⟳ 90°"))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::Rotate)),
+            )
+            .push(
+                button(text(self.i18n.tr("Flip H")))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::FlipH)),
+            )
+            .push(
+                button(text(self.i18n.tr("Flip V")))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::FlipV)),
+            )
+            .push(
                 button(text(self.i18n.tr("Reset")))
                     .style(secondary)
                     .on_press(tag(OverlayAction::Reset)),
-            ]
-            .spacing(6),
-        ]
-        .spacing(6)
-        .into()
+            );
+        buttons.wrap().into()
     }
 
     /// The tuning area: the asset that was clicked, its first frame, and the parameters it
