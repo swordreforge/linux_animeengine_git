@@ -662,6 +662,22 @@ search field with IME, and Workshop browse/search.
       `iced_material::Theme` (and its widgets) if the look warrants it; light/dark by
       `prefers-color-scheme`; pseudo-glass containers (translucent surface + gradient border,
       explicitly without blur, which a Wayland client cannot do).
+- [x] The palette comes from **noctalia**. Its own "single source of truth for downstream
+      tools" — `$XDG_CACHE_HOME/nyxuri/palette.toml`, `key = "#rrggbb"` — is parsed for the roles
+      iced can use (primary, surface, on_surface, error, with secondary/tertiary as
+      success/warning) and the window's theme is built from it; without the file it falls back to
+      iced_material's dark scheme. The parser is a pure function with a test that pins hex
+      parsing, the role mapping, and the "not a palette" cases. Verified live:
+      `[studio] theme: Material You from …/palette.toml`.
+      It is read **once at boot**, so a wallpaper change shows up on the next launch —
+      watching the file (notify) is the follow-up. The theme *type* is still `iced::Theme`, so no
+      view signature changed.
+- [ ] Turning the theme type over is the real Material step, in this order: `Element<…,
+      iced_material::Theme>` through `view`/`overlay_panel`/`divider`; every `.style(closure)`
+      retyped; the four button styles rewritten against `theme.colors()`; explicit styles for
+      `text_input`/`pick_list`/`scrollable`/`text`, because iced's defaults are defined for
+      `iced::Theme` and stop compiling otherwise; then optionally the `iced_material` widgets
+      themselves for real MD3 shapes and elevation.
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 
