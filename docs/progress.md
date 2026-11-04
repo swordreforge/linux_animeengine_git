@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **135** default (132 lib + 3 CLI); **140** with `bc7` (the `bc7`
+- `cargo test`: **137** default (134 lib + 3 CLI); **142** with `bc7` (the `bc7`
   feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -240,6 +240,13 @@ Interaction and control:
   survived; a sidecar written under `ANIMA_MAX_DECODE_MB=512` was refused on the
   next run with `ANIMA_MAX_DECODE_MB=8` (`bc7 sidecar was encoded with different
   decode limits; re-encoding`) and reused on the run after that.
+- i18n: `anima-i18n verify <catalog>` printed 795 source strings / 31 languages
+  and `rc=1` with `incomplete: ar, bg, cs, ...` (2 missing for `ar`/`bg`/`zh-CN`,
+  19 for `cs`/`da`/`de`, one blank value and 39-124 untranslated each);
+  `anima-i18n install` wrote the catalog to
+  `<data>/AnimaEngine/anima_translations.json` (1,662,324 bytes) and `status` then
+  read it back (language `zh-CN`, 793 entries, catalog version
+  `2026-09-13-v4.7-final`).
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -417,7 +424,15 @@ Interaction and control:
       and are translated by the crop offset; the BC7 sidecar records the crop
       (block format version 3) because without it the position drifted on every
       start
-- [ ] Ship the i18n catalog as a data file; verify all locales
+- [x] i18n catalog as a data file + all-locale verification: the catalog is
+      installed to `<data>/AnimaEngine/anima_translations.json` (first candidate
+      after `ANIMAENGINE_TRANSLATIONS`), `anima-i18n install/status/candidates`
+      manage it, and `anima-i18n verify` reports per language: entries, missing
+      source strings, blank values and untranslated entries (exit 1 when a
+      language is incomplete). Measured on the shipped catalog: 795 source strings
+      over 31 languages, and **no language is complete** — 2 missing for
+      `ar`/`bg`/`zh-CN`, 19 for `cs`/`da`/`de`, 1 blank value and 39-124
+      untranslated entries each
 - [ ] Linux packaging (AppImage/Flatpak); include `libsteam_api.so` if licensing allows
 
 ### Main UI (optional)
@@ -471,6 +486,7 @@ cargo test                                        # pure logic (129 tests)
 cargo test --features "workshop-web,steamworks"   # + Steam adapters (132)
 cargo test --features bc7                         # + BC7 encode/decode (133)
 cargo run --release --features bc7 --example bc7_bench -- <animation>
+cargo run --bin anima-i18n -- verify <catalog.json>   # per-language health
 cargo run --release --example cache_bench -- <animation>   # zstd vs PNG cache
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"

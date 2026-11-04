@@ -223,6 +223,9 @@ pub fn catalog_candidates() -> Vec<PathBuf> {
         candidates.push(PathBuf::from(path));
     }
 
+    // Canonical install location, written by `anima-i18n install`.
+    candidates.push(crate::paths::user_data_dir().join(CATALOG_FILE));
+
     let exe = crate::paths::exe_dir();
     candidates.push(exe.join(CATALOG_FILE));
     candidates.push(exe.join("_internal").join(CATALOG_FILE));
@@ -248,6 +251,104 @@ pub fn load_catalog(path: &Path) -> Catalog {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+/// Validate `source` and install it as the canonical catalog (the user data dir,
+/// which [`catalog_candidates`] searches first after the env override).
+pub fn install_catalog(source: &Path) -> Result<PathBuf> {
+    install_catalog_into(source, &crate::paths::user_data_dir())
+}
+
+/// [`install_catalog`] into an explicit directory (used by tests).
+pub fn install_catalog_into(source: &Path, dir: &Path) -> Result<PathBuf> {
+    let catalog = load_catalog(source);
+    if catalog.is_empty() {
+        return Err(crate::Error::Decode(format!(
+            "{} is not a usable translation catalog",
+            source.display()
+        )));
+    }
+    let destination = dir.join(CATALOG_FILE);
+    crate::paths::ensure_dir(dir)?;
+    // Re-serialised, so a catalog with duplicate keys is normalised on the way in.
+    crate::paths::save_json(&destination, &catalog)?;
+    Ok(destination)
+}
+
+/// Per-language health of a catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageReport {
+    pub language: String,
+    pub entries: usize,
+    /// Source strings some other language translates but this one does not.
+    pub missing: usize,
+    /// Entries with a blank translation.
+    pub empty: usize,
+    /// Entries left identical to their English source.
+    pub untranslated: usize,
+}
+
+impl LanguageReport {
+    /// Complete means nothing is missing or blank (untranslated is informational:
+    /// some strings are legitimately the same in both languages).
+    pub fn is_complete(&self) -> bool {
+        self.missing == 0 && self.empty == 0
+    }
+}
+
+/// Result of checking every language against the union of source strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogReport {
+    /// Distinct source strings across the whole catalog.
+    pub source_entries: usize,
+    pub languages: Vec<LanguageReport>,
+}
+
+impl CatalogReport {
+    /// Languages with missing or blank entries.
+    pub fn incomplete(&self) -> impl Iterator<Item = &LanguageReport> {
+        self.languages.iter().filter(|report| !report.is_complete())
+    }
+}
+
+/// Compare every language against the union of source strings. `None` when the
+/// catalog is empty; this is what `anima-i18n verify` reports.
+pub fn verify_catalog(catalog: &Catalog) -> Option<CatalogReport> {
+    if catalog.is_empty() {
+        return None;
+    }
+
+    let mut sources: HashSet<&str> = HashSet::new();
+    for entries in catalog.values() {
+        sources.extend(entries.keys().map(String::as_str));
+    }
+
+    let mut languages: Vec<LanguageReport> = catalog
+        .iter()
+        .map(|(language, entries)| LanguageReport {
+            language: language.clone(),
+            entries: entries.len(),
+            missing: sources
+                .iter()
+                .copied()
+                .filter(|source| !entries.contains_key(*source))
+                .count(),
+            empty: entries
+                .values()
+                .filter(|value| value.trim().is_empty())
+                .count(),
+            untranslated: entries
+                .iter()
+                .filter(|(source, value)| source.as_str() == value.as_str())
+                .count(),
+        })
+        .collect();
+    languages.sort_by(|left, right| left.language.cmp(&right.language));
+
+    Some(CatalogReport {
+        source_entries: sources.len(),
+        languages,
+    })
 }
 
 /// Diagnostic snapshot for Settings/QA.
@@ -446,5 +547,56 @@ mod tests {
         assert_eq!(saved["language"], "zh-TW");
 
         assert_eq!(detect_language(&prefs), "zh-TW");
+    }
+
+    #[test]
+    fn verify_flags_missing_empty_and_untranslated() {
+        let catalog: Catalog = serde_json::from_str(
+            r#"{
+                "de": {"Hello": "Hallo", "Bye": "", "Untouched": "Untouched"},
+                "fr": {"Hello": "Bonjour"}
+            }"#,
+        )
+        .unwrap();
+
+        let report = verify_catalog(&catalog).unwrap();
+        assert_eq!(report.source_entries, 3);
+        assert_eq!(report.languages.len(), 2);
+
+        let de = &report.languages[0];
+        assert_eq!(de.language, "de");
+        assert_eq!(de.entries, 3);
+        assert_eq!(de.missing, 0);
+        assert_eq!(de.empty, 1);
+        assert_eq!(de.untranslated, 1);
+        assert!(
+            !de.is_complete(),
+            "a blank entry makes a language incomplete"
+        );
+
+        let fr = &report.languages[1];
+        assert_eq!(fr.language, "fr");
+        assert_eq!(fr.missing, 2);
+        assert!(!fr.is_complete());
+
+        assert_eq!(report.incomplete().count(), 1);
+        assert!(verify_catalog(&Catalog::new()).is_none());
+    }
+
+    #[test]
+    fn install_validates_and_copies_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("pack.json");
+        std::fs::write(&source, r#"{"fr":{"Hello":"Bonjour"}}"#).unwrap();
+
+        let data = dir.path().join("data");
+        let installed = install_catalog_into(&source, &data).unwrap();
+        assert_eq!(installed, data.join(CATALOG_FILE));
+        assert!(installed.is_file());
+        assert_eq!(load_catalog(&installed).len(), 1);
+
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, b"not json").unwrap();
+        assert!(install_catalog_into(&bad, &data).is_err());
     }
 }

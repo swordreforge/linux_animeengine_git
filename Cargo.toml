@@ -51,6 +51,10 @@ path = "src/bin/anima-overlay-ctl.rs"
 name = "anima-workshop"
 path = "src/bin/anima-workshop.rs"
 
+[[bin]]
+name = "anima-i18n"
+path = "src/bin/anima-i18n.rs"
+
 [dev-dependencies]
 tempfile = "3"
 gif = "0.13"
