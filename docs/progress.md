@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **137** default (134 lib + 3 CLI); **142** with `bc7` (the `bc7`
+- `cargo test`: **138** default (135 lib + 3 CLI); **143** with `bc7` (the `bc7`
   feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
