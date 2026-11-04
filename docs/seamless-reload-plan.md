@@ -1,5 +1,40 @@
 # Seamless reload for a *geometry change* — implementation plan
 
+## Ordering constraint discovered while reading the code (do this first)
+
+The refactor is *not* a pure substitution. Two things must move before `FrameState`
+can exist:
+
+1. `bind_group_layout`, `sampler` and `uniform` are currently created **after** the
+   frame-storage block (around lines 2450-2520 of `anima-overlay.rs`), but a rebuild
+   needs them to create the new `bind_group`. Move those three above the storage
+   block, before `FrameState::build`. They do not depend on the animation, so the
+   move is safe; the pipelines can stay where they are (they only need the layout).
+2. `width`, `height`, `frame_count` and `crop` are consumed *before* the storage block
+   by the instance/state setup (orientation, persistence, control-file seeding, the
+   surface's initial size). The rebuild therefore cannot just re-derive them: it has
+   to **update the state** (`native_size`, `crop`, `desired_size`, surface size,
+   clamp) from the new `Loaded` and only then create the frames, otherwise the
+   pre-loop values win. Concretely, keep the initial `Loaded` in a variable and have
+   the rebuild path do `let loaded = load_animation(...)?;` plus the state update in
+   the loop before rebuilding.
+
+Measured anchors (this revision of the file, 2917 lines):
+
+| what | line |
+| --- | --- |
+| surface config + `configure` | 2264-2270 |
+| frame-storage decision, texture, uploads | 2272-2392 |
+| BC7 background encoder (captures `animation` by `Arc`) | 2394-2450 |
+| sampler / uniform / bind group layout / bind group | ~2450-2520 |
+| loop locals (`index`, `hot_reload`, …) | ~2560-2608 |
+| `while !state.closed` body | 2609-2868 |
+| pause/quit tail (`persist_geometry`) | 2868-2874 |
+
+Also note: the encoder block captures the animation by `Arc` at that point, so after
+a rebuild it must be re-spawned for the new animation when `blocks` is `None` (this
+was already in the plan; the line reference is new).
+
 ## Where we are
 
 Hot reload has two tiers today:
