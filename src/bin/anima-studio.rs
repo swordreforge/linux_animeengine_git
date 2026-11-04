@@ -98,6 +98,89 @@ fn file_name(asset: &Path) -> String {
         .unwrap_or_else(|| asset.display().to_string())
 }
 
+/// Where noctalia (or any Material You renderer following the same convention) leaves the
+/// dynamic palette: `$XDG_CACHE_HOME/nyxuri/palette.toml`, key = "#rrggbb".
+const PALETTE_HINT: &str = "nyxuri/palette.toml";
+
+fn palette_path() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_CACHE_HOME") {
+        Some(path) if Path::new(&path).is_absolute() => PathBuf::from(path),
+        _ => PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
+    };
+    let path = base.join(PALETTE_HINT);
+    path.is_file().then_some(path)
+}
+
+/// Parse the handful of Material 3 roles iced can use out of a `key = "#rrggbb"` file. Pure,
+/// so it is tested without a desktop.
+fn parse_palette(text: &str) -> Option<iced::theme::Palette> {
+    let mut roles: std::collections::HashMap<&str, iced::Color> = std::collections::HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').trim();
+        if let Some(color) = parse_hex(value) {
+            roles.insert(key.trim(), color);
+        }
+    }
+
+    let primary = *roles.get("primary")?;
+    let background = *roles.get("surface").or_else(|| roles.get("background"))?;
+    let text = *roles
+        .get("on_surface")
+        .or_else(|| roles.get("on_background"))?;
+    Some(iced::theme::Palette {
+        background,
+        text,
+        primary,
+        // iced has no secondary/tertiary roles; map the ones it has onto the same scheme.
+        success: roles.get("secondary").copied().unwrap_or(primary),
+        warning: roles.get("tertiary").copied().unwrap_or(primary),
+        danger: roles.get("error").copied().unwrap_or(primary),
+    })
+}
+
+/// `#rrggbb` or `#rrggbbaa` to a colour.
+fn parse_hex(value: &str) -> Option<iced::Color> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 && hex.len() != 8 {
+        return None;
+    }
+    let channel = |range: std::ops::Range<usize>| {
+        u8::from_str_radix(&hex[range], 16)
+            .ok()
+            .map(|value| f32::from(value) / 255.0)
+    };
+    Some(iced::Color {
+        r: channel(0..2)?,
+        g: channel(2..4)?,
+        b: channel(4..6)?,
+        a: if hex.len() == 8 { channel(6..8)? } else { 1.0 },
+    })
+}
+
+/// The window's theme, resolved once at boot: noctalia's dynamic Material You palette when it
+/// is there, otherwise iced_material's Material 3 dark scheme.
+fn resolve_theme() -> iced::Theme {
+    if let Some(path) = palette_path()
+        && let Ok(text) = std::fs::read_to_string(&path)
+        && let Some(palette) = parse_palette(&text)
+    {
+        eprintln!("[studio] theme: Material You from {}", path.display());
+        return iced::Theme::custom("Material You (noctalia)", palette);
+    }
+    use iced::theme::Base;
+    match Base::palette(&iced_material::Theme::Dark) {
+        Some(palette) => iced::Theme::custom("AnimaEngine MD3", palette),
+        None => iced::Theme::Dark,
+    }
+}
+
 /// 1px separator. 0.14 dropped the `vertical_rule`/`horizontal_rule` helpers, so a line
 /// is a zero-content container that only carries a background.
 fn divider(width: Length, height: Length) -> iced::widget::Container<'static, Message> {
@@ -553,6 +636,9 @@ struct Studio {
     selected_item: Option<u64>,
     /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
     query: String,
+    /// Material 3 colours, resolved at boot: noctalia's dynamic palette when present, else
+    /// iced_material's dark scheme. Kept as an `iced::Theme` so no view signature changes.
+    theme: iced::Theme,
     /// Whether the panel follows the overlay the user last touched. Locking it keeps the
     /// selection on one instance while several are being dragged in turn.
     follow: bool,
@@ -586,6 +672,7 @@ impl Studio {
             selected_item: None,
             query: String::new(),
             follow: true,
+            theme: resolve_theme(),
             remote: None,
             remote_note: String::new(),
             note: String::new(),
@@ -1439,11 +1526,7 @@ impl Studio {
     /// signature and button style untouched. Reversible: delete this and the window falls back
     /// to iced's theme.
     fn theme(&self) -> iced::Theme {
-        use iced::theme::Base;
-        match Base::palette(&iced_material::Theme::Dark) {
-            Some(palette) => iced::Theme::custom("AnimaEngine MD3", palette),
-            None => iced::Theme::Dark,
-        }
+        self.theme.clone()
     }
 
     /// The four primary languages, labelled with their native names.
@@ -1508,6 +1591,25 @@ mod tests {
             assert!(!instance.label.is_empty());
         }
         eprintln!("[studio] {} overlay control file(s)", instances.len());
+    }
+
+    #[test]
+    fn the_noctalia_palette_parses() {
+        let text = "# generated by noctalia\n\
+                    primary = \"#8bd0ef\"\nsecondary = \"#b4cad6\"\ntertiary = \"#c6c2ea\"\n\
+                    error = \"#ffb4ab\"\nsurface = \"#0f1417\"\non_surface = \"#dfe3e7\"\n";
+        let palette = parse_palette(text).expect("palette");
+        assert_eq!(palette.primary, parse_hex("#8bd0ef").unwrap());
+        assert_eq!(palette.background, parse_hex("#0f1417").unwrap());
+        assert_eq!(palette.text, parse_hex("#dfe3e7").unwrap());
+        assert_eq!(palette.danger, parse_hex("#ffb4ab").unwrap());
+        assert_eq!(palette.success, parse_hex("#b4cad6").unwrap());
+
+        // Not a palette, and a truncated colour is not one either.
+        assert!(parse_palette("# only a comment").is_none());
+        assert!(parse_palette("primary = \"#12345\"").is_none());
+        assert!(parse_hex("#8bd0ef").is_some());
+        assert!(parse_hex("8bd0ef").is_none());
     }
 
     #[test]
