@@ -352,6 +352,23 @@ fn control_events() -> Subscription<Message> {
 
 /// 1px separator. 0.14 dropped the `vertical_rule`/`horizontal_rule` helpers, so a line
 /// is a zero-content container that only carries a background.
+/// A button whose label flips with a flag. The label always says **what pressing it will do** — "Show"
+/// while the thing is hidden, "Unlock" while it is locked — and the fill says what the state is. One
+/// helper, so the toggles cannot each invent their own convention, which is how "Hide" ends up meaning
+/// two different things two rows apart.
+fn toggle<'a>(
+    theme: &'a Studio,
+    on: bool,
+    when_on: &str,
+    when_off: &str,
+    message: Message,
+) -> El<'a> {
+    button(text(theme.i18n.tr(if on { when_on } else { when_off })))
+        .style(if on { primary } else { secondary })
+        .on_press(message)
+        .into()
+}
+
 fn divider<'a>(
     width: Length,
     height: Length,
@@ -2007,7 +2024,7 @@ impl Studio {
                 } else {
                     actions.push(
                         button(text(self.i18n.tr("Remove local copy")))
-                            .style(secondary)
+                            .style(danger)
                             .on_press(Message::ArmRemove(id)),
                     )
                 };
@@ -2248,13 +2265,13 @@ impl Studio {
             divider(Length::Fill, Length::Fixed(1.0)),
             row![
                 text(self.i18n.tr("Reduce motion")).size(14),
-                button(text(if self.motion {
-                    "motion on"
-                } else {
-                    "motion off"
-                }))
-                .style(if self.motion { secondary } else { primary })
-                .on_press(Message::ToggleReduceMotion),
+                toggle(
+                    self,
+                    self.motion,
+                    "turn motion off",
+                    "turn motion on",
+                    Message::ToggleReduceMotion,
+                ),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -2695,24 +2712,20 @@ impl Studio {
         // them cost four lines of height for empty space. `.wrap()` still moves them down when narrow.
         let mut buttons = row![].spacing(6);
         buttons = buttons
-            .push(
-                button(text(if hidden {
-                    self.i18n.tr("Show")
-                } else {
-                    self.i18n.tr("Hide")
-                }))
-                .style(if hidden { primary } else { secondary })
-                .on_press(tag(OverlayAction::ToggleHidden)),
-            )
-            .push(
-                button(text(if locked {
-                    self.i18n.tr("Unlock")
-                } else {
-                    self.i18n.tr("Lock")
-                }))
-                .style(if locked { primary } else { secondary })
-                .on_press(tag(OverlayAction::ToggleLocked)),
-            )
+            .push(toggle(
+                self,
+                hidden,
+                "Show",
+                "Hide",
+                tag(OverlayAction::ToggleHidden),
+            ))
+            .push(toggle(
+                self,
+                locked,
+                "Unlock",
+                "Lock",
+                tag(OverlayAction::ToggleLocked),
+            ))
             .push(
                 button(text(self.i18n.tr("Click-through")))
                     .style(secondary)
