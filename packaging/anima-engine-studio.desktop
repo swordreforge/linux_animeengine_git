@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AnimaEngine Studio
+GenericName=Overlay and Workshop manager
+Comment=Browse Workshop items, control the running overlay and download new animations
+Exec=anima-studio
+TryExec=anima-studio
+Icon=anima-engine
+Terminal=false
+Categories=Graphics;
+Keywords=anime;overlay;steam;workshop;animation;
+StartupNotify=false
+StartupWMClass=anima-engine-studio

@@ -23,6 +23,9 @@ WRITE_NIRI=0
 UNINSTALL=0
 VALIDATE=1
 BINS=(anima-overlay anima-overlay-ctl anima-workshop anima-i18n)
+# Built with `--features studio` (it pulls the whole iced tree). Installed only when the
+# binary exists, so an overlay-only build keeps working.
+OPTIONAL_BINS=(anima-studio)
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,7 +50,8 @@ NIRI_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/niri"
 
 if [ "$UNINSTALL" = 1 ]; then
   for bin in "${BINS[@]}"; do rm -f "$PREFIX/bin/$bin"; done
-  rm -f "$APPS/anima-engine-overlay.desktop" "$APPS/anima-engine-workshop.desktop"
+  rm -f "$APPS/anima-engine-overlay.desktop" "$APPS/anima-engine-workshop.desktop" \
+    "$APPS/anima-engine-studio.desktop"
   rm -f "$ICONS/anima-engine.svg" "$METAINFO_FILE" "$NIRI_DIR/anima.kdl"
   echo "removed the installed files (translation catalog and instance state kept)"
   exit 0
@@ -63,8 +67,24 @@ for bin in "${BINS[@]}"; do
   echo "bin      $PREFIX/bin/$bin"
 done
 
+INSTALLED_STUDIO=0
+for bin in "${OPTIONAL_BINS[@]}"; do
+  source_binary="$BIN_SRC/$bin"
+  if [ -x "$source_binary" ]; then
+    install -Dm755 "$source_binary" "$PREFIX/bin/$bin"
+    echo "bin      $PREFIX/bin/$bin"
+    INSTALLED_STUDIO=1
+  else
+    echo "skipped  $bin — build with: cargo build --release --features overlay,bc7,studio"
+  fi
+done
+
 install -Dm644 "$REPO/packaging/anima-engine-overlay.desktop" "$APPS/anima-engine-overlay.desktop"
 install -Dm644 "$REPO/packaging/anima-engine-workshop.desktop" "$APPS/anima-engine-workshop.desktop"
+if [ "$INSTALLED_STUDIO" = 1 ]; then
+  install -Dm644 "$REPO/packaging/anima-engine-studio.desktop" "$APPS/anima-engine-studio.desktop"
+  echo "desktop  $APPS/anima-engine-studio.desktop"
+fi
 install -Dm644 "$REPO/packaging/anima-engine.svg" "$ICONS/anima-engine.svg"
 install -Dm644 "$REPO/packaging/io.github.swordreforge.AnimaEngine.metainfo.xml" "$METAINFO_FILE"
 echo "desktop  $APPS/anima-engine-overlay.desktop"
@@ -83,8 +103,9 @@ fi
 
 if [ "$VALIDATE" = 1 ]; then
   if command -v desktop-file-validate >/dev/null 2>&1; then
-    desktop-file-validate "$APPS/anima-engine-overlay.desktop" \
-      "$APPS/anima-engine-workshop.desktop" && echo "desktop-file-validate: ok"
+    entries=("$APPS/anima-engine-overlay.desktop" "$APPS/anima-engine-workshop.desktop")
+    [ "$INSTALLED_STUDIO" = 1 ] && entries+=("$APPS/anima-engine-studio.desktop")
+    desktop-file-validate "${entries[@]}" && echo "desktop-file-validate: ok"
   fi
   if command -v appstreamcli >/dev/null 2>&1; then
     appstreamcli validate --no-net "$METAINFO_FILE" && echo "appstreamcli: ok"

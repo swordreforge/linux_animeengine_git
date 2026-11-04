@@ -25,6 +25,7 @@
     <binary>anima-overlay-ctl</binary>
     <binary>anima-workshop</binary>
     <binary>anima-i18n</binary>
+    <binary>anima-studio</binary>
   </provides>
   <categories>
     <category>Utility</category>

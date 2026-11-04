@@ -35,6 +35,10 @@ use iced::widget::{button, column, container, image, pick_list, row, scrollable,
 use iced::{Element, Length, Subscription, Task};
 
 const APP_TITLE: &str = "AnimaEngine";
+/// Wayland app id / X11 class. It matches `packaging/anima-engine-studio.desktop`, which
+/// is what lets the compositor associate the window with its entry (icon, name, grouping).
+/// Without it the app id is empty and the window shows up unattached.
+const APP_ID: &str = "anima-engine-studio";
 /// Fixed height of the preview slot, so items with different aspect ratios do not make
 /// everything below them jump.
 const PREVIEW_HEIGHT: f32 = 200.0;
@@ -893,6 +897,10 @@ fn main() -> iced::Result {
         .window(iced::window::Settings {
             size: iced::Size::new(1100.0, 720.0),
             min_size: Some(iced::Size::new(760.0, 520.0)),
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: APP_ID.to_string(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .subscription(Studio::subscription)

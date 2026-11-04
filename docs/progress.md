@@ -469,9 +469,24 @@ Interaction and control:
       `touch`ing one control file logged `overlay panel refreshed: 11 instance(s)` —
       exactly one reload. An overlay dragging or scaling itself writes its own control
       file, so that shows up the same way.
-- [ ] Not yet: a search field with IME, API-key browse/search, a desktop entry for the
-      window, list-row thumbnails once the library is big, and a process-liveness check
-      (the panel lists control files, not running processes — a stale file still shows).
+- [x] Packaging for the window: `packaging/anima-engine-studio.desktop` (`Exec=anima-studio`,
+      `Icon=anima-engine`, single main category — `desktop-file-validate` warns about two)
+      and, more importantly, the window's **application id**, which was empty before: the
+      Linux `PlatformSpecific.application_id` now carries `anima-engine-studio`, matching
+      the desktop file's basename as the iced docs advise, so the compositor can associate
+      the window with its entry. `install.sh` installs the studio binary and entry only when
+      the binary exists (an overlay-only build prints `skipped anima-studio …` and stays
+      clean), and `install-remote.sh` gained `--studio`.
+      Verified: `niri msg windows` shows `App ID: "anima-engine-studio"` (it was `""`), and a
+      temp-prefix install validates `desktop-file-validate: ok` both with and without the
+      studio binary.
+- [ ] Not yet: Workshop **metadata is not cached on disk**. `fetch_meta` hits the keyless
+      Steam API once per item per session and only the preview image is persisted
+      (`~/.local/share/AnimaEngine/thumbnails/<id>.img`), so titles and view counts vanish
+      offline and are re-fetched after every restart; a `<id>.json` next to the image with
+      a TTL would fix both. Also: a search field with IME, API-key browse/search, list-row
+      thumbnails once the library is big, and a process-liveness check for the overlay
+      panel (it lists control files, not running processes).
 
 ### Steam / Workshop
 

@@ -3,6 +3,7 @@
 #
 #   curl -fsSL <url-to-this-script> | sh
 #   curl -fsSL <url> | sh -s -- --prefix "$HOME/.local" --no-bc7
+#   curl -fsSL <url> | sh -s -- --studio        # also build the main window (Iced)
 #
 # Environment:
 #   ANIMA_REPO_URL   git repository to build from (required unless run from a checkout)
@@ -19,11 +20,12 @@ REF="${ANIMA_REF:-main}"
 REPO_URL="${ANIMA_REPO_URL:-}"
 CATALOG=""
 BC7=1
+STUDIO=0
 DRY=0
 
 usage() {
-    sed -n '2,16p' "$0" 2>/dev/null || printf '%s\n' \
-        "usage: curl -fsSL <url> | sh -s -- [--prefix DIR] [--ref REF] [--repo URL] [--no-bc7] [--catalog FILE]"
+    sed -n '2,17p' "$0" 2>/dev/null || printf '%s\n' \
+        "usage: curl -fsSL <url> | sh -s -- [--prefix DIR] [--ref REF] [--repo URL] [--no-bc7] [--studio] [--catalog FILE]"
     exit 0
 }
 
@@ -34,6 +36,7 @@ while [ $# -gt 0 ]; do
         --repo) REPO_URL="$2"; shift 2 ;;
         --catalog) CATALOG="$2"; shift 2 ;;
         --no-bc7) BC7=0; shift ;;
+        --studio) STUDIO=1; shift ;;
         --dry-run) DRY=1; shift ;;
         -h|--help) usage ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
@@ -84,6 +87,7 @@ fi
 
 FEATURES="overlay"
 [ "$BC7" = 1 ] && FEATURES="overlay,bc7"
+[ "$STUDIO" = 1 ] && FEATURES="$FEATURES,studio"
 
 if [ "$DRY" = 1 ]; then
     say "dry run: cargo build --release --features $FEATURES"

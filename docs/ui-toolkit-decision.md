@@ -70,7 +70,9 @@ render path.
   `Download` through SteamCMD on a detached thread; subscribe/unsubscribe handed to the
   Steam client via `steam://url/CommunityFilePage/<id>`; local removal restricted to our
   own SteamCMD root behind a confirmation.
-- Still to do: a search field with IME; API-key browse/search; list-row thumbnails; a
-  process-liveness check for the overlay panel (it lists control files); and a window
-  icon + desktop entry (the packaging step already ships an `anima-overlay` entry, not
-  yet a studio one).
+- The window sets its Wayland application id (`PlatformSpecific.application_id`) to
+  `anima-engine-studio`, matching `packaging/anima-engine-studio.desktop`. Before that the
+  app id was **empty** and the compositor had nothing to associate the window with — no
+  icon, no proper grouping.
+- Still to do: a search field with IME; API-key browse/search; list-row thumbnails; and a
+  process-liveness check for the overlay panel (it lists control files).
