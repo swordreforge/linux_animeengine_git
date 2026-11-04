@@ -105,10 +105,17 @@ fn danger(
     }
 }
 
-/// How often the window asks Steam what it is doing: one small `.acf`, twice a second. A download can land
-/// in well under a second, so the tick is deliberately short — the point is to catch the state while it is
-/// true, not to be frugal with a file this size.
+/// How often the window measures the items' directories: twice a second. A download can land between two
+/// ticks, so the point is to catch the state while it is true rather than to be frugal — the walk is a few
+/// hundred `stat` calls over small trees, and it happens on this tick only.
 const WORKSHOP_POLL_MS: u64 = 500;
+/// How many quiet ticks before something that stopped growing is no longer shown as downloading. Three at
+/// 500 ms means a finished download stays on screen about a second and a half, which is the difference
+/// between "I never saw it" and "I saw it finish".
+const QUIET_TICKS: u8 = 3;
+/// The floor: a full rescan — the list, the states, the measurement — every two seconds no matter what the
+/// watcher and the fast tick managed. Whatever they miss, this catches.
+const WORKSHOP_FALLBACK_MS: u64 = 2000;
 
 /// The download cell: it exists while the Steam client owes the item a download, and reports once it does
 /// not. Nothing to press either way — the download is the client's, and its progress is what Steam writes
@@ -971,7 +978,6 @@ enum Message {
     KeyDraft(String),
     /// Write the key field to `studio.json`.
     SaveKey,
-    /// Ask Steam what it is doing, one second at a time, while it owes an item a download.
     PollWorkshop,
     /// Close the removal warning without deleting anything.
     CancelRemove,
@@ -1353,6 +1359,9 @@ struct Studio {
     /// Bytes on disk for the items Steam still owes, measured with the states: the only progress there is,
     /// since the `.acf` records a final size only once the download finishes.
     progress: std::collections::BTreeMap<u64, u64>,
+    /// Ticks since each id last grew, for the ones that are growing. A download that lands between two
+    /// ticks still gets a moment on screen, which a state read straight from Steam's metadata cannot give.
+    downloading: std::collections::BTreeMap<u64, u8>,
     /// The selected Workshop item, by id: an index moves when the list changes under it.
     selected_item: Option<u64>,
     /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
@@ -1438,6 +1447,7 @@ impl Studio {
             snapshot: WorkshopSnapshot::default(),
             states: std::collections::BTreeMap::new(),
             progress: std::collections::BTreeMap::new(),
+            downloading: std::collections::BTreeMap::new(),
             selected_item: None,
             query: String::new(),
             follow: true,
@@ -1498,15 +1508,28 @@ impl Studio {
             .ok()
             .and_then(|text| anima_engine_rs::workshop::installed_items(&text).ok())
             .unwrap_or_default();
-        // Measured only for the items Steam still owes. Walking a finished item's tree every second would
-        // be work for nothing, and this is the number the row shows while it waits.
+        // Measured for everything the client knows about, and the growth is the signal — deliberately not
+        // Steam's metadata, which is written when Steam feels like writing it. A directory that got bigger
+        // since the last look is a download happening, whatever any `.acf` has got around to saying.
         let content = anima_engine_rs::workshop::content_root(&library);
+        let previous = std::mem::take(&mut self.progress);
         self.progress = self
-            .states
-            .iter()
-            .filter(|(_, state)| state.pending())
-            .map(|(id, _)| (*id, anima_engine_rs::workshop::item_bytes(&content, *id)))
+            .snapshot
+            .items
+            .keys()
+            .chain(self.states.keys())
+            .map(|id| (*id, anima_engine_rs::workshop::item_bytes(&content, *id)))
             .collect();
+        for (id, bytes) in &self.progress {
+            let grew = previous.get(id).is_some_and(|was| bytes > was);
+            let quiet = self.downloading.entry(*id).or_insert(0);
+            if grew {
+                *quiet = 0;
+            } else if *quiet < QUIET_TICKS {
+                *quiet += 1;
+            }
+        }
+        self.downloading.retain(|_, quiet| *quiet < QUIET_TICKS);
     }
 
     fn refresh(&mut self) {
@@ -2189,8 +2212,9 @@ impl Studio {
                 // button is the whole story — and once the client has the item, Steam's copy *is* the
                 // copy, so the cell reports instead of offering a second one.
                 if subscribed {
+                    let growing = self.downloading.contains_key(&id);
                     let bytes = self.progress.get(&id).copied().unwrap_or(0);
-                    actions = actions.push(download_state(self, pending, bytes));
+                    actions = actions.push(download_state(self, pending || growing, bytes));
                 }
                 // One button whose word says which way the toggle goes. The state is the Steam client's
                 // own list, so it cannot drift from what Steam thinks — and the tooltip says where the
@@ -2296,7 +2320,7 @@ impl Studio {
                         if subscribed {
                             download_state(
                                 self,
-                                pending,
+                                pending || self.downloading.contains_key(&id),
                                 self.progress.get(&id).copied().unwrap_or(0),
                             )
                         } else {
@@ -3243,6 +3267,10 @@ impl Studio {
             // Outside the `animating` branch on purpose: a download is not an animation.
             iced::time::every(std::time::Duration::from_millis(WORKSHOP_POLL_MS))
                 .map(|_| Message::PollWorkshop),
+            // The floor. Everything above can fail — an event the watcher never got, an `.acf` Steam has
+            // not written yet — and this one still puts the window back in sync two seconds later.
+            iced::time::every(std::time::Duration::from_millis(WORKSHOP_FALLBACK_MS))
+                .map(|_| Message::Refresh),
         ];
         if self.animating() {
             subscriptions.push(

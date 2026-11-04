@@ -1135,6 +1135,19 @@ search field with IME, and Workshop browse/search.
       are asserted in the tests.
       The interval came down to 500 ms with them: a download can land in well under a second, and the point
       is to catch the state while it is true, not to be frugal with a file this size.
+- [x] **The floor, and the growth signal — both the user's calls, after mine failed twice.** The manifest
+      trick was too far up the chain: it depends on Steam having written metadata, and it left the row
+      invisible whenever Steam had not. Two things replace the dependence on it.
+      First, **the directories are the measurement.** Every item's tree is walked on the half-second tick, and
+      a directory that got bigger since the last look *is* a download happening: no `.acf`, no manifest, no
+      Steam cooperation required. It stays on screen for about a second and a half after it stops growing,
+      which is the difference between "I never saw it" and "I saw it finish".
+      Second, **a floor.** A full rescan every two seconds regardless of what the watcher and the fast tick
+      managed — and the `Refresh` handler that already existed re-reads the list *and* asks for titles, so
+      this is one subscription line and everything the earlier paths could miss is caught anyway.
+      The cost is a few hundred `stat` calls twice a second over small trees. That is cheaper than the bug it
+      replaces, and it is the user's trade to make, not mine: I twice chose the cleverer mechanism and twice
+      it was the one that did not work.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.
