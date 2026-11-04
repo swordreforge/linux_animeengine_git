@@ -805,6 +805,23 @@ search field with IME, and Workshop browse/search.
       a message later it would draw the new line at full opacity once and then fade it, which reads
       as a flash. Nineteen hand edits were also nineteen chances to miss one. The alpha rides on the
       text colour, because iced has no way to fade a container.
+- [x] Workshop search paginates properly, and the picker says how many pages there are. The old code
+      sent `page=1` and read a total from nothing, which is exactly the complaint: you had to walk
+      forward to learn there was more. Steam's documentation is blunt — `page` is **capped at 1000**
+      and "cannot paginate deeply"; the `cursor` parameter (first request `"*"`, then the
+      `next_cursor` of each response) is what they tell you to use. `query_files_page` sends the
+      cursor now and parses `QueryPage { total, next_cursor, items }`.
+      The pager shows `2/37` between `‹` and `›` — a button with no press handler is iced's disabled
+      state — and the status line says `about 1823 Workshop result(s) · page 2/37`. Going back works
+      because each page's cursor is recorded before the request that uses it, and the search box can
+      be edited without changing what "next page" means, because the query the results belong to is
+      kept separately.
+      Honest notes: Steam's `total` can be rounded for very broad queries, which is why the UI says
+      "about"; a page never visited needs one extra round trip to show, since its cursor is not
+      known until Steam hands it over.
+- [x] The missing-key message says where to get a key now — `STEAM_WEB_API_KEY is not set — …` with
+      `https://steamcommunity.com/dev/apikey` — because "not set" on its own is just a complaint. A
+      test asserts the URL is in the message.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

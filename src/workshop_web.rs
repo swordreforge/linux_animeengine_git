@@ -93,6 +93,47 @@ pub fn parse_published_file_details(json: &str) -> Result<Vec<PublishedFileDetai
     Ok(envelope.response.publishedfiledetails)
 }
 
+/// One page of a `QueryFiles` response.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QueryPage {
+    /// How many items Steam says match the query. Not a promise — it can be rounded for very
+    /// broad searches — which is why the window says "about" when it shows it.
+    pub total: u64,
+    /// What to send as `cursor` for the page after this one. `None` means this is the last page.
+    pub next_cursor: Option<String>,
+    pub items: Vec<PublishedFileDetails>,
+}
+
+#[derive(Deserialize)]
+struct QueryEnvelope {
+    response: QueryBody,
+}
+
+#[derive(Deserialize)]
+struct QueryBody {
+    #[serde(default)]
+    total: u64,
+    #[serde(default)]
+    next_cursor: String,
+    #[serde(default)]
+    publishedfiledetails: Vec<PublishedFileDetails>,
+}
+
+/// Parse a `QueryFiles` response body, total and cursor included.
+///
+/// The cursor matters: `page` is capped at 1000 and cannot paginate deeply, which is why Steam's
+/// own documentation prefers the cursor. An empty or missing `next_cursor` is the last page.
+pub fn parse_query_page(json: &str) -> Result<QueryPage> {
+    let envelope: QueryEnvelope =
+        serde_json::from_str(json).map_err(|err| Error::Parse(err.to_string()))?;
+    let cursor = envelope.response.next_cursor.trim();
+    Ok(QueryPage {
+        total: envelope.response.total,
+        next_cursor: (!cursor.is_empty()).then(|| cursor.to_string()),
+        items: envelope.response.publishedfiledetails,
+    })
+}
+
 /// Build the `application/x-www-form-urlencoded` body for
 /// `GetPublishedFileDetails`.
 pub fn build_details_form(ids: &[u64]) -> String {
@@ -180,13 +221,17 @@ mod web {
         }
 
         /// Browse/search (requires `STEAM_WEB_API_KEY`).
-        pub fn query_files(
+        ///
+        /// `cursor` is the `next_cursor` of the previous page; `None` asks for the first page.
+        /// Steam's documentation prefers this over `page`, which is capped at 1000 and therefore
+        /// cannot paginate deeply.
+        pub fn query_files_page(
             &self,
             app_id: u64,
-            page: u32,
+            cursor: Option<&str>,
             num_per_page: u32,
             search_text: Option<&str>,
-        ) -> Result<Vec<PublishedFileDetails>> {
+        ) -> Result<QueryPage> {
             let key = self
                 .key
                 .as_ref()
@@ -196,7 +241,7 @@ mod web {
                 ("key", key.clone()),
                 ("appid", app_id.to_string()),
                 ("query_type", "0".to_string()),
-                ("page", page.to_string()),
+                ("cursor", cursor.unwrap_or("*").to_string()),
                 ("numperpage", num_per_page.min(100).to_string()),
                 ("return_short_description", "true".to_string()),
             ];
@@ -213,7 +258,7 @@ mod web {
                 .map_err(http_err)?
                 .text()
                 .map_err(http_err)?;
-            parse_published_file_details(&text)
+            parse_query_page(&text)
         }
     }
 
@@ -328,8 +373,35 @@ mod tests {
     fn query_files_without_key_errors() {
         let web = WorkshopWeb::with_base_url("http://127.0.0.1:1", None).unwrap();
         assert!(matches!(
-            web.query_files(3474900, 1, 20, None),
+            web.query_files_page(3474900, None, 20, None),
             Err(Error::Http(_))
         ));
+    }
+
+    #[test]
+    fn parses_a_page_with_its_total_and_cursor() {
+        let json = r#"{"response":{"total":1823,"next_cursor":"AoIIP1gA","publishedfiledetails":[
+            {"publishedfileid":"1","title":"first"},
+            {"publishedfileid":"2","title":"second"}
+        ]}}"#;
+        let page = parse_query_page(json).unwrap();
+        assert_eq!(page.total, 1823);
+        assert_eq!(page.next_cursor.as_deref(), Some("AoIIP1gA"));
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].title, "first");
+
+        // The last page has no cursor to give, and a response without the fields at all is a
+        // page of nothing rather than an error.
+        let last = parse_query_page(
+            r#"{"response":{"total":2,"next_cursor":"","publishedfiledetails":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(last.next_cursor, None);
+        assert!(
+            parse_query_page(r#"{"response":{"publishedfiledetails":[]}}"#)
+                .unwrap()
+                .next_cursor
+                .is_none()
+        );
     }
 }

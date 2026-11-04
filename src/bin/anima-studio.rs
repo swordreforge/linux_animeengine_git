@@ -485,30 +485,61 @@ fn search_text(query: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// Ask Steam for Workshop items. Needs `STEAM_WEB_API_KEY`; a missing key is reported by name
-/// so the caller can say exactly what is wrong instead of showing an empty list.
-fn fetch_remote(query: Option<String>) -> Result<Vec<RemoteRow>, String> {
+/// How many results one Workshop request asks for.
+const REMOTE_PER_PAGE: u32 = 50;
+
+/// One page of Workshop search results: what Steam says the total is, where the next page starts,
+/// and the rows themselves.
+#[derive(Debug, Clone)]
+struct RemotePage {
+    total: u64,
+    next_cursor: Option<String>,
+    rows: Vec<RemoteRow>,
+}
+
+/// How many pages `total` results make, at least one: a pager that says "1/0" is worse than no
+/// pager at all.
+fn page_count(total: u64, per_page: u32) -> u32 {
+    let per_page = u64::from(per_page.max(1));
+    (total.div_ceil(per_page)).max(1).min(u64::from(u32::MAX)) as u32
+}
+
+/// Ask Steam for one page of Workshop items. Needs `STEAM_WEB_API_KEY`; a missing key is reported
+/// by name — and with where to get one — so the caller can say exactly what is wrong instead of
+/// showing an empty list.
+fn fetch_remote(query: Option<String>, cursor: Option<String>) -> Result<RemotePage, String> {
     let web = WorkshopWeb::new().map_err(|error| error.to_string())?;
     if !web.has_api_key() {
         return Err(format!(
-            "{} is not set — a Steam Web API key is needed for browsing; installed items work without one",
+            "{} is not set — browsing the Workshop needs a Steam Web API key \
+             (https://steamcommunity.com/dev/apikey); installed items work without one",
             anima_engine_rs::workshop_web::API_KEY_ENV
         ));
     }
-    let details = web
-        .query_files(anima_engine_rs::workshop::APP_ID, 1, 50, query.as_deref())
+    let page = web
+        .query_files_page(
+            anima_engine_rs::workshop::APP_ID,
+            cursor.as_deref(),
+            REMOTE_PER_PAGE,
+            query.as_deref(),
+        )
         .map_err(|error| error.to_string())?;
-    Ok(details
-        .into_iter()
-        .filter_map(|details| {
-            let id = details.id()?;
-            Some(RemoteRow {
-                id,
-                title: details.title,
-                subscriptions: details.subscriptions,
+    Ok(RemotePage {
+        total: page.total,
+        next_cursor: page.next_cursor,
+        rows: page
+            .items
+            .into_iter()
+            .filter_map(|details| {
+                let id = details.id()?;
+                Some(RemoteRow {
+                    id,
+                    title: details.title,
+                    subscriptions: details.subscriptions,
+                })
             })
-        })
-        .collect())
+            .collect(),
+    })
 }
 
 /// Does `item` match `query`? The id, the Steam title and the asset file names are searched,
@@ -751,7 +782,9 @@ enum Message {
     ClearSearch,
     /// Search the Workshop itself (needs `STEAM_WEB_API_KEY`).
     SearchSteam,
-    RemoteResults(Result<Vec<RemoteRow>, String>),
+    RemoteResults(u32, Result<RemotePage, String>),
+    /// Ask for another page of the same search.
+    RemotePage(u32),
     ShowInstalled,
     /// Open the floating picker: typing, or the button in the search row.
     OpenPicker,
@@ -1042,6 +1075,17 @@ struct Studio {
     remote: Option<Vec<RemoteRow>>,
     /// Why a Steam search produced nothing (missing key, offline), shown in the status line.
     remote_note: String,
+    /// Which page of the search is showing, how many there are in total, and the cursor each page
+    /// started from — Steam paginates by cursor, and going back needs the one we used.
+    remote_page: u32,
+    remote_total: u64,
+    remote_cursors: Vec<Option<String>>,
+    /// The cursor for the page after this one, as Steam last reported it.
+    remote_next: Option<String>,
+    /// The query the current results are for: editing the search box must not change what "next
+    /// page" means.
+    remote_query: Option<String>,
+    remote_loading: bool,
     /// Whether the floating picker is up. The workshop list used to be a permanent region of
     /// the left column, where it squeezed the overlay panel; now it floats over the left half
     /// and the panel owns the column.
@@ -1101,6 +1145,12 @@ impl Studio {
             theme: resolve_theme(),
             remote: None,
             remote_note: String::new(),
+            remote_page: 1,
+            remote_total: 0,
+            remote_cursors: vec![None],
+            remote_next: None,
+            remote_query: None,
+            remote_loading: false,
             picker: false,
             note: String::new(),
             meta: HashMap::new(),
@@ -1150,6 +1200,35 @@ impl Studio {
 
     fn item(&self, id: u64) -> Option<&WorkshopItem> {
         self.snapshot.items.get(&id)
+    }
+
+    /// Load one page of the Workshop search. Page 1 starts at the beginning; any other page needs
+    /// the cursor that identifies it, which is remembered in `remote_cursors` — or, for a page we
+    /// have not been to, the cursor Steam gave us for the page after this one.
+    fn goto_remote_page(&mut self, page: u32) -> Task<Message> {
+        let page = page.max(1);
+        let cursor = if page == 1 {
+            None
+        } else {
+            self.remote_cursors
+                .get(page as usize - 1)
+                .cloned()
+                .flatten()
+                .or_else(|| self.remote_next.clone())
+        };
+        // Record what this page is asking for before asking, so coming back to it later is a
+        // request with the same cursor rather than a guess.
+        if self.remote_cursors.len() < page as usize {
+            self.remote_cursors.resize(page as usize, None);
+        }
+        self.remote_cursors[page as usize - 1] = cursor.clone();
+
+        let query = self.remote_query.clone();
+        self.remote_loading = true;
+        self.remote_note = format!("searching the Workshop… (page {page})");
+        Task::perform(async move { fetch_remote(query, cursor) }, move |result| {
+            Message::RemoteResults(page, result)
+        })
     }
 
     /// Load metadata + preview for `id` on the task pool (the HTTP + decode are
@@ -1305,26 +1384,49 @@ impl Studio {
             }
             Message::ClearSearch => self.query.clear(),
             Message::SearchSteam => {
-                let query = search_text(&self.query);
-                self.remote_note = "searching the Workshop…".to_string();
+                // A new search starts at the first page, with no cursor history behind it.
+                self.remote_query = search_text(&self.query);
+                self.remote_page = 1;
+                self.remote_cursors = vec![None];
+                self.remote_next = None;
+                self.remote_total = 0;
                 self.open_picker();
-                return Task::perform(async move { fetch_remote(query) }, Message::RemoteResults);
+                return self.goto_remote_page(1);
             }
-            Message::RemoteResults(Ok(rows)) => {
-                self.remote_note = match rows.len() {
+            Message::RemotePage(page) => return self.goto_remote_page(page),
+            Message::RemoteResults(page, Ok(loaded)) => {
+                self.remote_page = page;
+                self.remote_total = loaded.total;
+                self.remote_next = loaded.next_cursor;
+                self.remote_loading = false;
+                // Steam counts its matches, so the pager can say how many pages there are instead
+                // of making the user walk to the end to find out.
+                self.remote_note = match loaded.rows.len() {
                     0 => "no Workshop results".to_string(),
+                    _ if loaded.total > 0 => format!(
+                        "about {} Workshop result(s) · page {}/{}",
+                        loaded.total,
+                        page,
+                        page_count(loaded.total, REMOTE_PER_PAGE)
+                    ),
                     count => format!("{count} Workshop result(s)"),
                 };
-                self.remote = Some(rows);
+                self.remote = Some(loaded.rows);
                 self.open_picker();
             }
-            Message::RemoteResults(Err(error)) => {
+            Message::RemoteResults(_, Err(error)) => {
+                self.remote_loading = false;
                 self.remote = None;
                 self.remote_note = error;
             }
             Message::ShowInstalled => {
                 self.remote = None;
                 self.remote_note.clear();
+                self.remote_query = None;
+                self.remote_page = 1;
+                self.remote_cursors = vec![None];
+                self.remote_next = None;
+                self.remote_total = 0;
                 self.open_picker();
             }
             Message::OpenPicker => self.open_picker(),
@@ -1889,6 +1991,8 @@ impl Studio {
             Some(rows) => rows.len(),
             None => installed.len(),
         };
+        // A count and a total, so the pager can say "2/37" without the user walking to the end to
+        // find out how many pages there are.
         let title = if self.remote.is_some() {
             format!("{} · {count}", self.i18n.tr("Search"))
         } else {
@@ -1902,6 +2006,26 @@ impl Studio {
             .spacing(8)
             .align_y(iced::Alignment::Center);
         if self.remote.is_some() {
+            let pages = page_count(self.remote_total, REMOTE_PER_PAGE);
+            let page = if self.remote_loading {
+                format!("{}/{} …", self.remote_page, pages)
+            } else {
+                format!("{}/{}", self.remote_page, pages)
+            };
+            header = header.push(text(page).size(11));
+            // No press handler means no affordance, which is the disabled state iced gives us.
+            let back = button(text("‹")).style(secondary);
+            header = header.push(if self.remote_page > 1 {
+                back.on_press(Message::RemotePage(self.remote_page - 1))
+            } else {
+                back
+            });
+            let forward = button(text("›")).style(secondary);
+            header = header.push(if self.remote_next.is_some() {
+                forward.on_press(Message::RemotePage(self.remote_page + 1))
+            } else {
+                forward
+            });
             header = header.push(
                 button(text(self.i18n.tr("Workshop")))
                     .style(secondary)
@@ -2512,9 +2636,23 @@ mod tests {
         if std::env::var(anima_engine_rs::workshop_web::API_KEY_ENV).is_ok() {
             return; // this machine has a key; nothing to assert
         }
-        let error = fetch_remote(None).expect_err("no key means an error, not an empty list");
+        let error = fetch_remote(None, None).expect_err("no key means an error, not an empty list");
         assert!(error.contains("STEAM_WEB_API_KEY"), "{error}");
+        // The message has to say where to get one, or it is just a complaint.
+        assert!(error.contains("steamcommunity.com/dev/apikey"), "{error}");
         eprintln!("[studio] no key: {error}");
+    }
+
+    #[test]
+    fn pages_never_say_zero() {
+        assert_eq!(page_count(0, 50), 1);
+        assert_eq!(page_count(1, 50), 1);
+        assert_eq!(page_count(50, 50), 1);
+        assert_eq!(page_count(51, 50), 2);
+        assert_eq!(page_count(1823, 50), 37);
+        // A zero page size must not divide by zero, and a huge total must not overflow to a wrap.
+        assert_eq!(page_count(10, 0), 10);
+        let _ = page_count(u64::MAX, 1);
     }
 
     #[test]
