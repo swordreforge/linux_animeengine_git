@@ -77,6 +77,37 @@ fn danger(
     button::Style {
         background: Some(background.into()),
         text_color,
+        // Same pill radius iced_material's `styled()` gives every other button.
+        border: iced::Border {
+            radius: 9999.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// A round Material 3 floating-action button: primary container, full radius. Used for refresh,
+/// where the action is an affordance rather than a word.
+fn fab(
+    theme: &iced_material::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    use iced::widget::button;
+    let colors = theme.colors();
+    let (background, text_color) = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            (colors.primary.color, colors.primary.text)
+        }
+        button::Status::Disabled => (colors.surface.container.high, colors.surface.text_variant),
+        _ => (colors.primary.container, colors.primary.container_text),
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color,
+        border: iced::Border {
+            radius: 9999.0.into(),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -1055,8 +1086,10 @@ impl Studio {
                 |language: Language| Message::Language(language.0),
             )
             .style(iced_material::pick_list::default),
-            button(text(self.i18n.tr("Refresh")))
-                .style(secondary)
+            button(text("↻").size(18))
+                .style(fab)
+                .width(Length::Fixed(36.0))
+                .height(Length::Fixed(36.0))
                 .on_press(Message::Refresh),
             button(text(self.i18n.tr("Quit")))
                 .style(text_button)
@@ -1434,8 +1467,10 @@ impl Studio {
                 )))
                 .style(if self.follow { primary } else { secondary })
                 .on_press(Message::ToggleFollow),
-                button(text(self.i18n.tr("Refresh")))
-                    .style(text_button)
+                button(text("↻").size(14))
+                    .style(fab)
+                    .width(Length::Fixed(28.0))
+                    .height(Length::Fixed(28.0))
                     .on_press(Message::RefreshOverlay),
             ]
             .align_y(iced::Alignment::Center)
