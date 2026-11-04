@@ -968,6 +968,26 @@ search field with IME, and Workshop browse/search.
       Verified: the watcher logs `watching …/overlay_control for control changes`, and touching one
       control file produced exactly one `overlay panel refreshed` within the second — with the poll at
       2000ms, so that was the event path and not the timer.
+- [x] The 浮层 tab is one row per instance, each with its own controls, and the scale has a **slider with
+      1% steps** (`MIN_SCALE_PERCENT..=MAX_SCALE_PERCENT`, `.step(1u32)`) beside the old ±10% buttons for
+      coarse jumps. Each row carries hide/lock/click-through, rotate, both flips, reset, and a Quit of its
+      own; the running marker and the state summary stay where they were.
+      That meant the action had to name its target: `Message::Overlay` became
+      `Message::OverlayOn(PathBuf, OverlayAction)`, and `apply_overlay` became `apply_overlay_to(control,
+      action)`. `Message::SetScale(PathBuf, u32)` is the slider's and writes through `set_scale_percent`,
+      so the overlay's own bounds do the clamping.
+      Deleted with the panel: `overlay_panel` (114 lines), `InstanceChoice` with its `Display`,
+      `instance_choice`, the `RefreshOverlay` and `SelectOverlay` messages, and the `pick_list` that chose
+      an instance to act on. The follow switch was **not** dropped — it moved to the tab's heading, because
+      following is a property of the whole list, not of one instance.
+      Verified: 0 warnings, clippy 0, 162 lib + 29 studio tests (4 ignored), window relaunched. The rows
+      themselves need a click on the tab to see, which is the one thing this cannot screenshot.
+- [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
+      overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
+      turns scaling into upscaling, and that is the part worth thinking about first.
+- [ ] The rows' per-instance actions have never been exercised against a **running** overlay from the new
+      tab — the messages and the file writes are the same as the panel's, but the wiring is new. Worth a
+      pass with two overlays up.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).
