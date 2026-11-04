@@ -111,9 +111,8 @@ fn palette_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Parse the handful of Material 3 roles iced can use out of a `key = "#rrggbb"` file. Pure,
-/// so it is tested without a desktop.
-fn parse_palette(text: &str) -> Option<iced::theme::Palette> {
+/// The `key = "#rrggbb"` roles in a Material You palette file.
+fn palette_roles(text: &str) -> std::collections::HashMap<&str, iced::Color> {
     let mut roles: std::collections::HashMap<&str, iced::Color> = std::collections::HashMap::new();
     for line in text.lines() {
         let line = line.trim();
@@ -128,20 +127,95 @@ fn parse_palette(text: &str) -> Option<iced::theme::Palette> {
             roles.insert(key.trim(), color);
         }
     }
+    roles
+}
 
-    let primary = *roles.get("primary")?;
-    let background = *roles.get("surface").or_else(|| roles.get("background"))?;
-    let text = *roles
-        .get("on_surface")
-        .or_else(|| roles.get("on_background"))?;
+fn role(roles: &std::collections::HashMap<&str, iced::Color>, name: &str) -> Option<iced::Color> {
+    roles.get(name).copied()
+}
+
+/// Parse the handful of Material 3 roles iced can use out of a `key = "#rrggbb"` file. Pure,
+/// so it is tested without a desktop.
+fn parse_palette(text: &str) -> Option<iced::theme::Palette> {
+    let roles = palette_roles(text);
+    let primary = role(&roles, "primary")?;
+    let background = role(&roles, "surface").or_else(|| role(&roles, "background"))?;
+    let text = role(&roles, "on_surface").or_else(|| role(&roles, "on_background"))?;
     Some(iced::theme::Palette {
         background,
         text,
         primary,
         // iced has no secondary/tertiary roles; map the ones it has onto the same scheme.
-        success: roles.get("secondary").copied().unwrap_or(primary),
-        warning: roles.get("tertiary").copied().unwrap_or(primary),
-        danger: roles.get("error").copied().unwrap_or(primary),
+        success: role(&roles, "secondary").unwrap_or(primary),
+        warning: role(&roles, "tertiary").unwrap_or(primary),
+        danger: role(&roles, "error").unwrap_or(primary),
+    })
+}
+
+/// Build `iced_material`'s own colour scheme from the same file. This is step (1) of turning the
+/// window's theme type over: the UI does not consume it yet, but every later step needs it, and
+/// the roles line up one-to-one with Material 3's names.
+#[allow(dead_code)]
+fn parse_color_scheme(text: &str) -> Option<iced_material::ColorScheme> {
+    use iced_material::{ColorQuartet, ColorScheme, Inverse, Outline, Surface, SurfaceContainer};
+
+    let roles = palette_roles(text);
+    let quartet = |base: &str, on: &str, container: &str, on_container: &str| {
+        Some(ColorQuartet {
+            color: role(&roles, base)?,
+            text: role(&roles, on)?,
+            container: role(&roles, container)?,
+            container_text: role(&roles, on_container)?,
+        })
+    };
+    let surface = role(&roles, "surface").or_else(|| role(&roles, "background"))?;
+    let on_surface = role(&roles, "on_surface").or_else(|| role(&roles, "on_background"))?;
+
+    Some(ColorScheme {
+        primary: quartet(
+            "primary",
+            "on_primary",
+            "primary_container",
+            "on_primary_container",
+        )?,
+        secondary: quartet(
+            "secondary",
+            "on_secondary",
+            "secondary_container",
+            "on_secondary_container",
+        )?,
+        tertiary: quartet(
+            "tertiary",
+            "on_tertiary",
+            "tertiary_container",
+            "on_tertiary_container",
+        )?,
+        error: quartet("error", "on_error", "error_container", "on_error_container")?,
+        surface: Surface {
+            color: surface,
+            text: on_surface,
+            text_variant: role(&roles, "on_surface_variant").unwrap_or(on_surface),
+            container: SurfaceContainer {
+                lowest: role(&roles, "surface_container_lowest").unwrap_or(surface),
+                low: role(&roles, "surface_container_low").unwrap_or(surface),
+                base: role(&roles, "surface_container").unwrap_or(surface),
+                high: role(&roles, "surface_container_high").unwrap_or(surface),
+                highest: role(&roles, "surface_container_highest").unwrap_or(surface),
+            },
+        },
+        // Material 3's inverse roles are not in this file; swapping the surface pair is the
+        // honest approximation rather than inventing colours.
+        inverse: Inverse {
+            inverse_surface: on_surface,
+            inverse_surface_text: surface,
+            inverse_primary: role(&roles, "primary")?,
+        },
+        outline: Outline {
+            color: role(&roles, "outline").unwrap_or(on_surface),
+            variant: role(&roles, "outline_variant").unwrap_or(on_surface),
+        },
+        shadow: iced::Color::BLACK,
+        scrim: iced::Color::BLACK,
     })
 }
 
@@ -1591,6 +1665,48 @@ mod tests {
             assert!(!instance.label.is_empty());
         }
         eprintln!("[studio] {} overlay control file(s)", instances.len());
+    }
+
+    #[test]
+    fn noctalia_maps_onto_a_material_colour_scheme() {
+        let fixture = "primary = \"#8bd0ef\"\non_primary = \"#003546\"\n\
+                       primary_container = \"#004d64\"\non_primary_container = \"#bde9ff\"\n\
+                       secondary = \"#b4cad6\"\non_secondary = \"#1f333c\"\n\
+                       secondary_container = \"#354a53\"\non_secondary_container = \"#d0e6f2\"\n\
+                       tertiary = \"#c6c2ea\"\non_tertiary = \"#2e2d4d\"\n\
+                       tertiary_container = \"#454364\"\non_tertiary_container = \"#e3dfff\"\n\
+                       error = \"#ffb4ab\"\non_error = \"#690005\"\n\
+                       error_container = \"#93000a\"\non_error_container = \"#ffdad6\"\n\
+                       surface = \"#0f1417\"\non_surface = \"#dfe3e7\"\n\
+                       surface_container = \"#1b2023\"\nsurface_container_high = \"#262b2d\"\n\
+                       on_surface_variant = \"#c0c8cd\"\noutline = \"#8a9297\"\n\
+                       outline_variant = \"#40484c\"\n";
+        let scheme = parse_color_scheme(fixture).expect("scheme");
+        assert_eq!(scheme.primary.color, parse_hex("#8bd0ef").unwrap());
+        assert_eq!(scheme.primary.text, parse_hex("#003546").unwrap());
+        assert_eq!(scheme.primary.container, parse_hex("#004d64").unwrap());
+        assert_eq!(scheme.primary.container_text, parse_hex("#bde9ff").unwrap());
+        assert_eq!(scheme.error.color, parse_hex("#ffb4ab").unwrap());
+        assert_eq!(scheme.surface.color, parse_hex("#0f1417").unwrap());
+        assert_eq!(scheme.surface.text, parse_hex("#dfe3e7").unwrap());
+        assert_eq!(scheme.surface.container.base, parse_hex("#1b2023").unwrap());
+        assert_eq!(scheme.surface.container.high, parse_hex("#262b2d").unwrap());
+        assert_eq!(scheme.outline.color, parse_hex("#8a9297").unwrap());
+        assert_eq!(scheme.outline.variant, parse_hex("#40484c").unwrap());
+        // The inverse roles are not in the file, so they come from the swapped surface pair.
+        assert_eq!(scheme.inverse.inverse_surface, scheme.surface.text);
+        assert_eq!(scheme.inverse.inverse_surface_text, scheme.surface.color);
+
+        // The live file, when it exists, is the format that actually matters.
+        if let Some(path) = palette_path()
+            && let Ok(live) = std::fs::read_to_string(&path)
+        {
+            assert!(
+                parse_color_scheme(&live).is_some(),
+                "the live palette must parse: {}",
+                path.display()
+            );
+        }
     }
 
     #[test]
