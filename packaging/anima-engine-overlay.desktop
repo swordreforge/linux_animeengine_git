@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AnimaEngine Overlay
+GenericName=Animated overlay
+Comment=Show a .apng/.gif overlay anchored above other windows
+Exec=anima-overlay
+TryExec=anima-overlay
+Icon=anima-engine
+Terminal=false
+Categories=Graphics;
+Keywords=anime;overlay;live2d;apng;gif;animation;
+StartupNotify=false

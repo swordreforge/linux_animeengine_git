@@ -1,0 +1,11 @@
+// AnimaEngine overlay autostart for niri.
+//
+// The installer writes this as ~/.config/niri/anima.kdl; add it to
+// ~/.config/niri/config.kdl with:
+//
+//     include "anima.kdl"
+//
+// Absolute paths: niri's PATH does not include ~/.local/bin.
+// The control binds live in your own config (`__custom__.kdl`), not here.
+
+spawn-at-startup "@BIN@/anima-overlay"
