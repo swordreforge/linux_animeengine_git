@@ -1996,8 +1996,8 @@ fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).map(PathBuf::from);
     let Loaded {
-        animation,
-        blocks,
+        mut animation,
+        mut blocks,
         crop,
         limits: decode_limits,
     } = load_animation(path.as_deref())?;
@@ -2339,55 +2339,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let upload_frame = |index: usize, layer: u32| {
-        let (data, bytes_per_row, rows, size) = match blocks.as_ref().filter(|_| blocks_usable) {
-            Some(blocks) => {
-                let block_bytes = blocks.frame_bytes();
-                let start = index * block_bytes;
-                (
-                    &blocks.data[start..start + block_bytes],
-                    blocks.blocks_per_row() * 16,
-                    blocks.rows(),
-                    (tex_width, tex_height),
-                )
-            }
-            None => (
-                animation.frames[index].rgba.as_slice(),
-                width * 4,
-                height,
-                (width, height),
-            ),
-        };
-        queue.write_texture(
-            TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: layer,
+    let upload_frame =
+        |animation: &Animation, blocks: Option<&Blocks>, index: usize, layer: u32| {
+            let (data, bytes_per_row, rows, size) = match blocks.filter(|_| blocks_usable) {
+                Some(blocks) => {
+                    let block_bytes = blocks.frame_bytes();
+                    let start = index * block_bytes;
+                    (
+                        &blocks.data[start..start + block_bytes],
+                        blocks.blocks_per_row() * 16,
+                        blocks.rows(),
+                        (tex_width, tex_height),
+                    )
+                }
+                None => (
+                    animation.frames[index].rgba.as_slice(),
+                    width * 4,
+                    height,
+                    (width, height),
+                ),
+            };
+            queue.write_texture(
+                TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
+                    aspect: TextureAspect::All,
                 },
-                aspect: TextureAspect::All,
-            },
-            data,
-            TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(rows),
-            },
-            Extent3d {
-                width: size.0,
-                height: size.1,
-                depth_or_array_layers: 1,
-            },
-        );
-    };
+                data,
+                TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(rows),
+                },
+                Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+            );
+        };
     if use_array {
         for index in 0..frame_count {
-            upload_frame(index, index as u32);
+            upload_frame(&animation, blocks.as_ref(), index, index as u32);
         }
     } else {
-        upload_frame(0, 0);
+        upload_frame(&animation, blocks.as_ref(), 0, 0);
     }
 
     // First run for a file: no sidecar yet, so encode one in the background while
@@ -2614,18 +2615,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         event_queue.dispatch_pending(&mut state)?;
 
-        // Hot reload: geometry, scale, mode and rotation all live in the persisted
-        // state and the control file, so re-execing the binary reloads the changed
-        // animation without losing the placement.
+        // Hot reload: same frame geometry (count, size and storage path) is swapped
+        // into the existing texture — seamless, no surface gap. Anything else falls
+        // back to re-execing (the placement still survives via the persisted state).
         if hot_reload.changed() {
-            eprintln!("[overlay] animation changed on disk; reloading");
-            persist_geometry(&state);
-            let executable = std::env::current_exe()?;
-            use std::os::unix::process::CommandExt;
-            let error = std::process::Command::new(executable)
-                .args(std::env::args_os().skip(1))
-                .exec();
-            eprintln!("[overlay] reload failed, keeping the current animation: {error}");
+            let Loaded {
+                animation: reloaded,
+                blocks: reloaded_blocks,
+                crop: _,
+                limits: _,
+            } = load_animation(path.as_deref())?;
+            let reloaded_usable = reloaded_blocks.as_ref().is_some_and(|blocks| {
+                bc7 && blocks.is_consistent() && blocks.width == width && blocks.height == height
+            });
+            if reloaded.width == width
+                && reloaded.height == height
+                && reloaded.frames.len() == frame_count
+                && reloaded_usable == blocks_usable
+            {
+                animation = reloaded;
+                blocks = reloaded_blocks;
+                state.animation = Arc::clone(&animation);
+                state.frame_index = 0;
+                index = 0;
+                if use_array {
+                    for frame in 0..frame_count {
+                        upload_frame(&animation, blocks.as_ref(), frame, frame as u32);
+                    }
+                } else {
+                    upload_frame(&animation, blocks.as_ref(), 0, 0);
+                }
+                state.region_dirty = true;
+                state.visual_dirty = true;
+                eprintln!(
+                    "[overlay] reloaded in place: {} frame(s) {}x{}",
+                    frame_count, width, height
+                );
+                persist_geometry(&state);
+            } else {
+                eprintln!(
+                    "[overlay] geometry changed ({}x{} x{} -> {}x{} x{}), restarting to reload",
+                    width,
+                    height,
+                    frame_count,
+                    reloaded.width,
+                    reloaded.height,
+                    reloaded.frames.len()
+                );
+                persist_geometry(&state);
+                let executable = std::env::current_exe()?;
+                use std::os::unix::process::CommandExt;
+                let error = std::process::Command::new(executable)
+                    .args(std::env::args_os().skip(1))
+                    .exec();
+                eprintln!("[overlay] reload failed, keeping the current animation: {error}");
+            }
         }
 
         // Tray / portal commands arrive through the control file.
@@ -2701,7 +2745,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             index as u32
         } else {
             if uploaded_layer0 != index {
-                upload_frame(index, 0);
+                upload_frame(&animation, blocks.as_ref(), index, 0);
                 uploaded_layer0 = index;
             }
             0
