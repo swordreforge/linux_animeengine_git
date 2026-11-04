@@ -437,7 +437,23 @@ Interaction and control:
       open `steam://url/CommunityFilePage/<id>`, because the subscription itself is the
       client's state and pretending otherwise would be a lie — and `Remove local copy`
       for items under *our* SteamCMD root only, behind a confirmation click.
-- [ ] Not yet: layout review in progress; then driving the overlay through
+- [x] Layout pass against a real screenshot: the Download button was mislabelled
+      ("Search" — the key was reused when it changed meaning) and is now `tr("Download")`;
+      raw absolute paths and the CDN `preview_url` are no longer rendered (they are
+      unbreakable tokens that wrecked the wrapping) — the directory shows once, shortened
+      to `~` and middle-elided, with the full path behind a `Copy path` button
+      (`iced::clipboard::write`), and assets list file names only; a fixed 200px preview
+      slot stops items with different aspect ratios from shifting the pane; 1px dividers
+      group metadata / actions / assets (0.14 has no `rule` helper, so they are
+      zero-content containers with a background); button hierarchy is
+      `primary` (Download) / `secondary` (subscribe, unsubscribe, remove, refresh) /
+      `danger` (confirm remove) / `text` (quit), and the list rows no longer use the
+      accent colour for selection (a `▸` marker instead); the window has a minimum size.
+- [x] The new UI strings are in `packaging/studio-i18n.json` and merged with
+      `anima-i18n merge` (39 entries): `anima-i18n verify` reports the four primary
+      languages complete (0 missing, 0 empty). The zh/ja values are assistant-written and
+      want a native check, like the earlier four.
+- [ ] Not yet: layout review of this pass; then driving the overlay through
       `ControlState`, a search field with IME, API-key browse/search, and a desktop
       entry for the window.
 

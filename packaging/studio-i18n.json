@@ -1,0 +1,50 @@
+{
+  "en": {
+    "Refresh": "Refresh",
+    "Copy path": "Copy path",
+    "Subscribe": "Subscribe",
+    "Unsubscribe": "Unsubscribe",
+    "Remove local copy": "Remove local copy",
+    "Confirm remove": "Confirm remove",
+    "No preview": "No preview",
+    "subscriptions": "subscriptions",
+    "views": "views",
+    "assets": "assets"
+  },
+  "zh-CN": {
+    "Refresh": "刷新",
+    "Copy path": "复制路径",
+    "Subscribe": "订阅",
+    "Unsubscribe": "取消订阅",
+    "Remove local copy": "删除本地副本",
+    "Confirm remove": "确认删除",
+    "No preview": "无预览",
+    "subscriptions": "订阅数",
+    "views": "浏览数",
+    "assets": "个资源"
+  },
+  "zh-TW": {
+    "Refresh": "重新整理",
+    "Copy path": "複製路徑",
+    "Subscribe": "訂閱",
+    "Unsubscribe": "取消訂閱",
+    "Remove local copy": "刪除本機副本",
+    "Confirm remove": "確認刪除",
+    "No preview": "無預覽",
+    "subscriptions": "訂閱數",
+    "views": "瀏覽數",
+    "assets": "個資源"
+  },
+  "ja": {
+    "Refresh": "更新",
+    "Copy path": "パスをコピー",
+    "Subscribe": "購読",
+    "Unsubscribe": "購読解除",
+    "Remove local copy": "ローカルコピーを削除",
+    "Confirm remove": "削除を確認",
+    "No preview": "プレビューなし",
+    "subscriptions": "購読数",
+    "views": "閲覧数",
+    "assets": "アセット"
+  }
+}

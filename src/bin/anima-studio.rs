@@ -28,11 +28,14 @@ use anima_engine_rs::paths::{ensure_dir, user_data_dir};
 use anima_engine_rs::steamcmd::SteamCmd;
 use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
+use iced::widget::button::{danger, primary, secondary, text as text_button};
 use iced::widget::{button, column, container, image, pick_list, row, scrollable, space, text};
 use iced::{Element, Length, Task};
 
 const APP_TITLE: &str = "AnimaEngine";
-const THUMB_WIDTH: f32 = 320.0;
+/// Fixed height of the preview slot, so items with different aspect ratios do not make
+/// everything below them jump.
+const PREVIEW_HEIGHT: f32 = 200.0;
 /// `preview.*` names an author may have shipped inside the content folder.
 const LOCAL_PREVIEWS: &[&str] = &[
     "preview.png",
@@ -50,6 +53,52 @@ fn native_name(code: &str) -> String {
         .find(|(steam, _)| normalize_language(steam) == code)
         .map(|(_, native)| (*native).to_string())
         .unwrap_or_else(|| code.to_string())
+}
+
+/// `$HOME` as `~`, with the middle elided when the path is long: workshop paths are
+/// unbreakable tokens that overflow a narrow pane.
+fn shorten(path: &Path) -> String {
+    let text = path.display().to_string();
+    let text = match std::env::var_os("HOME") {
+        Some(home) => {
+            let home = home.to_string_lossy();
+            match text.strip_prefix(home.as_ref()) {
+                Some(rest) => format!("~{rest}"),
+                None => text,
+            }
+        }
+        None => text,
+    };
+    const LIMIT: usize = 72;
+    let count = text.chars().count();
+    if count <= LIMIT {
+        return text;
+    }
+    let keep = (LIMIT - 1) / 2;
+    let head: String = text.chars().take(keep).collect();
+    let tail: String = text.chars().skip(count - keep).collect();
+    format!("{head}…{tail}")
+}
+
+fn file_name(asset: &Path) -> String {
+    asset
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| asset.display().to_string())
+}
+
+/// 1px separator. 0.14 dropped the `vertical_rule`/`horizontal_rule` helpers, so a line
+/// is a zero-content container that only carries a background.
+fn divider(width: Length, height: Length) -> iced::widget::Container<'static, Message> {
+    container(space())
+        .width(width)
+        .height(height)
+        .style(|_theme| container::Style {
+            background: Some(iced::Background::Color(iced::Color::from_rgba(
+                1.0, 1.0, 1.0, 0.10,
+            ))),
+            ..Default::default()
+        })
 }
 
 /// Newtype so `pick_list` shows the native name while carrying the catalog code.
@@ -96,6 +145,7 @@ enum Message {
     Refresh,
     Select(usize),
     Loaded(u64, Option<Meta>, Result<(u32, u32, Vec<u8>), String>),
+    CopyPath(String),
     Download(u64),
     OpenPage(u64),
     ArmRemove(u64),
@@ -266,6 +316,10 @@ impl Studio {
                     },
                 );
             }
+            Message::CopyPath(path) => {
+                self.note = format!("copied {path}");
+                return iced::clipboard::write(path);
+            }
             Message::Download(id) => {
                 if self.steamcmd_root.is_none() {
                     self.note = "steamcmd not found (set STEAMCMD / STEAMCMD_DIR)".to_string();
@@ -337,8 +391,12 @@ impl Studio {
                 Some(Language(self.i18n.language().to_string())),
                 |language: Language| Message::Language(language.0),
             ),
-            button(text(self.i18n.tr("Search"))).on_press(Message::Refresh),
-            button(text(self.i18n.tr("Quit"))).on_press(Message::Quit),
+            button(text(self.i18n.tr("Refresh")))
+                .style(secondary)
+                .on_press(Message::Refresh),
+            button(text(self.i18n.tr("Quit")))
+                .style(text_button)
+                .on_press(Message::Quit),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center);
@@ -357,11 +415,27 @@ impl Studio {
                         .map(|name| name.to_string_lossy().into_owned())
                 })
                 .unwrap_or_else(|| self.i18n.tr("Workshop"));
+            // Two lines per row, and the accent colour is reserved for the primary
+            // action, so selection is shown with a marker instead.
+            let marker = if self.selected == Some(index) {
+                "▸ "
+            } else {
+                ""
+            };
             list = list.push(
-                button(text(format!(
-                    "{id} — {name} ({} asset(s))",
-                    item.assets.len()
-                )))
+                button(
+                    column![
+                        text(format!("{marker}{name}")).size(14),
+                        text(format!(
+                            "{id} · {} {}",
+                            item.assets.len(),
+                            self.i18n.tr("assets")
+                        ))
+                        .size(11),
+                    ]
+                    .spacing(2),
+                )
+                .style(secondary)
                 .on_press(Message::Select(index))
                 .width(Length::Fill),
             );
@@ -370,7 +444,21 @@ impl Studio {
         let details: Element<'_, Message> = match self.selected.and_then(|index| self.item(index)) {
             Some(item) => {
                 let id = item.id;
-                let mut pane = column![text(item.path.display().to_string()).size(12)].spacing(8);
+                // The pane reads: where it lives → what it looks like → what it is →
+                // what you can do → what it contains. Raw paths and the CDN URL are not
+                // rendered: they are unbreakable tokens that wreck the wrapping, so the
+                // directory is shortened and the full path sits behind "Copy path".
+                let mut pane = column![
+                    row![
+                        text(shorten(&item.path)).size(11),
+                        button(text(self.i18n.tr("Copy path")))
+                            .style(secondary)
+                            .on_press(Message::CopyPath(item.path.display().to_string())),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center)
+                ]
+                .spacing(10);
 
                 match self.thumbs.get(&id) {
                     Some(Thumb::Ready {
@@ -379,47 +467,79 @@ impl Studio {
                         rgba,
                     }) => {
                         pane = pane.push(
-                            image(image::Handle::from_rgba(*width, *height, rgba.clone()))
-                                .width(Length::Fixed(THUMB_WIDTH))
-                                .content_fit(iced::ContentFit::Contain),
-                        )
+                            container(
+                                image(image::Handle::from_rgba(*width, *height, rgba.clone()))
+                                    .content_fit(iced::ContentFit::Contain),
+                            )
+                            .width(Length::Fill)
+                            .height(Length::Fixed(PREVIEW_HEIGHT)),
+                        );
                     }
                     Some(Thumb::Loading) => {
-                        pane = pane.push(text("…").size(12));
+                        pane = pane.push(
+                            container(text("…").size(12)).height(Length::Fixed(PREVIEW_HEIGHT)),
+                        );
                     }
                     Some(Thumb::Failed(error)) => {
-                        pane = pane.push(text(format!("no preview: {error}")).size(12));
+                        pane = pane.push(
+                            container(
+                                text(format!("{} · {error}", self.i18n.tr("No preview"))).size(12),
+                            )
+                            .height(Length::Fixed(PREVIEW_HEIGHT)),
+                        );
                     }
                     None => {}
                 }
 
                 if let Some(meta) = self.meta.get(&id) {
-                    pane = pane.push(text(meta.title.clone()).size(16));
+                    pane = pane.push(text(meta.title.clone()).size(20));
                     pane = pane.push(
                         text(format!(
-                            "{} subscriptions · {} views · {}",
-                            meta.subscriptions, meta.views, meta.preview_url
+                            "{} {} · {} {}",
+                            meta.subscriptions,
+                            self.i18n.tr("subscriptions"),
+                            meta.views,
+                            self.i18n.tr("views")
                         ))
-                        .size(11),
+                        .size(12),
                     );
                 }
 
+                pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
+
                 let mut actions = row![
-                    button(text(format!("{} (SteamCMD)", self.i18n.tr("Search"))))
+                    button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
+                        .style(primary)
                         .on_press(Message::Download(id)),
-                    button(text("Subscribe… (Steam)")).on_press(Message::OpenPage(id)),
-                    button(text("Unsubscribe… (Steam)")).on_press(Message::OpenPage(id)),
+                    button(text(self.i18n.tr("Subscribe")))
+                        .style(secondary)
+                        .on_press(Message::OpenPage(id)),
+                    button(text(self.i18n.tr("Unsubscribe")))
+                        .style(secondary)
+                        .on_press(Message::OpenPage(id)),
                 ]
                 .spacing(8);
                 actions = if self.pending_remove == Some(id) {
-                    actions.push(button(text("Confirm remove")).on_press(Message::Remove(id)))
+                    actions.push(
+                        button(text(self.i18n.tr("Confirm remove")))
+                            .style(danger)
+                            .on_press(Message::Remove(id)),
+                    )
                 } else {
-                    actions.push(button(text("Remove local copy")).on_press(Message::ArmRemove(id)))
+                    actions.push(
+                        button(text(self.i18n.tr("Remove local copy")))
+                            .style(secondary)
+                            .on_press(Message::ArmRemove(id)),
+                    )
                 };
                 pane = pane.push(actions);
 
+                pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
+                pane = pane.push(
+                    text(format!("{} {}", item.assets.len(), self.i18n.tr("assets"))).size(12),
+                );
                 for asset in &item.assets {
-                    pane = pane.push(text(asset.display().to_string()).size(11));
+                    pane = pane.push(text(file_name(asset)).size(12));
                 }
                 scrollable(pane).into()
             }
@@ -430,6 +550,7 @@ impl Studio {
             scrollable(list)
                 .height(Length::Fill)
                 .width(Length::FillPortion(2)),
+            divider(Length::Fixed(1.0), Length::Fill),
             container(details).width(Length::FillPortion(3)),
         ]
         .spacing(16)
@@ -454,7 +575,12 @@ impl Studio {
 fn main() -> iced::Result {
     iced::application(Studio::boot, Studio::update, Studio::view)
         .title(APP_TITLE)
-        .window_size((1100.0, 720.0))
+        // A minimum size keeps the two panes from collapsing into overflow.
+        .window(iced::window::Settings {
+            size: iced::Size::new(1100.0, 720.0),
+            min_size: Some(iced::Size::new(760.0, 520.0)),
+            ..Default::default()
+        })
         .run()
 }
 
