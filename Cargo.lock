@@ -114,6 +114,7 @@ dependencies = [
  "futures-util",
  "gif 0.13.3",
  "iced",
+ "iced_material",
  "image",
  "image-webp",
  "ksni",
@@ -1828,6 +1829,16 @@ dependencies = [
  "rustc-hash 2.1.3",
  "thiserror 2.0.21",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "iced_material"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ec16402226a8e710d6577c2b80faf6d763026690d9108ca78560ff15263dfd4"
+dependencies = [
+ "iced_widget",
+ "iced_winit",
 ]
 
 [[package]]

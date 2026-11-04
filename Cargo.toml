@@ -18,7 +18,7 @@ bc7 = []
 overlay = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:pollster", "dep:bytemuck", "dep:wayland-client", "dep:ksni", "dep:ashpd", "dep:futures-util", "dep:tokio"]
 # Enables the `anima-studio` main window (Iced). `workshop-web` brings the keyless
 # Steam metadata the previews come from.
-studio = ["dep:iced", "workshop-web"]
+studio = ["dep:iced", "dep:iced_material", "workshop-web"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +43,7 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-
 # `tokio` is what gives `iced::time::every`: the default `thread-pool` backend has no
 # timer, so a polling subscription needs the tokio backend.
 iced = { version = "0.14.0", features = ["image", "tokio"], optional = true }
+iced_material = { version = "0.14.2", optional = true }
 
 [[bin]]
 name = "anima-overlay"

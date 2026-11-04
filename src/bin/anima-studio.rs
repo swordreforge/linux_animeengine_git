@@ -104,10 +104,8 @@ fn divider(width: Length, height: Length) -> iced::widget::Container<'static, Me
     container(space())
         .width(width)
         .height(height)
-        .style(|_theme| container::Style {
-            background: Some(iced::Background::Color(iced::Color::from_rgba(
-                1.0, 1.0, 1.0, 0.10,
-            ))),
+        .style(|theme: &iced::Theme| container::Style {
+            background: Some(theme.extended_palette().background.weak.color.into()),
             ..Default::default()
         })
 }
@@ -1436,6 +1434,18 @@ impl Studio {
             .map(|_| Message::PollOverlay)
     }
 
+    /// Material 3's dark colour scheme, mapped onto iced's own palette so the widgets we
+    /// already have pick it up — the theme *type* stays `iced::Theme`, which keeps every view
+    /// signature and button style untouched. Reversible: delete this and the window falls back
+    /// to iced's theme.
+    fn theme(&self) -> iced::Theme {
+        use iced::theme::Base;
+        match Base::palette(&iced_material::Theme::Dark) {
+            Some(palette) => iced::Theme::custom("AnimaEngine MD3", palette),
+            None => iced::Theme::Dark,
+        }
+    }
+
     /// The four primary languages, labelled with their native names.
     fn languages(&self) -> Vec<Language> {
         PRIMARY_LANGUAGES
@@ -1459,6 +1469,7 @@ fn main() -> iced::Result {
             ..Default::default()
         })
         .subscription(Studio::subscription)
+        .theme(Studio::theme)
         .run()
 }
 

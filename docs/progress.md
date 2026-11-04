@@ -648,6 +648,20 @@ search field with IME, and Workshop browse/search.
       today, which is what keeps the API calls polite; **Workshop pagination** — page 1 with 50
       results is what `query_files` is asked for; **`notify`-based instant refresh** of the
       control directory — the 1s poll is fine and `notify` would be a new dependency.
+- [x] The window's colours come from **Material 3**: `iced_material` 0.14.2 (which targets iced
+      0.14 exactly — `iced_widget ^0.14`, `iced ^0.14` as a dev-dep) supplies the dark colour
+      scheme, and only its `Base::palette()` is used. The theme *type* stays `iced::Theme`, so no
+      view signature and no button style changed, and deleting `Studio::theme` reverts to iced's
+      own theme. The divider stopped hardcoding `rgba(1,1,1,0.10)` and now takes the theme's weak
+      surface tone, so it follows whichever theme is active.
+      What this is *not*: the shapes, elevation and type scale are still iced's; truly Material
+      widgets would mean switching the theme type to `iced_material::Theme` and adopting its
+      widget modules (1.2 MB of crate we only take the palettes from today). Light mode and
+      following the system preference are also open — the palette is fixed to `Theme::Dark`.
+- [ ] Not done, in the order they would be done: switch the theme type to
+      `iced_material::Theme` (and its widgets) if the look warrants it; light/dark by
+      `prefers-color-scheme`; pseudo-glass containers (translucent surface + gradient border,
+      explicitly without blur, which a Wayland client cannot do).
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 
