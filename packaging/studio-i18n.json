@@ -24,7 +24,8 @@
     "Reset": "Reset",
     "Quit overlay": "Quit overlay",
     "hidden": "hidden",
-    "locked": "locked"
+    "locked": "locked",
+    "Click an asset to preview it": "Click an asset to preview it"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -51,7 +52,8 @@
     "Reset": "重置",
     "Quit overlay": "退出浮层",
     "hidden": "已隐藏",
-    "locked": "已锁定"
+    "locked": "已锁定",
+    "Click an asset to preview it": "点击资源即可预览首帧"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -78,7 +80,8 @@
     "Reset": "重設",
     "Quit overlay": "結束浮層",
     "hidden": "已隱藏",
-    "locked": "已鎖定"
+    "locked": "已鎖定",
+    "Click an asset to preview it": "點擊資源即可預覽首幀"
   },
   "ja": {
     "Refresh": "更新",
@@ -105,6 +108,7 @@
     "Reset": "リセット",
     "Quit overlay": "オーバーレイを終了",
     "hidden": "非表示中",
-    "locked": "ロック中"
+    "locked": "ロック中",
+    "Click an asset to preview it": "アセットをクリックすると先頭フレームを表示します"
   }
 }

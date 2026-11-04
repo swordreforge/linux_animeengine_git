@@ -705,6 +705,26 @@ search field with IME, and Workshop browse/search.
       every other button. And refresh became a Material 3 **floating action button** — `↻` in a
       round primary-container circle, 36px in the header and 28px in the overlay panel — because
       refreshing is an affordance rather than a word.
+- [x] The right pane now answers "what does *this* asset look like". Its three areas read
+      top-to-bottom: the item's cover, title, counts and item-level actions; the asset list,
+      where a click selects (the rows no longer play); and the tuning area beneath it, showing
+      the selected asset's first frame with the play button and the parameter buttons.
+      `anim::first_frame` decodes one frame and stops — a 300-frame APNG is not decoded to show
+      a picture — the still is scaled to 512px and cached as `thumbnails/a<fingerprint>.img`,
+      keyed by path + size + mtime, and the decode runs on the task pool.
+      The parameters are **staged**, not applied to a running instance: they land in the
+      previewed asset's own control file, which may not exist yet, and because Play starts an
+      overlay that reads exactly that file, what is set here is what it starts with. The panel
+      and the tuning area share one widget set (`overlay_params`), pointed at a running instance
+      and a staged file respectively, so the two cannot drift, and `apply_action` is the single
+      definition of what each action does.
+      Honest notes: a fade-in's first frame can look empty (the file's doing — `first_frame`'s
+      docs say so); previews are cached per path in memory for the session, so an asset
+      re-downloaded while the window is open keeps its old still until the row is re-selected;
+      and the item-level Play is gone, because it had to guess which asset was meant.
+      Verified: 0 warnings, 159 lib + 3 anim + 16 studio tests, clippy 0, plus the ignored
+      `decodes_and_caches_a_real_asset_first_frame` against a real library
+      (`animatedddds.apng → 512×384`, cache read-back identical).
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

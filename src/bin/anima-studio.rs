@@ -45,6 +45,16 @@ const APP_ID: &str = "anima-engine-studio";
 /// Fixed height of the preview slot, so items with different aspect ratios do not make
 /// everything below them jump.
 const PREVIEW_HEIGHT: f32 = 200.0;
+
+/// Longest edge of a cached asset still. The pane draws it into `PREVIEW_HEIGHT`, so the
+/// cache does not need the file's full size.
+const ASSET_PREVIEW_PX: u32 = 512;
+
+/// Marks a cached asset still: a magic, the size, then straight RGBA.
+const ASSET_PREVIEW_MAGIC: &[u8; 8] = b"ANIPREV1";
+
+/// One decoded still: width, height, straight RGBA.
+type Still = (u32, u32, Vec<u8>);
 /// How often the overlay panel checks whether the control files moved.
 const OVERLAY_POLL_MS: u64 = 1000;
 /// `preview.*` names an author may have shipped inside the content folder.
@@ -289,10 +299,10 @@ fn resolve_theme() -> iced_material::Theme {
 
 /// 1px separator. 0.14 dropped the `vertical_rule`/`horizontal_rule` helpers, so a line
 /// is a zero-content container that only carries a background.
-fn divider(
+fn divider<'a>(
     width: Length,
     height: Length,
-) -> iced::widget::Container<'static, Message, iced_material::Theme> {
+) -> iced::widget::Container<'a, Message, iced_material::Theme> {
     container(space())
         .width(width)
         .height(height)
@@ -614,6 +624,16 @@ enum Message {
     /// Put one workshop asset on the overlay: show the instance if it already exists,
     /// otherwise start one.
     PlayAsset(PathBuf),
+    /// Show one asset's first frame in the tuning area. This is what a row's click does now,
+    /// which is why the rows no longer carry their own play button.
+    SelectAsset(PathBuf),
+    /// A first frame came back from the worker — decoded once, then cached on disk.
+    AssetPreview(PathBuf, Result<Still, String>),
+    /// Tune the previewed asset before it plays: the same writes as the overlay panel, but
+    /// aimed at the control file of an animation that is not running yet. That is the point
+    /// of staging — the file is the channel, so the parameters are already there when the
+    /// overlay starts.
+    StageOverlay(OverlayAction),
     RefreshOverlay,
     SelectOverlay(PathBuf),
     Overlay(OverlayAction),
@@ -623,6 +643,126 @@ enum Message {
 
 fn thumb_dir() -> PathBuf {
     user_data_dir().join("thumbnails")
+}
+
+/// What one action does to a state. The panel (a running instance) and the tuning area (an
+/// asset that has not started) both go through here, so the two cannot drift apart.
+fn apply_action(state: ControlState, action: OverlayAction) -> ControlState {
+    match action {
+        OverlayAction::ToggleHidden => state.toggle_hidden(),
+        OverlayAction::ToggleLocked => state.toggle_locked(),
+        OverlayAction::ToggleClickThrough => state.toggle_click_through(),
+        OverlayAction::ScaleUp => state.nudge_scale(10),
+        OverlayAction::ScaleDown => state.nudge_scale(-10),
+        OverlayAction::Rotate => state.rotate_by(90),
+        OverlayAction::FlipH => state.toggle_flip_h(),
+        OverlayAction::FlipV => state.toggle_flip_v(),
+        OverlayAction::Reset => state.request_reset(),
+        OverlayAction::Quit => state.request_quit(),
+    }
+}
+
+/// Where one asset's cached first frame lives. The key is the file's own identity — path,
+/// size and mtime — so a re-encoded asset is read again and nothing else is.
+fn asset_cache_path(asset: &Path) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+
+    let meta = std::fs::metadata(asset).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    asset.as_os_str().hash(&mut hasher);
+    meta.len().hash(&mut hasher);
+    meta.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        .hash(&mut hasher);
+    Some(thumb_dir().join(format!("a{:016x}.img", hasher.finish())))
+}
+
+/// Decode one asset's first frame, shrink it and keep it in the cache. Blocking — a large
+/// APNG takes long enough that this has to run on the task pool, not the UI thread.
+fn load_asset_preview(asset: &Path) -> (PathBuf, Result<Still, String>) {
+    let cache = asset_cache_path(asset);
+    if let Some(cache) = &cache
+        && let Ok(bytes) = std::fs::read(cache)
+        && let Some(still) = decode_asset_preview(&bytes)
+    {
+        return (asset.to_path_buf(), Ok(still));
+    }
+    let loaded = match anima_engine_rs::anim::first_frame(asset) {
+        Ok((width, height, rgba)) => {
+            let still = shrink_preview(width, height, rgba);
+            if still.2.is_empty() {
+                Err("could not read a first frame".to_string())
+            } else {
+                if let Some(cache) = &cache {
+                    if let Err(error) = ensure_dir(&thumb_dir()) {
+                        eprintln!("[studio] could not create the preview cache: {error}");
+                    } else if let Err(error) = std::fs::write(cache, encode_asset_preview(&still)) {
+                        eprintln!("[studio] could not cache the asset preview: {error}");
+                    }
+                }
+                Ok(still)
+            }
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    (asset.to_path_buf(), loaded)
+}
+
+/// Scale a decoded frame down for the pane. A no-op for anything small enough already.
+fn shrink_preview(width: u32, height: u32, rgba: Vec<u8>) -> Still {
+    let longest = width.max(height);
+    if longest <= ASSET_PREVIEW_PX || width == 0 || height == 0 {
+        return (width, height, rgba);
+    }
+    if rgba.len() != (width as usize) * (height as usize) * 4 {
+        return (width, height, rgba);
+    }
+    let scale = ASSET_PREVIEW_PX as f32 / longest as f32;
+    let target = (
+        ((width as f32 * scale).round() as u32).max(1),
+        ((height as f32 * scale).round() as u32).max(1),
+    );
+    let Some(source) = ::image::RgbaImage::from_raw(width, height, rgba) else {
+        // Unreachable after the length check; returning is better than panicking on a worker.
+        return (width, height, Vec::new());
+    };
+    let resized = ::image::imageops::resize(
+        &source,
+        target.0,
+        target.1,
+        ::image::imageops::FilterType::Triangle,
+    );
+    (resized.width(), resized.height(), resized.into_raw())
+}
+
+fn encode_asset_preview((width, height, rgba): &Still) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + rgba.len());
+    out.extend_from_slice(ASSET_PREVIEW_MAGIC);
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(rgba);
+    out
+}
+
+/// The bytes [`encode_asset_preview`] wrote, or `None` when the file is not ours (an older
+/// shape, a truncated write) — a cache miss, never an error.
+fn decode_asset_preview(bytes: &[u8]) -> Option<Still> {
+    if bytes.len() < 16 || &bytes[..8] != ASSET_PREVIEW_MAGIC {
+        return None;
+    }
+    let width = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+    let height = u32::from_le_bytes(bytes[12..16].try_into().ok()?);
+    let expected = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    if expected == 0 {
+        return None;
+    }
+    let rgba = bytes.get(16..16 + expected)?;
+    Some((width, height, rgba.to_vec()))
 }
 
 /// Ask Steam (keyless `GetPublishedFileDetails`).
@@ -758,6 +898,14 @@ struct Studio {
     note: String,
     meta: HashMap<u64, Meta>,
     thumbs: HashMap<u64, Thumb>,
+    /// First frames of assets, by path: a path is what the tuning area acts on, and two
+    /// items can share a directory.
+    asset_previews: HashMap<PathBuf, Thumb>,
+    /// The asset being previewed, by path. Nothing is shown until one is picked.
+    previewed_asset: Option<PathBuf>,
+    /// The previewed asset's staged state as last read or written. The view must not read a
+    /// JSON file on every frame, and this is what the summary line is built from.
+    staged: Option<(PathBuf, ControlState)>,
     pending_remove: Option<u64>,
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
@@ -787,6 +935,9 @@ impl Studio {
             note: String::new(),
             meta: HashMap::new(),
             thumbs: HashMap::new(),
+            asset_previews: HashMap::new(),
+            previewed_asset: None,
+            staged: None,
             pending_remove: None,
             steamcmd_root: SteamCmd::detect().map(|steamcmd| steamcmd.content_root()),
             overlay: Vec::new(),
@@ -922,18 +1073,7 @@ impl Studio {
             return;
         }
         let label = instance.label.clone();
-        let next = match action {
-            OverlayAction::ToggleHidden => instance.state.clone().toggle_hidden(),
-            OverlayAction::ToggleLocked => instance.state.clone().toggle_locked(),
-            OverlayAction::ToggleClickThrough => instance.state.clone().toggle_click_through(),
-            OverlayAction::ScaleUp => instance.state.clone().nudge_scale(10),
-            OverlayAction::ScaleDown => instance.state.clone().nudge_scale(-10),
-            OverlayAction::Rotate => instance.state.clone().rotate_by(90),
-            OverlayAction::FlipH => instance.state.clone().toggle_flip_h(),
-            OverlayAction::FlipV => instance.state.clone().toggle_flip_v(),
-            OverlayAction::Reset => instance.state.clone().request_reset(),
-            OverlayAction::Quit => instance.state.clone().request_quit(),
-        };
+        let next = apply_action(instance.state.clone(), action);
         self.note = match next.save(&instance.path) {
             Ok(()) => format!("{label}: generation {}", next.generation),
             Err(error) => format!("could not write the control file: {error}"),
@@ -1068,6 +1208,19 @@ impl Studio {
             }
             Message::SelectOverlay(control) => self.overlay_selected = Some(control),
             Message::Overlay(action) => self.apply_overlay(action),
+            Message::SelectAsset(asset) => return self.select_asset(asset),
+            Message::AssetPreview(asset, loaded) => {
+                self.asset_previews.insert(
+                    asset,
+                    match loaded {
+                        Ok((width, height, rgba)) => {
+                            Thumb::Ready(image::Handle::from_rgba(width, height, rgba))
+                        }
+                        Err(error) => Thumb::Failed(error),
+                    },
+                );
+            }
+            Message::StageOverlay(action) => self.stage_overlay(action),
             Message::PlayAsset(asset) => self.play_on_overlay(&asset),
             Message::PollOverlay => self.poll_overlay(),
             Message::Quit => return iced::exit(),
@@ -1224,14 +1377,9 @@ impl Studio {
 
                 pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
 
+                // Playing belongs to the tuning area below, where the asset on show is the
+                // one that plays: an item-level Play had to guess which asset that was.
                 let mut actions = row![];
-                if let Some(playable) = item.assets.iter().find(|asset| is_playable(asset)) {
-                    actions = actions.push(
-                        button(text(self.i18n.tr("Play")))
-                            .style(primary)
-                            .on_press(Message::PlayAsset(playable.clone())),
-                    );
-                }
                 actions = actions
                     .push(
                         button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
@@ -1267,17 +1415,27 @@ impl Studio {
                 pane = pane.push(
                     text(format!("{} {}", item.assets.len(), self.i18n.tr("assets"))).size(12),
                 );
+                // A row is a choice, not an action: clicking it shows that file's first frame
+                // in the tuning area below, where the play button and the parameters live.
                 for asset in &item.assets {
                     if is_playable(asset) {
+                        let marker = if self.previewed_asset.as_ref() == Some(asset) {
+                            "▸ "
+                        } else {
+                            ""
+                        };
                         pane = pane.push(
-                            button(text(format!("▶ {}", file_name(asset))))
+                            button(text(format!("{marker}{}", file_name(asset))))
                                 .style(text_button)
-                                .on_press(Message::PlayAsset(asset.clone())),
+                                .on_press(Message::SelectAsset(asset.clone())),
                         );
                     } else {
+                        // Not an animation: there is no first frame to show.
                         pane = pane.push(text(file_name(asset)).size(12));
                     }
                 }
+                pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
+                pane = pane.push(self.asset_preview_area());
                 scrollable(pane)
                     .style(iced_material::scrollable::default)
                     .into()
@@ -1530,62 +1688,203 @@ impl Studio {
         }
         panel = panel.push(text(summary).size(11));
 
-        let hide = if state.hidden {
-            self.i18n.tr("Show")
-        } else {
-            self.i18n.tr("Hide")
-        };
-        let lock = if state.locked {
-            self.i18n.tr("Unlock")
-        } else {
-            self.i18n.tr("Lock")
-        };
+        panel = panel.push(self.overlay_params(Some(state), Message::Overlay));
         panel = panel.push(
             row![
-                button(text(hide))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::ToggleHidden)),
-                button(text(lock))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::ToggleLocked)),
-                button(text(self.i18n.tr("Click-through")))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::ToggleClickThrough)),
-            ]
-            .spacing(6),
-        );
-        panel = panel.push(
-            row![
-                button(text("−10%"))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::ScaleDown)),
-                button(text("+10%"))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::ScaleUp)),
-                button(text("⟳ 90°"))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::Rotate)),
-                button(text(self.i18n.tr("Flip H")))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::FlipH)),
-                button(text(self.i18n.tr("Flip V")))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::FlipV)),
-            ]
-            .spacing(6),
-        );
-        panel = panel.push(
-            row![
-                button(text(self.i18n.tr("Reset")))
-                    .style(secondary)
-                    .on_press(Message::Overlay(OverlayAction::Reset)),
                 button(text(self.i18n.tr("Quit overlay")))
                     .style(danger)
-                    .on_press(Message::Overlay(OverlayAction::Quit)),
+                    .on_press(Message::Overlay(OverlayAction::Quit))
             ]
             .spacing(6),
         );
         panel.into()
+    }
+
+    /// Show one asset's first frame in the tuning area. The cache answers instantly;
+    /// otherwise the decode runs on the task pool and comes back as [`Message::AssetPreview`].
+    /// The staged state is read here, once, so the summary line never opens a file per frame.
+    fn select_asset(&mut self, asset: PathBuf) -> Task<Message> {
+        self.previewed_asset = Some(asset.clone());
+        let key = anima_engine_rs::paths::canonical_path(&asset.to_string_lossy());
+        let control = ControlState::path_for(Some(&key));
+        self.staged = Some((asset.clone(), ControlState::load(&control)));
+        if self.asset_previews.contains_key(&asset) {
+            return Task::none();
+        }
+        self.asset_previews.insert(asset.clone(), Thumb::Loading);
+        Task::perform(
+            async move { load_asset_preview(&asset) },
+            |(asset, loaded)| Message::AssetPreview(asset, loaded),
+        )
+    }
+
+    /// Stage one parameter change for the previewed asset: load its control file (which may
+    /// not exist yet), change a field — bumping the generation — and save. Play then starts
+    /// an overlay that reads exactly this file, so what is set here is what it starts with.
+    fn stage_overlay(&mut self, action: OverlayAction) {
+        let Some(asset) = self.previewed_asset.clone() else {
+            self.note =
+                "pick an asset first: its parameters are staged in its control file".to_string();
+            return;
+        };
+        if matches!(action, OverlayAction::Quit) {
+            self.note = format!("{} is not running", file_name(&asset));
+            return;
+        }
+        let key = anima_engine_rs::paths::canonical_path(&asset.to_string_lossy());
+        let control = ControlState::path_for(Some(&key));
+        let state = self
+            .staged
+            .as_ref()
+            .filter(|(path, _)| *path == asset)
+            .map(|(_, state)| state.clone())
+            .unwrap_or_else(|| ControlState::load(&control));
+        let next = apply_action(state, action);
+        self.note = match next.save(&control) {
+            Ok(()) => format!(
+                "{}: staged generation {}",
+                file_name(&asset),
+                next.generation
+            ),
+            Err(error) => format!("could not stage the parameters: {error}"),
+        };
+        self.staged = Some((asset, next));
+    }
+
+    /// What the tuning area says it will start with — the same summary the panel shows, from
+    /// the copy this window last read or wrote.
+    fn staged_summary(&self, asset: &Path) -> String {
+        let Some((path, state)) = &self.staged else {
+            return String::new();
+        };
+        if path != asset {
+            return String::new();
+        }
+        let mode = match state.input_mode {
+            InputMode::Full => "full",
+            InputMode::Opaque => "opaque",
+            InputMode::PassThrough => "pass-through",
+        };
+        let mut summary = format!("{}% · {}° · {mode}", state.scale_percent, state.rotation);
+        for (set, key) in [
+            (state.hidden, "hidden"),
+            (state.locked, "locked"),
+            (state.flip_h, "Flip H"),
+            (state.flip_v, "Flip V"),
+        ] {
+            if set {
+                summary.push_str(&format!(" · {}", self.i18n.tr(key)));
+            }
+        }
+        summary
+    }
+
+    /// The parameter buttons, shared by the panel (a running instance) and the tuning area
+    /// (an asset that has not started): one widget set, two targets, so they cannot drift.
+    fn overlay_params(
+        &self,
+        state: Option<&ControlState>,
+        tag: fn(OverlayAction) -> Message,
+    ) -> El<'_> {
+        let hidden = state.is_some_and(|state| state.hidden);
+        let locked = state.is_some_and(|state| state.locked);
+        column![
+            row![
+                button(text(if hidden {
+                    self.i18n.tr("Show")
+                } else {
+                    self.i18n.tr("Hide")
+                }))
+                .style(if hidden { primary } else { secondary })
+                .on_press(tag(OverlayAction::ToggleHidden)),
+                button(text(if locked {
+                    self.i18n.tr("Unlock")
+                } else {
+                    self.i18n.tr("Lock")
+                }))
+                .style(if locked { primary } else { secondary })
+                .on_press(tag(OverlayAction::ToggleLocked)),
+                button(text(self.i18n.tr("Click-through")))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::ToggleClickThrough)),
+            ]
+            .spacing(6),
+            row![
+                button(text("−10%"))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::ScaleDown)),
+                button(text("+10%"))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::ScaleUp)),
+                button(text("⟳ 90°"))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::Rotate)),
+                button(text(self.i18n.tr("Flip H")))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::FlipH)),
+                button(text(self.i18n.tr("Flip V")))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::FlipV)),
+            ]
+            .spacing(6),
+            row![
+                button(text(self.i18n.tr("Reset")))
+                    .style(secondary)
+                    .on_press(tag(OverlayAction::Reset)),
+            ]
+            .spacing(6),
+        ]
+        .spacing(6)
+        .into()
+    }
+
+    /// The tuning area: the asset that was clicked, its first frame, and the parameters it
+    /// will start with. Empty until an asset is picked, so nothing here acts on a guess.
+    fn asset_preview_area(&self) -> El<'_> {
+        let Some(asset) = self.previewed_asset.as_ref() else {
+            return container(text(self.i18n.tr("Click an asset to preview it")).size(11)).into();
+        };
+        let mut area = column![text(file_name(asset)).size(14)].spacing(8);
+        match self.asset_previews.get(asset) {
+            Some(Thumb::Ready(handle)) => {
+                area = area.push(
+                    container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(PREVIEW_HEIGHT)),
+                );
+            }
+            Some(Thumb::Loading) => {
+                area =
+                    area.push(container(text("…").size(12)).height(Length::Fixed(PREVIEW_HEIGHT)));
+            }
+            Some(Thumb::Failed(error)) => {
+                area = area.push(
+                    container(text(format!("{} · {error}", self.i18n.tr("No preview"))).size(12))
+                        .height(Length::Fixed(PREVIEW_HEIGHT)),
+                );
+            }
+            None => {}
+        }
+        area = area.push(
+            row![
+                button(text(self.i18n.tr("Play")))
+                    .style(primary)
+                    .on_press(Message::PlayAsset(asset.clone())),
+                text(self.staged_summary(asset)).size(11),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
+        area = area.push(
+            self.overlay_params(
+                self.staged
+                    .as_ref()
+                    .filter(|(path, _)| path == asset)
+                    .map(|(_, state)| state),
+                Message::StageOverlay,
+            ),
+        );
+        area.into()
     }
 
     /// Put one asset on the overlay. The layer-shell surface belongs to the overlay
@@ -1785,6 +2084,70 @@ mod tests {
         let error = fetch_remote(None).expect_err("no key means an error, not an empty list");
         assert!(error.contains("STEAM_WEB_API_KEY"), "{error}");
         eprintln!("[studio] no key: {error}");
+    }
+
+    #[test]
+    #[ignore = "needs a local Workshop item with an animation"]
+    fn decodes_and_caches_a_real_asset_first_frame() {
+        let mut watcher = WorkshopWatcher::discover();
+        let _ = watcher.poll();
+        let asset = watcher
+            .snapshot()
+            .items
+            .values()
+            .flat_map(|item| item.assets.iter())
+            .find(|asset| is_playable(asset))
+            .cloned()
+            .expect("a playable asset in the local Workshop");
+
+        let (path, loaded) = load_asset_preview(&asset);
+        assert_eq!(path, asset);
+        let (width, height, rgba) = loaded.unwrap();
+        assert!(width > 0 && height > 0);
+        assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
+        assert!(width.max(height) <= ASSET_PREVIEW_PX);
+
+        // The second call is the cache: it must agree with what was just written.
+        let (_, cached) = load_asset_preview(&asset);
+        assert_eq!(cached.unwrap(), (width, height, rgba));
+        eprintln!("[test] {} → {width}×{height}", file_name(&asset));
+    }
+
+    #[test]
+    fn a_still_survives_the_preview_cache() {
+        let still = (2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let bytes = encode_asset_preview(&still);
+        assert_eq!(decode_asset_preview(&bytes), Some(still));
+        // Not ours: too short, another magic, or a size that does not add up.
+        assert_eq!(decode_asset_preview(&bytes[..8]), None);
+        assert_eq!(decode_asset_preview(b"NOTOURS!________"), None);
+        let mut truncated = encode_asset_preview(&(4, 4, vec![0; 64]));
+        truncated.truncate(40);
+        assert_eq!(decode_asset_preview(&truncated), None);
+    }
+
+    #[test]
+    fn big_stills_are_shrunk_to_the_cache_cap() {
+        let small = vec![0u8; 64 * 32 * 4];
+        let (width, height, bytes) = shrink_preview(64, 32, small.clone());
+        assert_eq!((width, height), (64, 32));
+        assert_eq!(bytes.len(), small.len());
+
+        let (width, height, bytes) = shrink_preview(1024, 512, vec![0u8; 1024 * 512 * 4]);
+        assert_eq!((width, height), (ASSET_PREVIEW_PX, ASSET_PREVIEW_PX / 2));
+        assert_eq!(bytes.len(), (width as usize) * (height as usize) * 4);
+    }
+
+    #[test]
+    fn staging_goes_through_the_same_actions_as_the_panel() {
+        let state = ControlState::default();
+        // 100% is the ceiling: the overlay only ever shrinks, so "up" from the default is a
+        // no-op by design, and the test steps down instead.
+        let next = apply_action(state.clone(), OverlayAction::ScaleDown);
+        assert_eq!(next.scale_percent, state.scale_percent - 10);
+        assert!(next.generation > state.generation);
+        let rotated = apply_action(next.clone(), OverlayAction::Rotate);
+        assert_ne!(rotated.rotation, next.rotation);
     }
 
     #[test]

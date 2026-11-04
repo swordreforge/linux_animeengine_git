@@ -728,6 +728,55 @@ fn open(path: &Path) -> Result<ImageReader<std::io::BufReader<std::fs::File>>> {
         .map_err(decode_err)
 }
 
+/// The first composited frame of `path`, with the canvas size — a still, for previews.
+///
+/// [`decode_path`] exists to play the whole thing; this stops at one frame, so a 300-frame
+/// APNG is decoded far enough to show a picture and no further. A still image comes back as
+/// its own single frame. The first frame of a fade-in can be nearly empty: that is the file's
+/// doing, not a decode failure.
+pub fn first_frame(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
+    let reader = open(path)?;
+    let animation = match reader.format() {
+        Some(ImageFormat::Gif) => {
+            let decoder = GifDecoder::new(reader.into_inner()).map_err(decode_err)?;
+            collect_limited(decoder.into_frames().take(1), DecodeLimits::unbounded())?.0
+        }
+        Some(ImageFormat::Png) => {
+            let decoder = PngDecoder::new(reader.into_inner()).map_err(decode_err)?;
+            if decoder.is_apng().map_err(decode_err)? {
+                let frames = decoder.apng().map_err(decode_err)?.into_frames();
+                collect_limited(frames.take(1), DecodeLimits::unbounded())?.0
+            } else {
+                still(path)?
+            }
+        }
+        Some(ImageFormat::WebP) => {
+            let decoder = WebPDecoder::new(reader.into_inner()).map_err(decode_err)?;
+            if decoder.has_animation() {
+                collect_limited(decoder.into_frames().take(1), DecodeLimits::unbounded())?.0
+            } else {
+                still(path)?
+            }
+        }
+        other => {
+            return Err(Error::Decode(format!(
+                "unsupported animation format: {}",
+                other.map_or_else(|| "<unknown>".to_string(), |f| format!("{f:?}"))
+            )));
+        }
+    };
+    let Animation {
+        width,
+        height,
+        frames,
+    } = animation;
+    let frame = frames
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Decode("the file decoded to no frames".to_string()))?;
+    Ok((width, height, frame.rgba))
+}
+
 /// Decode a non-animated image as a single frame.
 fn still(path: &Path) -> Result<Animation> {
     let image = open(path)?.decode().map_err(decode_err)?.to_rgba8();
@@ -808,6 +857,30 @@ mod tests {
         let path: PathBuf = dir.path().join(name);
         std::fs::write(&path, bytes).unwrap();
         decode_path(&path)
+    }
+
+    #[test]
+    fn first_frame_returns_one_frame_of_a_still() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("still.png");
+        let mut source = image::RgbaImage::new(3, 2);
+        source.put_pixel(0, 0, image::Rgba([10, 20, 30, 255]));
+        source.put_pixel(2, 1, image::Rgba([1, 2, 3, 4]));
+        source.save(&path).unwrap();
+
+        let (width, height, rgba) = first_frame(&path).unwrap();
+        assert_eq!((width, height), (3, 2));
+        assert_eq!(&rgba[0..4], &[10, 20, 30, 255]);
+        // Pixel (2, 1) is the sixth of six.
+        assert_eq!(&rgba[20..24], &[1, 2, 3, 4]);
+        assert_eq!(rgba.len(), 3 * 2 * 4);
+    }
+
+    #[test]
+    fn first_frame_says_so_when_there_is_nothing_to_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.png");
+        assert!(first_frame(&path).is_err());
     }
 
     fn pixel(anim: &Animation, frame: usize, x: usize, y: usize) -> [u8; 4] {
