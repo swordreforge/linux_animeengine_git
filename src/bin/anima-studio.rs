@@ -32,6 +32,7 @@ use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher}
 use anima_engine_rs::workshop_web::WorkshopWeb;
 use iced::widget::{
     button, column, container, image, pick_list, row, scrollable, space, stack, text, text_input,
+    tooltip,
 };
 use iced::{Element, Length, Subscription, Task};
 use iced_material::button::{filled as primary, outlined as secondary, text as text_button};
@@ -337,6 +338,15 @@ fn placeholder<'a>(
     .height(height)
     .align_x(iced::Alignment::Center)
     .align_y(iced::Alignment::Center)
+}
+
+/// The full path as a hover tip. The panes are previews, so a path only appears when it is
+/// asked for instead of holding a row of its own above the picture.
+fn path_tip<'a>(path: &Path) -> Element<'a, Message, iced_material::Theme> {
+    container(text(path.display().to_string()).size(11))
+        .style(iced_material::container::surface_container_high)
+        .padding(6)
+        .into()
 }
 
 /// The click-catcher behind the floating picker: a scrim that takes the press which dismisses
@@ -1378,29 +1388,21 @@ impl Studio {
         let details: El<'_> = match (selected_item, selected_remote) {
             (Some(item), _) => {
                 let id = item.id;
-                // The pane reads: where it lives → what it looks like → what it is →
-                // what you can do → what it contains. Raw paths and the CDN URL are not
-                // rendered: they are unbreakable tokens that wreck the wrapping, so the
-                // directory is shortened and the full path sits behind "Copy path".
-                let mut pane = column![
-                    row![
-                        text(shorten(&item.path)).size(11),
-                        button(text(self.i18n.tr("Copy path")))
-                            .style(secondary)
-                            .on_press(Message::CopyPath(item.path.display().to_string())),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center)
-                ]
-                .spacing(10);
+                // The pane reads: what it looks like → what it is → what you can do → what it
+                // contains. A raw path is an unbreakable token that wrecks the wrapping, so it is
+                // not laid out at all: the cover's hover tip shows one and "Copy path" copies it,
+                // which leaves the pane opening on the picture.
+                let mut pane = column![].spacing(10);
 
                 match self.thumbs.get(&id) {
                     Some(Thumb::Ready(handle)) => {
-                        pane = pane.push(
+                        pane = pane.push(tooltip(
                             container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
                                 .width(Length::Fill)
                                 .height(Length::Fixed(PREVIEW_HEIGHT)),
-                        );
+                            path_tip(&item.path),
+                            tooltip::Position::Bottom,
+                        ));
                     }
                     Some(Thumb::Loading) => {
                         pane = pane.push(placeholder(
@@ -1439,6 +1441,13 @@ impl Studio {
                 // Playing belongs to the tuning area below, where the asset on show is the
                 // one that plays: an item-level Play had to guess which asset that was.
                 let mut actions = row![];
+                // The path moved off its own row and in here, next to the rest of what can be
+                // done with the item.
+                actions = actions.push(
+                    button(text(self.i18n.tr("Copy path")))
+                        .style(secondary)
+                        .on_press(Message::CopyPath(item.path.display().to_string())),
+                );
                 actions = actions
                     .push(
                         button(text(format!("{} (SteamCMD)", self.i18n.tr("Download"))))
@@ -2058,11 +2067,13 @@ impl Studio {
         let mut area = column![text(file_name(asset)).size(14)].spacing(8);
         match self.asset_previews.get(asset) {
             Some(Thumb::Ready(handle)) => {
-                area = area.push(
+                area = area.push(tooltip(
                     container(image(handle.clone()).content_fit(iced::ContentFit::Contain))
                         .width(Length::Fill)
                         .height(Length::Fixed(PREVIEW_HEIGHT)),
-                );
+                    path_tip(asset),
+                    tooltip::Position::Bottom,
+                ));
             }
             Some(Thumb::Loading) => {
                 area = area.push(placeholder(

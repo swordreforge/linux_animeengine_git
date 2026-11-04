@@ -755,6 +755,12 @@ search field with IME, and Workshop browse/search.
       string, so the same path/status line appeared twice; the pane is an empty state now
       (`placeholder` at `Length::Fill`, "Pick an item to see its details") and the note stays in
       the status bar where it belongs.
+- [x] The details pane opens on the picture. The row of "shortened path + Copy path" that used to
+      sit above the cover is gone: `Copy path` moved into the actions row next to download,
+      subscribe and remove — where the rest of the item's verbs already were — and the full path is
+      a hover tip, on the cover and on the asset preview in the tuning area (which shows that
+      file's path, not the item's). A raw path is an unbreakable token that wrecks the wrapping, so
+      not laying one out at all is also the tidier layout.
 - [ ] The known flake, disclosed rather than hidden: `shepherd::tests::live_instances_cover_every_control_file`
       reads the **real** control directory while other tests in the same process write it, so it
       fails roughly one run in three (it passes on its own). The fix is a test-side lock around
