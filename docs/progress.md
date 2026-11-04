@@ -149,7 +149,7 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **140** default (137 lib + 3 CLI); **145** with `bc7` (the `bc7`
+- `cargo test`: **142** default (139 lib + 3 CLI); **147** with `bc7` (the `bc7`
   feature needs a C++ toolchain, as does the `overlay,bc7` build).
 - `cargo clippy --all-targets`: clean for default and all features.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
@@ -274,6 +274,11 @@ Interaction and control:
   (`mutter_x11_interop`, `ext_background_effect_manager_v1`, `xdg_wm_base v7`,
   `wp_fractional_scale_manager_v1`, …) with **no `zwlr_*`**) — the sandbox attached
   to a different compositor, so layer-shell was legitimately absent.
+- Workshop watch (the callbacks fallback): `anima-workshop watch --once` printed
+  `watching 1 item(s) in 2 root(s)` with `3828587753 6 asset(s)`, i.e. the Steam
+  library and our SteamCMD root, deduplicated by id. Unit tests drive a temporary
+  content root through added → updated (a file appended to the same id) → removed
+  and assert the diff each time.
 - Overlay smoke-tested on niri (no screenshots; visual acceptance manual):
   - generated 24-frame test animation — plays
   - `bochi455.apng` (27 frames, 512²) — array texture; second run cache hit
@@ -400,7 +405,13 @@ Interaction and control:
   (this install only ships Windows `steam_api64.dll`)
 - [ ] Subscribe / repair / unsubscribe actions in the UI (downloads already work
       through `anima-workshop download` / SteamCMD)
-- [ ] `ItemInstalled` / `DownloadItemResult` callbacks → `sync` + `diff` hot reload
+- [ ] Steamworks callbacks (`ItemInstalled` / `DownloadItemResult`) still need
+      `libsteam_api.so`. Without it the fallback mirrors the Python build (Steamworks
+      primary, SteamCMD fallback): `WorkshopWatcher` polls the content roots and
+      reports changes, exposed as `anima-workshop watch`. `diff` now also reports
+      **updated** items (same id, new files) — without that a re-published item never
+      triggered a reload. `steam::FlatSteamApi::run_callbacks` can drive the same
+      diff once the `.so` is present
 - [ ] Upload via SteamCMD (`workshop_build_item`) and/or the Steamworks worker,
   incl. legal-agreement handling
 - [ ] Browse UI using the three-tier fallback documented in the RE notes
@@ -554,6 +565,7 @@ cargo test --features "workshop-web,steamworks"   # + Steam adapters (132)
 cargo test --features bc7                         # + BC7 encode/decode (133)
 cargo run --release --features bc7 --example bc7_bench -- <animation>
 cargo run --bin anima-i18n -- verify <catalog.json>   # per-language health
+cargo run --bin anima-workshop -- watch --once        # installed items (polling fallback)
 bash packaging/install.sh --catalog <catalog.json>    # portable user-local install
 curl -fsSL <url> | sh -s -- --repo <git-url>          # build + install one-liner
 ANIMA_DUMP_GLOBALS=1 anima-overlay <anim>             # print the compositor globals

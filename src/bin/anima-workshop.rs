@@ -33,6 +33,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("list") => list(),
+        Some("watch") => watch(&args[1..]),
         Some("show") => match args.get(1).and_then(|id| id.parse::<u64>().ok()) {
             Some(id) => show(id),
             None => usage(),
@@ -55,7 +56,7 @@ fn take(args: &[String], index: &mut usize) -> String {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: anima-workshop <roots|libraries|list|show <id>|download <id...>|play <id> [asset]|upload <dir> [opts]|sync|web <id...>>"
+        "usage: anima-workshop <roots|libraries|list|watch [--once] [--interval=SECS]|show <id>|download <id...>|play <id> [asset]|upload <dir> [opts]|sync|web <id...>>"
     );
     ExitCode::FAILURE
 }
@@ -87,6 +88,61 @@ fn content_roots() -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// Poll the local Workshop content and report changes — the stand-in for the
+/// Steamworks callbacks when `libsteam_api` is unavailable (the same role the
+/// Python build gives its SteamCMD fallback).
+fn watch(args: &[String]) -> ExitCode {
+    let mut interval = std::time::Duration::from_secs(5);
+    let mut once = false;
+    for arg in args {
+        match arg.as_str() {
+            "--once" => once = true,
+            other => match other
+                .strip_prefix("--interval=")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                Some(seconds) => interval = std::time::Duration::from_secs(seconds.max(1)),
+                None => return usage(),
+            },
+        }
+    }
+
+    let mut watcher = workshop::WorkshopWatcher::discover();
+    println!(
+        "watching {} item(s) in {} root(s)",
+        watcher.snapshot().len(),
+        watcher.roots().len()
+    );
+    if once {
+        for id in watcher.snapshot().ids() {
+            if let Some(item) = watcher.snapshot().get(id) {
+                println!(
+                    "{id}  {} asset(s)  {}",
+                    item.assets.len(),
+                    item.path.display()
+                );
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    println!("polling every {}s (Ctrl-C to stop)", interval.as_secs());
+    loop {
+        std::thread::sleep(interval);
+        if let Some(change) = watcher.poll() {
+            for id in &change.added {
+                println!("added   {id}");
+            }
+            for id in &change.updated {
+                println!("updated {id}");
+            }
+            for id in &change.removed {
+                println!("removed {id}");
+            }
+        }
+    }
 }
 
 fn list() -> ExitCode {

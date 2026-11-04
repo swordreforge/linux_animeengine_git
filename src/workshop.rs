@@ -218,10 +218,21 @@ impl WorkshopSnapshot {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkshopDiff {
     pub added: Vec<u64>,
+    /// Same id, different content on disk: a Workshop item was updated.
+    pub updated: Vec<u64>,
     pub removed: Vec<u64>,
 }
 
-/// Added / removed item ids going from `previous` to `current`.
+impl WorkshopDiff {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.updated.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// Added / updated / removed item ids going from `previous` to `current`.
+///
+/// `updated` is what a Workshop re-publish looks like: the id stays, the files
+/// change — without it a hot reload would never fire for an updated item.
 pub fn diff(previous: &WorkshopSnapshot, current: &WorkshopSnapshot) -> WorkshopDiff {
     WorkshopDiff {
         added: current
@@ -230,12 +241,88 @@ pub fn diff(previous: &WorkshopSnapshot, current: &WorkshopSnapshot) -> Workshop
             .filter(|id| !previous.items.contains_key(id))
             .copied()
             .collect(),
+        updated: current
+            .items
+            .iter()
+            .filter(|(id, item)| previous.items.get(*id).is_some_and(|old| old != *item))
+            .map(|(id, _)| *id)
+            .collect(),
         removed: previous
             .items
             .keys()
             .filter(|id| !current.items.contains_key(id))
             .copied()
             .collect(),
+    }
+}
+
+/// Polls the local workshop content and reports what changed since the last poll.
+///
+/// This is the fallback "hot reload" signal: it needs no Steamworks SDK (and no
+/// `libsteam_api.so`) — the same role the Python build gives its SteamCMD fallback.
+/// When the SDK *is* loaded, `steam::FlatSteamApi::run_callbacks` can drive the same
+/// diff instead of polling. A poll costs one `read_dir` per item directory, so it is
+/// cheap for the handful of items a user has installed.
+pub struct WorkshopWatcher {
+    roots: Vec<PathBuf>,
+    snapshot: WorkshopSnapshot,
+}
+
+impl WorkshopWatcher {
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        // Keep paths that do not exist yet: a SteamCMD download root only appears
+        // after the first download, and the watcher must notice that.
+        let snapshot = Self::scan(&roots);
+        Self { roots, snapshot }
+    }
+
+    /// Watch every discovered library plus our own SteamCMD download root.
+    pub fn discover() -> Self {
+        let mut roots: Vec<PathBuf> = discover_libraries()
+            .iter()
+            .map(|library| content_root(library))
+            .collect();
+
+        let install_dir = std::env::var_os(crate::steamcmd::STEAMCMD_DIR_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| crate::paths::user_data_dir().join("steamcmd"));
+        roots.push(
+            install_dir
+                .join(WORKSHOP_CONTENT_SUBDIR)
+                .join(APP_ID.to_string()),
+        );
+        Self::new(roots)
+    }
+
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    pub fn snapshot(&self) -> &WorkshopSnapshot {
+        &self.snapshot
+    }
+
+    /// Re-scan and return the change, or `None` when nothing moved.
+    pub fn poll(&mut self) -> Option<WorkshopDiff> {
+        let current = Self::scan(&self.roots);
+        let change = diff(&self.snapshot, &current);
+        self.snapshot = current;
+        if change.is_empty() {
+            None
+        } else {
+            Some(change)
+        }
+    }
+
+    /// Merge every root; the first root that has an id wins (Steam's copy first).
+    fn scan(roots: &[PathBuf]) -> WorkshopSnapshot {
+        let mut items = BTreeMap::new();
+        for root in roots {
+            for (id, item) in scan_workshop(root).items {
+                items.entry(id).or_insert(item);
+            }
+        }
+        WorkshopSnapshot { items }
     }
 }
 
@@ -508,5 +595,62 @@ mod tests {
         let changes = diff(&second, &third);
         assert!(changes.added.is_empty());
         assert_eq!(changes.removed, vec![111]);
+    }
+
+    #[test]
+    fn diff_reports_updated_items() {
+        let root = PathBuf::from("/w");
+        let previous = WorkshopSnapshot {
+            items: BTreeMap::from([(
+                7,
+                WorkshopItem {
+                    id: 7,
+                    path: root.join("7"),
+                    assets: vec![root.join("7/a.apng")],
+                },
+            )]),
+        };
+        let current = WorkshopSnapshot {
+            items: BTreeMap::from([(
+                7,
+                WorkshopItem {
+                    id: 7,
+                    path: root.join("7"),
+                    assets: vec![root.join("7/a.apng"), root.join("7/b.apng")],
+                },
+            )]),
+        };
+
+        let change = diff(&previous, &current);
+        assert_eq!(change.updated, vec![7]);
+        assert!(change.added.is_empty() && change.removed.is_empty());
+        assert!(!change.is_empty());
+        assert!(diff(&current, &current).is_empty());
+    }
+
+    #[test]
+    fn watcher_reports_added_updated_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("content");
+
+        let mut watcher = WorkshopWatcher::new(vec![root.clone()]);
+        assert_eq!(watcher.poll(), None, "nothing installed yet");
+
+        let item = root.join("42");
+        std::fs::create_dir_all(&item).unwrap();
+        std::fs::write(item.join("a.apng"), b"one").unwrap();
+        let change = watcher.poll().expect("added");
+        assert_eq!(change.added, vec![42]);
+        assert!(change.updated.is_empty());
+
+        std::fs::write(item.join("b.apng"), b"two").unwrap();
+        let change = watcher.poll().expect("updated");
+        assert_eq!(change.updated, vec![42]);
+        assert!(change.added.is_empty());
+
+        std::fs::remove_dir_all(&item).unwrap();
+        let change = watcher.poll().expect("removed");
+        assert_eq!(change.removed, vec![42]);
+        assert_eq!(watcher.poll(), None);
     }
 }
