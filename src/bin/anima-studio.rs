@@ -210,13 +210,24 @@ enum OverlayAction {
     Quit,
 }
 
-/// Newtype so `pick_list` can show instance labels.
+/// A `pick_list` entry that carries the control file (the identity) and shows the label.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct InstanceLabel(String);
+struct InstanceChoice {
+    control: PathBuf,
+    label: String,
+}
 
-impl std::fmt::Display for InstanceLabel {
+impl std::fmt::Display for InstanceChoice {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.label)
+    }
+}
+
+/// The `pick_list` entry for one instance.
+fn instance_choice(instance: &OverlayInstance) -> InstanceChoice {
+    InstanceChoice {
+        control: instance.path.clone(),
+        label: instance_label(instance),
     }
 }
 
@@ -330,7 +341,7 @@ fn overlay_instances() -> Vec<OverlayInstance> {
 enum Message {
     Language(String),
     Refresh,
-    Select(usize),
+    Select(u64),
     Loaded(u64, Option<Meta>, Result<(u32, u32, Vec<u8>), String>),
     CopyPath(String),
     Download(u64),
@@ -341,7 +352,7 @@ enum Message {
     /// otherwise start one.
     PlayAsset(PathBuf),
     RefreshOverlay,
-    SelectOverlay(String),
+    SelectOverlay(PathBuf),
     Overlay(OverlayAction),
     PollOverlay,
     Quit,
@@ -467,7 +478,8 @@ fn load_item(id: u64, dir: PathBuf) -> Loaded {
 struct Studio {
     i18n: I18n,
     snapshot: WorkshopSnapshot,
-    selected: Option<usize>,
+    /// The selected Workshop item, by id: an index moves when the list changes under it.
+    selected_item: Option<u64>,
     note: String,
     meta: HashMap<u64, Meta>,
     thumbs: HashMap<u64, Thumb>,
@@ -475,7 +487,8 @@ struct Studio {
     /// Where SteamCMD downloads into — the only place "Remove local copy" may touch.
     steamcmd_root: Option<PathBuf>,
     overlay: Vec<OverlayInstance>,
-    overlay_selected: Option<usize>,
+    /// The selected overlay instance, by its control file: labels and order change.
+    overlay_selected: Option<PathBuf>,
     /// Overlays this window started, so their exits can be reaped.
     children: Vec<std::process::Child>,
     /// Fingerprint of the control files as of the last read (see [`overlay_signature`]).
@@ -490,7 +503,7 @@ impl Studio {
         let mut studio = Self {
             i18n: I18n::discover(),
             snapshot: WorkshopSnapshot::default(),
-            selected: None,
+            selected_item: None,
             note: String::new(),
             meta: HashMap::new(),
             thumbs: HashMap::new(),
@@ -524,8 +537,8 @@ impl Studio {
         eprintln!("[studio] {}", self.note);
     }
 
-    fn item(&self, index: usize) -> Option<&WorkshopItem> {
-        self.snapshot.items.values().nth(index)
+    fn item(&self, id: u64) -> Option<&WorkshopItem> {
+        self.snapshot.items.get(&id)
     }
 
     /// Load metadata + preview for `id` on the task pool (the HTTP + decode are
@@ -540,10 +553,8 @@ impl Studio {
     /// Re-read every control file. The selection is kept by label, so a refresh (or a
     /// write we just made) does not move it.
     fn reload_overlay(&mut self) {
-        let previous = self
-            .overlay_selected
-            .and_then(|index| self.overlay.get(index))
-            .map(|instance| instance.label.clone());
+        // The control file is the identity: labels and order can change between reads.
+        let previous = self.overlay_selected.clone();
         self.overlay = overlay_instances();
         // Prefer an instance that is actually running. The files are sorted by slug, so the
         // first one is arbitrary — and if it belongs to an instance that exited, every
@@ -552,17 +563,14 @@ impl Studio {
         let fallback = self
             .overlay
             .iter()
-            .position(|instance| instance.running)
-            .or(if self.overlay.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
+            .find(|instance| instance.running)
+            .or_else(|| self.overlay.first())
+            .map(|instance| instance.path.clone());
         self.overlay_selected = previous
-            .and_then(|label| {
+            .filter(|selected| {
                 self.overlay
                     .iter()
-                    .position(|instance| instance.label == label)
+                    .any(|instance| instance.path == *selected)
             })
             .or(fallback);
         // Follow the overlay the user last touched (a drag, the tray, a shortcuts portal).
@@ -575,13 +583,13 @@ impl Studio {
                 .ok();
             if stamp.is_some() && stamp != self.focus_seen {
                 self.focus_seen = stamp;
-                if let Some(index) = self
+                if let Some(instance) = self
                     .overlay
                     .iter()
-                    .position(|instance| instance.path == focused)
+                    .find(|instance| instance.path == focused)
                 {
-                    self.overlay_selected = Some(index);
-                    eprintln!("[studio] following overlay {}", self.overlay[index].label);
+                    self.overlay_selected = Some(instance.path.clone());
+                    eprintln!("[studio] following overlay {}", instance.label);
                 }
             }
         }
@@ -611,11 +619,15 @@ impl Studio {
     /// field (which bumps the generation), save. The overlay picks up the newest
     /// generation on its next poll.
     fn apply_overlay(&mut self, action: OverlayAction) {
-        let Some(index) = self.overlay_selected else {
+        let Some(selected) = self.overlay_selected.clone() else {
             self.note = "select an overlay instance first".to_string();
             return;
         };
-        let Some(instance) = self.overlay.get(index) else {
+        let Some(instance) = self
+            .overlay
+            .iter()
+            .find(|instance| instance.path == selected)
+        else {
             return;
         };
         if !instance.running {
@@ -643,7 +655,7 @@ impl Studio {
             Ok(()) => format!("{label}: generation {}", next.generation),
             Err(error) => format!("could not write the control file: {error}"),
         };
-        self.overlay_selected = Some(index);
+        self.overlay_selected = Some(selected);
         self.reload_overlay();
     }
 
@@ -655,10 +667,10 @@ impl Studio {
                 }
             }
             Message::Refresh => self.refresh(),
-            Message::Select(index) => {
-                self.selected = Some(index);
-                if let Some(item) = self.item(index) {
-                    let (id, dir) = (item.id, item.path.clone());
+            Message::Select(id) => {
+                self.selected_item = Some(id);
+                if let Some(item) = self.item(id) {
+                    let dir = item.path.clone();
                     if !self.thumbs.contains_key(&id) {
                         return self.load_thumb_task(id, dir);
                     }
@@ -739,12 +751,7 @@ impl Studio {
                 }
             }
             Message::RefreshOverlay => self.reload_overlay(),
-            Message::SelectOverlay(label) => {
-                self.overlay_selected = self
-                    .overlay
-                    .iter()
-                    .position(|instance| instance.label == label);
-            }
+            Message::SelectOverlay(control) => self.overlay_selected = Some(control),
             Message::Overlay(action) => self.apply_overlay(action),
             Message::PlayAsset(asset) => self.play_on_overlay(&asset),
             Message::PollOverlay => self.poll_overlay(),
@@ -774,7 +781,7 @@ impl Studio {
         .align_y(iced::Alignment::Center);
 
         let mut list = column![].spacing(4);
-        for (index, (id, item)) in self.snapshot.items.iter().enumerate() {
+        for (id, item) in &self.snapshot.items {
             let name = self
                 .meta
                 .get(id)
@@ -789,7 +796,7 @@ impl Studio {
                 .unwrap_or_else(|| self.i18n.tr("Workshop"));
             // Two lines per row, and the accent colour is reserved for the primary
             // action, so selection is shown with a marker instead.
-            let marker = if self.selected == Some(index) {
+            let marker = if self.selected_item == Some(*id) {
                 "▸ "
             } else {
                 ""
@@ -808,12 +815,12 @@ impl Studio {
                     .spacing(2),
                 )
                 .style(secondary)
-                .on_press(Message::Select(index))
+                .on_press(Message::Select(*id))
                 .width(Length::Fill),
             );
         }
 
-        let details: Element<'_, Message> = match self.selected.and_then(|index| self.item(index)) {
+        let details: Element<'_, Message> = match self.selected_item.and_then(|id| self.item(id)) {
             Some(item) => {
                 let id = item.id;
                 // The pane reads: where it lives → what it looks like → what it is →
@@ -986,20 +993,23 @@ impl Studio {
         }
 
         panel = panel.push(pick_list(
-            self.overlay
-                .iter()
-                .map(|instance| InstanceLabel(instance_label(instance)))
-                .collect::<Vec<_>>(),
+            self.overlay.iter().map(instance_choice).collect::<Vec<_>>(),
             self.overlay_selected
-                .and_then(|index| self.overlay.get(index))
-                .map(|instance| InstanceLabel(instance_label(instance))),
-            |label: InstanceLabel| Message::SelectOverlay(label.0),
+                .as_ref()
+                .and_then(|selected| {
+                    self.overlay
+                        .iter()
+                        .find(|instance| instance.path == *selected)
+                })
+                .map(instance_choice),
+            |choice: InstanceChoice| Message::SelectOverlay(choice.control),
         ));
 
-        let Some(instance) = self
-            .overlay_selected
-            .and_then(|index| self.overlay.get(index))
-        else {
+        let Some(instance) = self.overlay_selected.as_ref().and_then(|selected| {
+            self.overlay
+                .iter()
+                .find(|instance| instance.path == *selected)
+        }) else {
             return panel.into();
         };
         let state = &instance.state;
@@ -1203,6 +1213,33 @@ mod tests {
             assert!(!instance.label.is_empty());
         }
         eprintln!("[studio] {} overlay control file(s)", instances.len());
+    }
+
+    /// Selections are keyed by id / control path, so rebuilding the list or the instance set
+    /// cannot move them to something else. Read-only against the real data dir.
+    #[test]
+    fn selection_identity_is_stable() {
+        // The Workshop side: an id survives the list changing under it.
+        let mut studio = Studio::boot();
+        let Some(first) = studio.snapshot.items.keys().next().copied() else {
+            return;
+        };
+        studio.selected_item = Some(first);
+        assert_eq!(studio.item(first).map(|item| item.id), Some(first));
+        assert!(studio.item(first.wrapping_add(1)).is_none() || first == u64::MAX);
+
+        // The overlay side: the control file is the identity, so a reload keeps it.
+        let Some(instance) = studio.overlay.first() else {
+            return;
+        };
+        let path = instance.path.clone();
+        studio.overlay_selected = Some(path.clone());
+        studio.reload_overlay();
+        assert_eq!(
+            studio.overlay_selected.as_deref(),
+            Some(path.as_path()),
+            "the control path must survive a reload"
+        );
     }
 
     /// "Play" must find the instance that already plays an asset, or decide to start one.

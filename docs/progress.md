@@ -538,8 +538,16 @@ search field with IME, and Workshop browse/search.
       TTL plus a proxy pointing at a closed port) logged `stale cache, Steam unreachable` and
       served `"teto face inspection"`. The TTL boundary is unit-tested, including a clock that
       jumps backwards. Not done: pruning entries for items that are no longer installed.
-- [ ] Not yet: a search field with IME (which first needs selection keyed by id rather than
-      index), API-key browse/search, and list-row thumbnails once the library is big.
+- [x] Selections are keyed by identity instead of position: the Workshop list by **item id**
+      (the `BTreeMap` key) and the overlay panel by the instance's **control file**. Both used
+      to hold an index into a vector — and the instance vector is rebuilt every second — so a
+      rebuild could silently move the selection onto a different row, with the details pane,
+      the remove button and the overlay controls acting on whatever that index happened to
+      point at. A test asserts the id lookup and that the control path survives
+      `reload_overlay`. This is the prerequisite for the search box: a filtered list cannot
+      carry positions.
+- [ ] Not yet: the search box itself (now unblocked), API-key browse/search, and list-row
+      thumbnails once the library is big.
 
 ### Overlay lifecycle (`anima-shepherd`)
 
