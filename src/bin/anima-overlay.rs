@@ -2127,7 +2127,16 @@ fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).map(PathBuf::from);
+    // `--no-tray` lets the shepherd own the single tray icon; the animation path is the
+    // only other argument.
+    let mut path: Option<PathBuf> = None;
+    let mut tray_wanted = true;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--no-tray" => tray_wanted = false,
+            other => path = Some(PathBuf::from(other)),
+        }
+    }
     // Announce before decoding: a 1500x1125 animation takes seconds to load, and until the
     // marker exists the shepherd would think nothing is running and start a second copy.
     let early_control = ControlState::path_for(
@@ -2337,7 +2346,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut control_mtime = std::fs::metadata(&control_path)
         .and_then(|m| m.modified())
         .ok();
-    let _tray = spawn_tray(control_path.clone(), slug.clone(), label);
+    let _tray = if tray_wanted {
+        spawn_tray(control_path.clone(), slug.clone(), label)
+    } else {
+        eprintln!("[overlay] tray disabled (--no-tray): the shepherd owns it");
+        None
+    };
     spawn_portal(slug);
 
     // --- wgpu surface from the raw Wayland handles -------------------------

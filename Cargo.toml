@@ -64,6 +64,8 @@ path = "src/bin/anima-i18n.rs"
 [[bin]]
 name = "anima-shepherd"
 path = "src/bin/anima-shepherd.rs"
+# The tray (ksni) comes from the `overlay` feature, and the shepherd is what owns it now.
+required-features = ["overlay"]
 
 [[bin]]
 name = "anima-studio"

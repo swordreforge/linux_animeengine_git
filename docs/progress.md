@@ -566,9 +566,17 @@ search field with IME, and Workshop browse/search.
       same `comm`, so `is_running` said "alive" forever — both the shepherd and the window now
       hold their `Child` handles and `try_wait()` them each pass, which also yields the real
       exit status.
-- [ ] Still open from the plan: the tray has not moved into the shepherd (each overlay still
-      owns one, so N overlays still mean N tray icons), and there is no D-Bus intent call —
-      the registry file is the interface.
+- [x] The tray moved into the shepherd: **one** icon for every overlay, with a submenu per
+      instance (`●/○` + file name, `Visible`, `Quit this overlay`, `Disable (stop
+      supervising)`), plus `Open main window` and `Quit shepherd (overlays keep playing)`.
+      The overlay gained `--no-tray`; the shepherd starts its children with it, so N overlays
+      are N surfaces and one icon. The menu is rebuilt from the registry and the liveness
+      markers, and refreshed right after a change and every five seconds otherwise (the dots
+      also move when something the shepherd did not start exits).
+      Verified: the shepherd logged `tray registered (StatusNotifierItem)` while the overlay it
+      started logged `tray disabled (--no-tray): the shepherd owns it`.
+- [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
+      already the interface the window uses, and the tray covers the human side.
 
 ### Steam / Workshop
 

@@ -6,10 +6,9 @@ in `progress.md` as they land, or move them there when they change shape.
 
 ## 1. Overlay lifecycle: a manager that outlives the window
 
-**Status.** The registry, the supervision loop and the CLI are implemented and verified
-(`anima-shepherd`: enable/disable/status/list/stop/quit, backoff, crash recovery, and the
-liveness and zombie bugs the acceptance run found — see `progress.md`). Not done: moving the
-tray out of the overlay, and the D-Bus intent call (the registry file is the interface).
+**Status.** Done: the registry, supervision with backoff, the CLI, liveness/zombie handling,
+and the tray (one icon for every overlay; the overlay takes `--no-tray` and the shepherd
+passes it). Left: a D-Bus intent call, which the registry file makes optional.
 
 **Why.** Today the studio is the only thing that starts overlays, and each overlay's tray
 (`ksni`, inside the overlay process) dies with it. So: close the window and nothing can
