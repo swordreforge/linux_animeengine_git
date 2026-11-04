@@ -725,6 +725,18 @@ search field with IME, and Workshop browse/search.
       Verified: 0 warnings, 159 lib + 3 anim + 16 studio tests, clippy 0, plus the ignored
       `decodes_and_caches_a_real_asset_first_frame` against a real library
       (`animatedddds.apng → 512×384`, cache read-back identical).
+- [x] Two follow-ups the layout review turned up. Switching items now drops the asset on show and
+      the parameters staged for it, instead of leaving the tuning area pointing at the old item's
+      file — and "Remove local copy" drops them too when the file went with the item. The states
+      without a picture are now one `placeholder` box: same height and surface as a real preview,
+      a large muted glyph and one line of explanation, so switching between them does not move the
+      pane. Button rows `.wrap()` now, which stops a narrow window from squeezing "Flip V" into a
+      two-line vertical pill, and the overlay pick list shortens its label instead of spilling a
+      Steam path out of the row.
+- [ ] The known flake, disclosed rather than hidden: `shepherd::tests::live_instances_cover_every_control_file`
+      reads the **real** control directory while other tests in the same process write it, so it
+      fails roughly one run in three (it passes on its own). The fix is a test-side lock around
+      the tests that touch the real data directory — not done here.
 - [ ] The remaining honest gaps in the Material work: type scale and spacing are iced's, and the
       palette is read once at boot (a wallpaper change needs a relaunch; watching the file is the
       follow-up).

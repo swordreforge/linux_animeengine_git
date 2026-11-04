@@ -312,6 +312,31 @@ fn divider<'a>(
         })
 }
 
+/// A box the size of a preview, for the states that have no picture yet or cannot make one.
+/// Same height and surface as a real preview, so the pane does not jump when one arrives.
+fn placeholder<'a>(
+    icon: &'a str,
+    note: String,
+) -> iced::widget::Container<'a, Message, iced_material::Theme> {
+    container(
+        column![
+            text(icon)
+                .size(40)
+                .style(iced_material::text::surface_variant),
+            text(note)
+                .size(11)
+                .style(iced_material::text::surface_variant),
+        ]
+        .spacing(6)
+        .align_x(iced::Alignment::Center),
+    )
+    .style(iced_material::container::surface_container_low)
+    .width(Length::Fill)
+    .height(Length::Fixed(PREVIEW_HEIGHT))
+    .align_x(iced::Alignment::Center)
+    .align_y(iced::Alignment::Center)
+}
+
 /// Newtype so `pick_list` shows the native name while carrying the catalog code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Language(String);
@@ -502,7 +527,9 @@ fn instance_label(instance: &OverlayInstance) -> String {
     format!(
         "{} {}",
         if instance.running { "●" } else { "○" },
-        instance.label
+        // A control-file slug says nothing, and the animation path is long enough to push the
+        // row out of a narrow pane, so it is shortened here rather than at every use.
+        shorten(Path::new(&instance.label))
     )
 }
 
@@ -1113,6 +1140,12 @@ impl Studio {
                 self.remote_note.clear();
             }
             Message::Select(id) => {
+                // A different item means a different set of assets: the one on show, and the
+                // parameters staged for it, belong to the old item and go with it.
+                if self.selected_item != Some(id) {
+                    self.previewed_asset = None;
+                    self.staged = None;
+                }
                 self.selected_item = Some(id);
                 // A remote result has no directory yet; its preview comes from the CDN.
                 let dir = self
@@ -1173,6 +1206,15 @@ impl Studio {
             }
             Message::Remove(id) => {
                 self.pending_remove = None;
+                // The tuning area must not keep pointing at a file the removal takes away.
+                let gone = self.previewed_asset.as_ref().is_some_and(|asset| {
+                    self.item(id)
+                        .is_some_and(|item| asset.starts_with(&item.path))
+                });
+                if gone {
+                    self.previewed_asset = None;
+                    self.staged = None;
+                }
                 let root = self.steamcmd_root.clone();
                 let Some(item) = self.snapshot.items.get(&id) else {
                     return Task::none();
@@ -1345,17 +1387,13 @@ impl Studio {
                         );
                     }
                     Some(Thumb::Loading) => {
-                        pane = pane.push(
-                            container(text("…").size(12)).height(Length::Fixed(PREVIEW_HEIGHT)),
-                        );
+                        pane = pane.push(placeholder("▦", "…".to_string()));
                     }
                     Some(Thumb::Failed(error)) => {
-                        pane = pane.push(
-                            container(
-                                text(format!("{} · {error}", self.i18n.tr("No preview"))).size(12),
-                            )
-                            .height(Length::Fixed(PREVIEW_HEIGHT)),
-                        );
+                        pane = pane.push(placeholder(
+                            "⚠",
+                            format!("{} · {error}", self.i18n.tr("No preview")),
+                        ));
                     }
                     None => {}
                 }
@@ -1409,7 +1447,7 @@ impl Studio {
                             .on_press(Message::ArmRemove(id)),
                     )
                 };
-                pane = pane.push(actions);
+                pane = pane.push(actions.spacing(6).wrap());
 
                 pane = pane.push(divider(Length::Fill, Length::Fixed(1.0)));
                 pane = pane.push(
@@ -1463,17 +1501,13 @@ impl Studio {
                         );
                     }
                     Some(Thumb::Loading) => {
-                        pane = pane.push(
-                            container(text("…").size(12)).height(Length::Fixed(PREVIEW_HEIGHT)),
-                        );
+                        pane = pane.push(placeholder("▦", "…".to_string()));
                     }
                     Some(Thumb::Failed(error)) => {
-                        pane = pane.push(
-                            container(
-                                text(format!("{} · {error}", self.i18n.tr("No preview"))).size(12),
-                            )
-                            .height(Length::Fixed(PREVIEW_HEIGHT)),
-                        );
+                        pane = pane.push(placeholder(
+                            "⚠",
+                            format!("{} · {error}", self.i18n.tr("No preview")),
+                        ));
                     }
                     None => {}
                 }
@@ -1808,7 +1842,8 @@ impl Studio {
                     .style(secondary)
                     .on_press(tag(OverlayAction::ToggleClickThrough)),
             ]
-            .spacing(6),
+            .spacing(6)
+            .wrap(),
             row![
                 button(text("−10%"))
                     .style(secondary)
@@ -1826,7 +1861,8 @@ impl Studio {
                     .style(secondary)
                     .on_press(tag(OverlayAction::FlipV)),
             ]
-            .spacing(6),
+            .spacing(6)
+            .wrap(),
             row![
                 button(text(self.i18n.tr("Reset")))
                     .style(secondary)
@@ -1842,7 +1878,11 @@ impl Studio {
     /// will start with. Empty until an asset is picked, so nothing here acts on a guess.
     fn asset_preview_area(&self) -> El<'_> {
         let Some(asset) = self.previewed_asset.as_ref() else {
-            return container(text(self.i18n.tr("Click an asset to preview it")).size(11)).into();
+            return placeholder(
+                "▦",
+                self.i18n.tr("Click an asset to preview it").to_string(),
+            )
+            .into();
         };
         let mut area = column![text(file_name(asset)).size(14)].spacing(8);
         match self.asset_previews.get(asset) {
@@ -1854,14 +1894,13 @@ impl Studio {
                 );
             }
             Some(Thumb::Loading) => {
-                area =
-                    area.push(container(text("…").size(12)).height(Length::Fixed(PREVIEW_HEIGHT)));
+                area = area.push(placeholder("▦", "…".to_string()));
             }
             Some(Thumb::Failed(error)) => {
-                area = area.push(
-                    container(text(format!("{} · {error}", self.i18n.tr("No preview"))).size(12))
-                        .height(Length::Fixed(PREVIEW_HEIGHT)),
-                );
+                area = area.push(placeholder(
+                    "⚠",
+                    format!("{} · {error}", self.i18n.tr("No preview")),
+                ));
             }
             None => {}
         }
@@ -2111,6 +2150,25 @@ mod tests {
         let (_, cached) = load_asset_preview(&asset);
         assert_eq!(cached.unwrap(), (width, height, rgba));
         eprintln!("[test] {} → {width}×{height}", file_name(&asset));
+    }
+
+    #[test]
+    fn a_new_item_drops_the_asset_on_show() {
+        let mut studio = Studio::boot();
+        let asset = PathBuf::from("/tmp/whatever.apng");
+        studio.selected_item = Some(1);
+        studio.previewed_asset = Some(asset.clone());
+        studio.staged = Some((asset, ControlState::default()));
+
+        // Clicking the row that is already selected is not a reset: the preview stays.
+        let _ = studio.update(Message::Select(1));
+        assert!(studio.previewed_asset.is_some());
+
+        // Another item has a different set of assets, so the one on show goes with the old one.
+        // The task this returns is dropped rather than run, so nothing touches the network.
+        let _ = studio.update(Message::Select(2));
+        assert!(studio.previewed_asset.is_none());
+        assert!(studio.staged.is_none());
     }
 
     #[test]
