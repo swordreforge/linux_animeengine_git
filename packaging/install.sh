@@ -52,7 +52,7 @@ if [ "$UNINSTALL" = 1 ]; then
   for bin in "${BINS[@]}"; do rm -f "$PREFIX/bin/$bin"; done
   rm -f "$APPS/anima-engine-overlay.desktop" "$APPS/anima-engine-workshop.desktop" \
     "$APPS/anima-engine-studio.desktop"
-  rm -f "$ICONS/anima-engine.svg" "$METAINFO_FILE" "$NIRI_DIR/anima.kdl"
+  rm -f "$ICONS/anima-engine.svg" "$ICONS/anima-engine-studio.svg" "$METAINFO_FILE" "$NIRI_DIR/anima.kdl"
   echo "removed the installed files (translation catalog and instance state kept)"
   exit 0
 fi
@@ -83,7 +83,9 @@ install -Dm644 "$REPO/packaging/anima-engine-overlay.desktop" "$APPS/anima-engin
 install -Dm644 "$REPO/packaging/anima-engine-workshop.desktop" "$APPS/anima-engine-workshop.desktop"
 if [ "$INSTALLED_STUDIO" = 1 ]; then
   install -Dm644 "$REPO/packaging/anima-engine-studio.desktop" "$APPS/anima-engine-studio.desktop"
+  install -Dm644 "$REPO/packaging/anima-engine-studio.svg" "$ICONS/anima-engine-studio.svg"
   echo "desktop  $APPS/anima-engine-studio.desktop"
+  echo "icon     $ICONS/anima-engine-studio.svg"
 fi
 install -Dm644 "$REPO/packaging/anima-engine.svg" "$ICONS/anima-engine.svg"
 install -Dm644 "$REPO/packaging/io.github.swordreforge.AnimaEngine.metainfo.xml" "$METAINFO_FILE"

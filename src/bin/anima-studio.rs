@@ -412,6 +412,8 @@ enum Message {
     SearchSteam,
     RemoteResults(Result<Vec<RemoteRow>, String>),
     ShowInstalled,
+    /// Turn "follow the overlay you touched" on or off.
+    ToggleFollow,
     Select(u64),
     Loaded(u64, Option<Meta>, Result<(u32, u32, Vec<u8>), String>),
     CopyPath(String),
@@ -553,6 +555,9 @@ struct Studio {
     selected_item: Option<u64>,
     /// List filter. The selection is kept by id, so hiding the selected row does not lose it.
     query: String,
+    /// Whether the panel follows the overlay the user last touched. Locking it keeps the
+    /// selection on one instance while several are being dragged in turn.
+    follow: bool,
     /// Steam search results, when the list is showing them instead of what is installed.
     remote: Option<Vec<RemoteRow>>,
     /// Why a Steam search produced nothing (missing key, offline), shown in the status line.
@@ -582,6 +587,7 @@ impl Studio {
             snapshot: WorkshopSnapshot::default(),
             selected_item: None,
             query: String::new(),
+            follow: true,
             remote: None,
             remote_note: String::new(),
             note: String::new(),
@@ -663,10 +669,13 @@ impl Studio {
                 .ok();
             if stamp.is_some() && stamp != self.focus_seen {
                 self.focus_seen = stamp;
-                if let Some(instance) = self
-                    .overlay
-                    .iter()
-                    .find(|instance| instance.path == focused)
+                // The stamp is recorded either way, so locking and unlocking the follow does
+                // not make the panel jump to some old claim.
+                if self.follow
+                    && let Some(instance) = self
+                        .overlay
+                        .iter()
+                        .find(|instance| instance.path == focused)
                 {
                     self.overlay_selected = Some(instance.path.clone());
                     eprintln!("[studio] following overlay {}", instance.label);
@@ -855,6 +864,14 @@ impl Studio {
                 }
             }
             Message::RefreshOverlay => self.reload_overlay(),
+            Message::ToggleFollow => {
+                self.follow = !self.follow;
+                self.note = format!(
+                    "{}: {}",
+                    self.i18n.tr("follow"),
+                    if self.follow { "●" } else { "○" }
+                );
+            }
             Message::SelectOverlay(control) => self.overlay_selected = Some(control),
             Message::Overlay(action) => self.apply_overlay(action),
             Message::PlayAsset(asset) => self.play_on_overlay(&asset),
@@ -1116,7 +1133,7 @@ impl Studio {
                     ]
                     .spacing(8),
                 );
-                pane = pane.push(text("(not installed)".to_string()).size(11));
+                pane = pane.push(text(format!("({})", self.i18n.tr("not installed"))).size(11));
                 scrollable(pane).into()
             }
             (None, None) => text(self.note.clone()).into(),
@@ -1236,6 +1253,13 @@ impl Studio {
                     }
                 ))
                 .size(11),
+                button(text(format!(
+                    "{} {}",
+                    self.i18n.tr("follow"),
+                    if self.follow { "●" } else { "○" }
+                )))
+                .style(if self.follow { primary } else { secondary })
+                .on_press(Message::ToggleFollow),
                 button(text(self.i18n.tr("Refresh")))
                     .style(text_button)
                     .on_press(Message::RefreshOverlay),
@@ -1406,6 +1430,8 @@ impl Studio {
     /// The panel follows the control files on its own; the Refresh buttons are for
     /// impatience rather than correctness.
     fn subscription(&self) -> Subscription<Message> {
+        // Keyboard shortcuts are not here yet: iced 0.14 removed `keyboard::on_key_press`, so
+        // they have to go through the event-listening API. Noted in docs/next-steps.md.
         iced::time::every(std::time::Duration::from_millis(OVERLAY_POLL_MS))
             .map(|_| Message::PollOverlay)
     }

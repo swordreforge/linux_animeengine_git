@@ -635,6 +635,19 @@ search field with IME, and Workshop browse/search.
       registry disable and the "never restarted" rule.
       Note for the future: `kill`-ing a supervised instance is a *crash* by design, so it
       comes back; close it with the menu, the tray, the CLI or `disable` first.
+- [x] Three of the small items. The overlay panel gained a **follow lock**: `follow ●/○` in its
+      header turns "select the overlay you just touched" off, so dragging two overlays in turn
+      no longer bounces the selection; the focus stamp is recorded either way, so unlocking does
+      not jump to an old claim. The window has its **own icon** (`anima-engine-studio.svg`, a
+      window mark rather than the overlay's), wired into its desktop entry and `install.sh`
+      (including uninstall). And the remote-result pane's `(not installed)` label goes through
+      the catalog (`not installed`, four languages).
+- [ ] Deferred, with the reason rather than a promise: window **keyboard shortcuts** — iced 0.14
+      removed `keyboard::on_key_press`, so they need the event-listening API; **list-row
+      thumbnails** — they need a prefetch policy, since a preview is fetched on selection only
+      today, which is what keeps the API calls polite; **Workshop pagination** — page 1 with 50
+      results is what `query_files` is asked for; **`notify`-based instant refresh** of the
+      control directory — the 1s poll is fine and `notify` would be a new dependency.
 - [ ] Not needed unless asked: a D-Bus "start/stop this animation" call — the registry file is
       already the interface the window uses, and the tray covers the human side.
 
