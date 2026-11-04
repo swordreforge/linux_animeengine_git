@@ -96,6 +96,12 @@ that first (key by id/path) or the filter will move the wrong row.
 
 ## 4. Browse/search the Workshop beyond what is installed
 
+**Status: done** — `Search Steam` in the search row queries
+`IPublishedFileService/QueryFiles` (needs `STEAM_WEB_API_KEY`), lists results with a cloud
+marker, and gives them a pane with the CDN preview and the download/subscribe actions. The
+keyless case is an explicit message naming the variable. Left: pagination (page 1, 50
+results today) and a `(not installed)` label that should become an i18n key.
+
 **Why.** Today the window can only show what is already on disk. The three-tier fallback
 (Web API with a key → Community HTML → local metadata) was researched but only the keyless
 `GetPublishedFileDetails` is wired.
