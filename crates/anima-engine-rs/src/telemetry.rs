@@ -84,7 +84,9 @@ pub struct ThreadSample {
 pub struct Sample {
     /// Percent of one core, so a busy four-thread job reads about 400.
     pub cpu: f32,
-    pub rss_bytes: u64,
+    /// What the process costs, and which accounting produced it: see [`read_memory`].
+    pub memory_bytes: u64,
+    pub memory_source: &'static str,
     /// Percent of the GPU's time this process spent rendering, when the driver reports it.
     pub gpu: Option<f32>,
     pub threads: Vec<ThreadSample>,
@@ -171,7 +173,7 @@ impl Sampler {
         let process_ticks = read_process_ticks(&self.process);
         let thread_ticks = read_thread_ticks(&self.process);
         let gpu_nanoseconds = read_gpu_nanoseconds(&self.process);
-        let rss_bytes = read_rss(&self.process);
+        let (memory_bytes, memory_source) = read_memory(&self.process);
         let machine = read_machine();
 
         let sample = match &self.last {
@@ -218,13 +220,15 @@ impl Sampler {
                 threads.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
                 Sample {
                     cpu: cpu as f32,
-                    rss_bytes,
+                    memory_bytes,
+                    memory_source,
                     gpu: gpu.map(|value| value as f32),
                     threads,
                 }
             }
             None => Sample {
-                rss_bytes,
+                memory_bytes,
+                memory_source,
                 gpu: None,
                 ..Sample::default()
             },
@@ -252,9 +256,19 @@ pub fn parse_process_ticks(stat: &str) -> Option<u64> {
     Some(utime + stime)
 }
 
-/// `VmRSS` from `/proc/<pid>/status`, in bytes.
+/// `VmRSS` from `/proc/<pid>/status`, in bytes. The whole resident set, shared pages included.
 pub fn parse_rss(status: &str) -> Option<u64> {
     let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kilobytes: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kilobytes * 1024)
+}
+
+/// `Pss:` from `/proc/<pid>/smaps_rollup`, in bytes.
+///
+/// The line has to match exactly. The same file carries `Pss_Dirty`, `Pss_Anon`, `Pss_File` and `Pss_Shmem`,
+/// so a prefix test would read whichever of them came first.
+pub fn parse_pss(rollup: &str) -> Option<u64> {
+    let line = rollup.lines().find(|line| line.starts_with("Pss:"))?;
     let kilobytes: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
     Some(kilobytes * 1024)
 }
@@ -289,11 +303,30 @@ fn read_process_ticks(process: &Process) -> u64 {
         .unwrap_or(0)
 }
 
-fn read_rss(process: &Process) -> u64 {
-    read(&process.file("status"))
+/// What the process costs, preferring the accounting that divides shared pages.
+///
+/// A shared library page is one page of memory no matter how many processes map it, and `VmRSS` counts it in
+/// full in every one of them. `Pss` divides it, which is the number a person means by "what this costs": on
+/// this machine an overlay reads 119 MiB as RSS and 48 MiB as Pss, and the window 132 against 38. The ratio
+/// is not a constant, so it cannot be converted — each process has to be read.
+///
+/// Reading it needs no privileges even for a process we did not start: `ptrace_scope` restricts *attach*, and
+/// this is a read. The source travels with the number rather than being assumed, because falling back to
+/// `VmRSS` silently would step a chart by two and a half times and look like the process did that.
+fn read_memory(process: &Process) -> (u64, &'static str) {
+    if let Some(bytes) = read(&process.file("smaps_rollup"))
         .as_deref()
-        .and_then(parse_rss)
-        .unwrap_or(0)
+        .and_then(parse_pss)
+    {
+        return (bytes, "pss");
+    }
+    (
+        read(&process.file("status"))
+            .as_deref()
+            .and_then(parse_rss)
+            .unwrap_or(0),
+        "vmrss",
+    )
 }
 
 fn read_thread_ticks(process: &Process) -> HashMap<u32, (String, u64)> {
@@ -352,6 +385,27 @@ mod tests {
     #[test]
     fn a_stat_without_a_command_name_is_not_panic() {
         assert_eq!(parse_process_ticks("nonsense"), None);
+    }
+
+    #[test]
+    fn pss_is_read_exactly_and_its_siblings_are_not() {
+        // Verbatim shape from this machine, siblings included: a prefix test would pick `Pss_Dirty`.
+        let rollup = "Rss:                4744 kB\nPss_Dirty:           156 kB\nPss_Anon:            156 kB\nPss:                 313 kB\nPss_File:            157 kB\n";
+        assert_eq!(parse_pss(rollup), Some(313 * 1024));
+    }
+
+    #[test]
+    fn the_memory_reading_says_which_accounting_produced_it() {
+        let (bytes, source) = read_memory(&Process::current());
+        assert!(bytes > 0, "a running process costs something");
+        assert!(matches!(source, "pss" | "vmrss"), "{source}");
+        // The same number, read the other way, must not be wildly different: whichever the kernel offers,
+        // this is a reading of one process rather than of nothing.
+        let rss = read(&Process::current().file("status"))
+            .as_deref()
+            .and_then(parse_rss)
+            .unwrap_or(0);
+        assert!(bytes <= rss.max(1), "pss cannot exceed rss");
     }
 
     #[test]

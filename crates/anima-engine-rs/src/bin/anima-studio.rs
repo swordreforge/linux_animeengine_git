@@ -1617,7 +1617,7 @@ const TELEMETRY_MS: u64 = 1000;
 /// starting, and without `overlays=` those two are the same drawn line.
 fn log_overlays(count: usize, sum: &Sample) {
     let cpu = format!("{:.1}", sum.cpu);
-    let memory = format!("{:.1}", sum.rss_bytes as f64 / (1024.0 * 1024.0));
+    let memory = format!("{:.1}", sum.memory_bytes as f64 / (1024.0 * 1024.0));
     let gpu = sum
         .gpu
         .map_or_else(|| "-".to_string(), |value| format!("{value:.1}"));
@@ -1629,6 +1629,7 @@ fn log_overlays(count: usize, sum: &Sample) {
             ("overlays", &count),
             ("cpu", &cpu),
             ("mem_mib", &memory),
+            ("mem_source", &sum.memory_source),
             ("gpu", &gpu),
         ],
     );
@@ -1641,7 +1642,7 @@ fn log_overlays(count: usize, sum: &Sample) {
 /// an issue needs no explanation.
 fn log_resource(who: &str, pid: u32, sample: &Sample) {
     let cpu = format!("{:.1}", sample.cpu);
-    let memory = format!("{:.1}", sample.rss_bytes as f64 / (1024.0 * 1024.0));
+    let memory = format!("{:.1}", sample.memory_bytes as f64 / (1024.0 * 1024.0));
     let gpu = sample
         .gpu
         .map_or_else(|| "-".to_string(), |value| format!("{value:.1}"));
@@ -1653,6 +1654,7 @@ fn log_resource(who: &str, pid: u32, sample: &Sample) {
             ("pid", &pid),
             ("cpu", &cpu),
             ("mem_mib", &memory),
+            ("mem_source", &sample.memory_source),
             ("gpu", &gpu),
         ],
     );
@@ -1684,15 +1686,24 @@ impl Studio {
         }
 
         let mut sum = Sample::default();
+        // A sum of numbers from two different accountings is not a total of anything, so the sources are
+        // collected too and a mixture is labelled rather than hidden.
+        let mut sources = std::collections::BTreeSet::new();
         for (_, sampler) in self.overlays.values_mut() {
             let sample = sampler.sample();
+            sources.insert(sample.memory_source);
             sum.cpu += sample.cpu;
-            sum.rss_bytes += sample.rss_bytes;
+            sum.memory_bytes += sample.memory_bytes;
             sum.gpu = match (sum.gpu, sample.gpu) {
                 (Some(total), Some(value)) => Some(total + value),
                 (total, value) => total.or(value),
             };
         }
+        sum.memory_source = match sources.len() {
+            1 => sources.into_iter().next().unwrap_or("none"),
+            0 => "none",
+            _ => "mixed",
+        };
         if !self.overlays.is_empty() {
             log_overlays(self.overlays.len(), &sum);
         }
