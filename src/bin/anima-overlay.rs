@@ -49,6 +49,7 @@ use wayland::Wayland;
 use anima_engine_rs::anim::{Animation, DecodeLimits, Frame, Orientation};
 use anima_engine_rs::cache::{Blocks, FrameCache};
 use anima_engine_rs::control::{ControlState, InputMode, MAX_SCALE_PERCENT, MIN_SCALE_PERCENT};
+use anima_engine_rs::log;
 use anima_engine_rs::settings::{ANIM_META_FILE, AnimMeta, ConfigFile};
 use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::workshop::WorkshopWatcher;
@@ -937,13 +938,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                         {
                             state.dragging = true;
                             state.drag_start = state.pointer_pos;
-                            eprintln!(
-                                "[overlay] drag start at ({:.0}, {:.0})",
-                                state.pointer_pos.0, state.pointer_pos.1
+                            log::event(
+                                log::Level::Info,
+                                "overlay.drag.start",
+                                &[("x", &state.pointer_pos.0), ("y", &state.pointer_pos.1)],
                             );
                             // Anyone watching (the main window) can now follow along.
                             if let Err(error) = ControlState::claim_focus(&state.control_path) {
-                                eprintln!("[overlay] could not claim focus: {error}");
+                                log::failure("overlay.focus.claim_failed", &error);
                             }
                         }
                     }
@@ -952,9 +954,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for OverlayState {
                             return;
                         }
                         if state.dragging {
-                            eprintln!(
-                                "[overlay] drag end; margins ({}, {})",
-                                state.margin_left, state.margin_top
+                            log::event(
+                                log::Level::Info,
+                                "overlay.drag.end",
+                                &[("left", &state.margin_left), ("top", &state.margin_top)],
                             );
                             persist_geometry(state);
                         }
@@ -1005,9 +1008,15 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for OverlayState {
                         .layer_surface
                         .set_size(state.desired_size.0, state.desired_size.1);
                     state.surface.commit();
-                    eprintln!(
-                        "[overlay] compositor offered {width}x{height}; pinning {}x{}",
-                        state.desired_size.0, state.desired_size.1
+                    log::event(
+                        log::Level::Debug,
+                        "overlay.configure",
+                        &[
+                            ("offered_w", &width),
+                            ("offered_h", &height),
+                            ("pinned_w", &state.desired_size.0),
+                            ("pinned_h", &state.desired_size.1),
+                        ],
                     );
                 }
                 state.configured = Some(state.desired_size);
@@ -1131,7 +1140,7 @@ fn spawn_bc7_encode(
             match anima_engine_rs::bc7::encode(&frame.rgba, frames.width, frames.height, params) {
                 Ok(blocks) => data.extend_from_slice(&blocks),
                 Err(err) => {
-                    eprintln!("[overlay] bc7 encode failed: {err}");
+                    log::failure("overlay.bc7.encode_failed", &err);
                     return;
                 }
             }
@@ -1147,12 +1156,18 @@ fn spawn_bc7_encode(
             data,
         };
         match FrameCache::user_default().write_blocks(&source, &blocks) {
-            Ok(()) => eprintln!(
-                "[overlay] bc7 sidecar written: {:.1} MiB in {:.1}s (used on the next reload)",
-                blocks.data.len() as f64 / (1024.0 * 1024.0),
-                started.elapsed().as_secs_f32()
+            Ok(()) => log::event(
+                log::Level::Info,
+                "overlay.bc7.written",
+                &[
+                    (
+                        "mib",
+                        &format!("{:.1}", blocks.data.len() as f64 / (1024.0 * 1024.0)),
+                    ),
+                    ("seconds", &started.elapsed().as_secs_f32()),
+                ],
             ),
-            Err(err) => eprintln!("[overlay] bc7 sidecar write failed: {err}"),
+            Err(err) => log::failure("overlay.bc7.write_failed", &err),
         }
     });
 }
@@ -1174,9 +1189,17 @@ fn crop_to_ink(animation: Animation) -> (Animation, (u32, u32)) {
         return (animation, (0, 0));
     }
     let cropped = animation.crop(ink);
-    eprintln!(
-        "[overlay] cropped {}x{} -> {}x{} (art starts at {}, {})",
-        canvas.0, canvas.1, cropped.width, cropped.height, offset.0, offset.1
+    log::event(
+        log::Level::Info,
+        "overlay.crop",
+        &[
+            ("from_w", &canvas.0),
+            ("from_h", &canvas.1),
+            ("to_w", &cropped.width),
+            ("to_h", &cropped.height),
+            ("at_x", &offset.0),
+            ("at_y", &offset.1),
+        ],
     );
     (cropped, offset)
 }
@@ -1197,9 +1220,10 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
     let cache = FrameCache::user_default();
     let stale = cache.clean_stale_temps(std::time::Duration::from_secs(3600));
     if stale > 0 {
-        eprintln!(
-            "[overlay] removed {:.1} MiB of interrupted cache writes",
-            stale as f64 / (1024.0 * 1024.0)
+        log::event(
+            log::Level::Info,
+            "overlay.cache.removed_stale",
+            &[("mib", &format!("{:.1}", stale as f64 / (1024.0 * 1024.0)))],
         );
     }
 
@@ -1224,13 +1248,19 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
             // the crop started, so saved canvas positions keep working and no rescan
             // is needed.
             let crop = blocks.crop;
-            eprintln!(
-                "[overlay] bc7 cache hit: {} frame(s), {}x{}, {:.1} MiB blocks{}",
-                animation.frame_count(),
-                animation.width,
-                animation.height,
-                blocks.data.len() as f64 / (1024.0 * 1024.0),
-                report.note()
+            log::event(
+                log::Level::Info,
+                "overlay.bc7.cache_hit",
+                &[
+                    ("frames", &animation.frame_count()),
+                    ("width", &animation.width),
+                    ("height", &animation.height),
+                    (
+                        "mib",
+                        &format!("{:.1}", blocks.data.len() as f64 / (1024.0 * 1024.0)),
+                    ),
+                    ("note", &report.note()),
+                ],
             );
             return Ok(Loaded {
                 animation: Arc::new(animation),
@@ -1240,9 +1270,7 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
             });
         }
         if cached.is_some_and(|blocks| blocks.limits != limits) {
-            eprintln!(
-                "[overlay] bc7 sidecar was encoded with different decode limits; re-encoding"
-            );
+            log::event(log::Level::Info, "overlay.bc7.limits_changed", &[]);
             if let Ok(blocks_path) = cache.blocks_path(path) {
                 let _ = std::fs::remove_file(blocks_path);
             }
@@ -1253,17 +1281,16 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
         let (animation, report) = anima_engine_rs::anim::limit_animation(animation, limits);
         let blocks = cache.read_blocks(path);
         let (animation, crop) = crop_to_ink(animation);
-        eprintln!(
-            "[overlay] cache hit: {} frame(s), {}x{}{}{}",
-            animation.frame_count(),
-            animation.width,
-            animation.height,
-            report.note(),
-            if blocks.is_some() {
-                " + bc7 blocks"
-            } else {
-                ""
-            }
+        log::event(
+            log::Level::Info,
+            "overlay.cache.hit",
+            &[
+                ("frames", &animation.frame_count()),
+                ("width", &animation.width),
+                ("height", &animation.height),
+                ("note", &report.note()),
+                ("blocks", &if blocks.is_some() { "bc7" } else { "rgba" }),
+            ],
         );
         return Ok(Loaded {
             animation: Arc::new(animation),
@@ -1275,14 +1302,20 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
 
     let started = Instant::now();
     let (animation, report) = anima_engine_rs::anim::decode_reporting(path, limits)?;
-    eprintln!(
-        "[overlay] decoded {} frame(s) at {}x{}, {:.1} MiB{} in {:.2}s",
-        animation.frame_count(),
-        animation.width,
-        animation.height,
-        animation.bytes() as f64 / (1024.0 * 1024.0),
-        report.note(),
-        started.elapsed().as_secs_f32()
+    log::event(
+        log::Level::Info,
+        "overlay.decoded",
+        &[
+            ("frames", &animation.frame_count()),
+            ("width", &animation.width),
+            ("height", &animation.height),
+            (
+                "mib",
+                &format!("{:.1}", animation.bytes() as f64 / (1024.0 * 1024.0)),
+            ),
+            ("note", &report.note()),
+            ("seconds", &started.elapsed().as_secs_f32()),
+        ],
     );
 
     let (animation, crop) = crop_to_ink(animation);
@@ -1300,11 +1333,12 @@ fn load_animation(path: Option<&Path>) -> Result<Loaded, Box<dyn std::error::Err
         let cache_path = path.to_path_buf();
         std::thread::spawn(move || {
             if let Err(err) = cache.write(&cache_path, &cache_animation) {
-                eprintln!("[overlay] cache write failed: {err}");
+                log::failure("overlay.cache.write_failed", &err);
             } else {
-                eprintln!(
-                    "[overlay] cached {} frame(s)",
-                    cache_animation.frame_count()
+                log::event(
+                    log::Level::Info,
+                    "overlay.cache.written",
+                    &[("frames", &cache_animation.frame_count())],
                 );
             }
         });
@@ -1466,7 +1500,11 @@ fn open_menu(state: &mut OverlayState, at: (f64, f64)) {
     state.surface.set_input_region(None);
     state.surface.commit();
     state.visual_dirty = true;
-    eprintln!("[overlay] menu open at ({:.0}, {:.0})", at.0, at.1);
+    log::event(
+        log::Level::Info,
+        "overlay.menu.open",
+        &[("x", &at.0), ("y", &at.1)],
+    );
 }
 
 fn close_menu(state: &mut OverlayState) {
@@ -1477,7 +1515,7 @@ fn close_menu(state: &mut OverlayState) {
     state.applied_rects.clear();
     state.region_dirty = true;
     state.visual_dirty = true;
-    eprintln!("[overlay] menu closed");
+    log::event(log::Level::Info, "overlay.menu.closed", &[]);
 }
 
 fn menu_action(state: &mut OverlayState, action: menu::Action) {
@@ -1500,9 +1538,13 @@ fn menu_action(state: &mut OverlayState, action: menu::Action) {
         menu::Action::Quit => current.request_quit(),
     };
     if let Err(err) = next.save(&path) {
-        eprintln!("[overlay] menu action failed: {err}");
+        log::failure("overlay.menu.action_failed", &err);
     }
-    eprintln!("[overlay] menu action: {action:?}");
+    log::event(
+        log::Level::Info,
+        "overlay.menu.action",
+        &[("action", &format!("{action:?}"))],
+    );
 }
 
 /// Apply an input mode to the surface.
@@ -1517,21 +1559,24 @@ fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
             state.applied_rects.clear();
             state.surface.set_input_region(None);
             state.surface.commit();
-            eprintln!("[overlay] input: full surface");
+            log::event(log::Level::Debug, "overlay.input.full", &[]);
         }
         InputMode::PassThrough => {
             state.region = None;
             state.applied_rects.clear();
             state.surface.set_input_region(Some(&state.empty_region));
             state.surface.commit();
-            eprintln!("[overlay] input: click-through");
+            log::event(log::Level::Debug, "overlay.input.click_through", &[]);
         }
         InputMode::Opaque => {
             apply_opaque_region(state);
-            eprintln!(
-                "[overlay] input: opaque pixels ({} rects, step {})",
-                state.applied_rects.len(),
-                state.applied_step
+            log::event(
+                log::Level::Debug,
+                "overlay.input.opaque",
+                &[
+                    ("rects", &state.applied_rects.len()),
+                    ("step", &state.applied_step),
+                ],
             );
         }
     }
@@ -1640,7 +1685,11 @@ fn reapply_clamp(state: &mut OverlayState) {
     state.margin_top = top;
     state.layer_surface.set_margin(top, 0, 0, left);
     state.surface.commit();
-    eprintln!("[overlay] clamped position to ({left}, {top})");
+    log::event(
+        log::Level::Info,
+        "overlay.clamped",
+        &[("left", &left), ("top", &top)],
+    );
     persist_geometry(state);
 }
 
@@ -1666,14 +1715,26 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
     state.visual_dirty = true;
     state.region_dirty = true;
     if state.hidden {
-        eprintln!("[overlay] scale {percent}% (hidden)");
+        log::event(
+            log::Level::Info,
+            "overlay.scale.hidden",
+            &[("percent", &percent)],
+        );
     } else {
         let (width, height) = fit_to_output(state, scaled_size(state));
         state.desired_size = (width, height);
         state.layer_surface.set_size(width, height);
         state.surface.commit();
         state.applied_rects.clear();
-        eprintln!("[overlay] scale {percent}% -> {width}x{height}");
+        log::event(
+            log::Level::Info,
+            "overlay.scale",
+            &[
+                ("percent", &percent),
+                ("width", &width),
+                ("height", &height),
+            ],
+        );
         reapply_clamp(state);
     }
     persist_geometry(state);
@@ -1699,13 +1760,10 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
     state.layer_surface.set_size(width, height);
     state.surface.commit();
     state.applied_rects.clear();
-    eprintln!(
-        "[overlay] {}",
-        if hidden {
-            "hidden (1x1 keep-alive)"
-        } else {
-            "shown"
-        }
+    log::event(
+        log::Level::Info,
+        "overlay.visibility",
+        &[("hidden", &hidden)],
     );
     reapply_clamp(state);
 }
@@ -1720,11 +1778,14 @@ fn apply_orientation(state: &mut OverlayState, orientation: Orientation) {
     state.region_dirty = true;
     state.visual_dirty = true;
     state.applied_rects.clear();
-    eprintln!(
-        "[overlay] transform {}° flip_h {} flip_v {}",
-        orientation.degrees(),
-        orientation.flip_h,
-        orientation.flip_v
+    log::event(
+        log::Level::Info,
+        "overlay.transform",
+        &[
+            ("degrees", &orientation.degrees()),
+            ("flip_h", &orientation.flip_h),
+            ("flip_v", &orientation.flip_v),
+        ],
     );
     if state.hidden {
         return;
@@ -1790,7 +1851,7 @@ fn persist_geometry(state: &OverlayState) {
         changed
     };
     if changed && let Err(err) = document.save(&state.state_path) {
-        eprintln!("[overlay] could not save instance state: {err}");
+        log::failure("overlay.instance.save_failed", &err);
     }
 }
 
@@ -1798,11 +1859,11 @@ fn persist_geometry(state: &OverlayState) {
 fn write_control(path: &Path, action: impl FnOnce(ControlState) -> ControlState) {
     let next = action(ControlState::load(path));
     if let Err(err) = next.save(path) {
-        eprintln!("[overlay] control write failed: {err}");
+        log::failure("overlay.control.write_failed", &err);
     }
     // A tray or portal action means the user is looking at this instance.
     if let Err(err) = ControlState::claim_focus(path) {
-        eprintln!("[overlay] could not claim focus: {err}");
+        log::failure("overlay.focus.claim_failed", &err);
     }
 }
 
@@ -2001,11 +2062,11 @@ fn spawn_tray(
         .spawn()
     {
         Ok(handle) => {
-            eprintln!("[overlay] tray registered (StatusNotifierItem)");
+            log::event(log::Level::Info, "overlay.tray.registered", &[]);
             Some(handle)
         }
         Err(err) => {
-            eprintln!("[overlay] tray unavailable (no StatusNotifierWatcher?): {err}");
+            log::failure("overlay.tray.unavailable", &err);
             None
         }
     }
@@ -2022,13 +2083,13 @@ fn spawn_portal(slug: String) {
         {
             Ok(runtime) => runtime,
             Err(err) => {
-                eprintln!("[overlay] portal runtime failed: {err}");
+                log::failure("overlay.portal.failed", &err);
                 return;
             }
         };
         runtime.block_on(async move {
             if let Err(err) = run_portal(slug).await {
-                eprintln!("[overlay] global shortcuts unavailable: {err}");
+                log::failure("overlay.shortcuts.unavailable", &err);
             }
         });
     });
@@ -2055,7 +2116,11 @@ async fn run_portal(slug: String) -> Result<(), Box<dyn std::error::Error>> {
     proxy
         .bind_shortcuts(&session, &shortcuts, None, BindShortcutsOptions::default())
         .await?;
-    eprintln!("[overlay] global shortcuts bound: Ctrl+Shift+T toggle, Ctrl+Shift+R reset");
+    log::event(
+        log::Level::Info,
+        "overlay.shortcuts.bound",
+        &[("bindings", &"Ctrl+Shift+T toggle, Ctrl+Shift+R reset")],
+    );
 
     let mut activated = proxy.receive_activated().await?;
     while let Some(event) = activated.next().await {
@@ -2065,7 +2130,11 @@ async fn run_portal(slug: String) -> Result<(), Box<dyn std::error::Error>> {
         } else if id == reset_id {
             broadcast_control(ControlState::request_reset);
         } else {
-            eprintln!("[overlay] unknown shortcut activated: {id}");
+            log::event(
+                log::Level::Debug,
+                "overlay.shortcuts.unknown",
+                &[("id", &id)],
+            );
         }
     }
 
@@ -2175,7 +2244,7 @@ fn poll_control(
                 // Reset restores the naive interaction state, like the
                 // Python `_reset_interactions`.
                 state.hover_hide = false;
-                eprintln!("[overlay] reset to initial position");
+                log::event(log::Level::Info, "overlay.reset", &[]);
             }
             apply_input_mode(state, control.input_mode);
             if control.scale_percent != state.scale_percent {
@@ -2183,7 +2252,11 @@ fn poll_control(
             }
             if control.locked != state.locked {
                 state.locked = control.locked;
-                eprintln!("[overlay] locked {}", state.locked);
+                log::event(
+                    log::Level::Info,
+                    "overlay.locked",
+                    &[("locked", &state.locked)],
+                );
             }
             if control.hidden != state.hidden {
                 apply_hidden(state, control.hidden);
@@ -2197,9 +2270,10 @@ fn poll_control(
             if tuning != state.region_tuning {
                 state.region_tuning = tuning;
                 state.region_dirty = true;
-                eprintln!(
-                    "[overlay] region limits: {}",
-                    state.region_tuning.describe()
+                log::event(
+                    log::Level::Info,
+                    "overlay.region_limits",
+                    &[("limits", &state.region_tuning.describe())],
                 );
             }
             persist_geometry(state);
@@ -2250,7 +2324,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _tray = if tray_wanted {
         spawn_tray(control_path.clone(), slug.clone(), label)
     } else {
-        eprintln!("[overlay] tray disabled (--no-tray): the shepherd owns it");
+        log::event(log::Level::Info, "overlay.tray.disabled", &[]);
         None
     };
     spawn_portal(slug);
@@ -2353,11 +2427,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             last_presented = None;
             next_change = Instant::now();
             reapply_clamp(&mut state);
-            eprintln!(
-                "[overlay] rebuilt frames: {} frame(s) {}x{}",
-                frames.frame_count(),
-                new_width,
-                new_height
+            log::event(
+                log::Level::Debug,
+                "overlay.rebuilt",
+                &[
+                    ("frames", &frames.frame_count()),
+                    ("width", &new_width),
+                    ("height", &new_height),
+                ],
             );
             persist_geometry(&state);
         }

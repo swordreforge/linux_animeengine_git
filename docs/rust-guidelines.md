@@ -41,7 +41,7 @@ should be re-measured rather than trusted.
 
 | | Do | Don't |
 |---|---|---|
-| **M-LOG-NOT-PRINT** | Emit diagnostics through `log` (`src/log.rs`): an event name and named fields, one line, on stderr, with `ANIMA_LOG=off\|info\|debug` choosing how much of it a user sees. CLI binaries whose stdout *is* the interface (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`) keep printing | `println!`/`eprintln!` in a GUI or daemon, which always prints and cannot be turned down. *(`anima-overlay`'s five modules are converted; its own 41 sites, the shepherd's 46 and the studio's 34 remain)* |
+| **M-LOG-NOT-PRINT** | Emit diagnostics through `log` (`src/log.rs`): an event name and named fields, one line, on stderr, with `ANIMA_LOG=off\|info\|debug` choosing how much of it a user sees. CLI binaries whose stdout *is* the interface (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`) keep printing | `println!`/`eprintln!` in a GUI or daemon, which always prints and cannot be turned down. *(`anima-overlay` is finished — all 50 of its sites; the shepherd's 46 and the studio's 34 remain)* |
 | **M-LOG-STRUCTURED** | One event per line with named fields, so it can be grepped and parsed: `overlay.instance.restored x=100 y=200 scale=100 mode=Opaque` | A sentence with interpolated values, which needs a regular expression to read back |
 | **M-LOG-OVERHEAD** | Keep a logging call off the per-frame path, or guard it | Formatting a string every frame and throwing it away |
 
@@ -99,7 +99,7 @@ should be re-measured rather than trusted.
 |---|---|---|
 | **M-MODULE-DOCS** / **M-DOC-FIRST-SENTENCE** | `//!` on every module, first sentence on one line, saying what the module is for and when to use it | Leave a module to speak for itself. *(46 files have it; the binaries' new modules are the gap)* |
 | **M-NO-META-DESIGN-DOCUMENTATION** | Document the end state. Put the design journey in `docs/`, as `docs/code-audit.md` does | Write "we chose X over Y" or a change journal into rustdoc. No `//!` line in this tree does, and that is deliberate |
-| **C-EXAMPLE** / **M-DESIGN-FOR-AI** | Put a runnable example on public API. Agents and newcomers read these first | Ship public API with no example anywhere. *(`src/` has zero doc examples; the four files in `examples/` are benchmarks and probes, not examples of how to call the API)* |
+| **C-EXAMPLE** / **M-DESIGN-FOR-AI** | Put a runnable example on public API. Agents and newcomers read these first | Ship public API with no example anywhere. *(the library still has no rustdoc examples; `examples/log_events.rs` is the first in `examples/` that shows how to call something rather than measure it)* |
 | **M-DESIGN-FOR-AI** | Keep modules documented, APIs idiomatic, and types strong — compiler checks are what makes an agent's edits safe | Rely on conversation history as the documentation |
 | **M-DOCUMENTED-MAGIC** | Name a number and say where it came from: `ASSET_PREVIEW_PX`, `MAX_IDS_PER_REQUEST` | Leave `100` or `512` in place with no name. *(126 named constants so far)* |
 
@@ -149,8 +149,8 @@ benchmark are kept, off by default, so that costs one build.
 
 ## Outstanding, in the order worth doing
 
-1. Finish moving the console output onto `log`: the remaining 41 sites in `anima-overlay.rs` itself, then
-   `anima-shepherd.rs` at 46 and `anima-studio.rs` at 34.
+1. Move the console output in `anima-shepherd.rs` (46 sites) and `anima-studio.rs` (34) onto `log`;
+   `anima-overlay` is done. `examples/log_events.rs` shows the format without needing a compositor.
 2. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
 3. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
