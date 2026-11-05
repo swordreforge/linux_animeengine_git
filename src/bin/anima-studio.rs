@@ -2277,99 +2277,17 @@ impl Studio {
                 };
             }
             Message::VideoPath(path) => self.video_path = path,
-            Message::VideoPickFile => {
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("video", &["mp4", "mov", "mkv", "webm", "avi"])
-                            .pick_file()
-                            .await
-                            .map(|file| file.path().display().to_string())
-                    },
-                    |picked| match picked {
-                        Some(path) => Message::VideoChosen(path),
-                        None => Message::VideoChosen(String::new()),
-                    },
-                );
-            }
-            Message::VideoChosen(path) => {
-                self.video_path = path;
-                if !self.video_path.is_empty() {
-                    // A real number about the file instead of a promise that it will work.
-                    self.video_probe =
-                        anima_engine_rs::ffmpeg::probe_duration_seconds(&self.video_path)
-                            .map(|seconds| format!("{seconds:.1} s"));
-                    if self.video_output.is_empty() {
-                        let stem = std::path::Path::new(&self.video_path)
-                            .file_stem()
-                            .map(|stem| stem.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        self.video_output = format!("{stem}.gif");
-                    }
-                    self.video_note = String::new();
-                }
-            }
-            Message::VideoFormat(chosen) => {
-                if let Some((_, template)) = anima_engine_rs::ffmpeg::VIDEO_PRESETS
-                    .iter()
-                    .find(|(name, _)| *name == chosen)
-                {
-                    self.video_command = (*template).to_string();
-                }
-            }
+            Message::VideoPickFile => return self.video_pick_file(),
+            Message::VideoChosen(path) => return self.video_chosen(path),
+            Message::VideoFormat(chosen) => return self.video_format(chosen),
             Message::VideoCommand(command) => self.video_command = command,
             Message::VideoFps(value) => self.video_fps = value,
             Message::VideoQuality(value) => self.video_quality = value,
             Message::VideoLossless(value) => self.video_lossless = value,
             Message::VideoOutput(path) => self.video_output = path,
-            Message::VideoPickOutput => {
-                let suggestion = if self.video_output.is_empty() {
-                    "animation.gif".to_string()
-                } else {
-                    self.video_output.clone()
-                };
-                return Task::perform(
-                    async move {
-                        rfd::AsyncFileDialog::new()
-                            .set_file_name(suggestion)
-                            .save_file()
-                            .await
-                            .map(|file| file.path().display().to_string())
-                    },
-                    |picked| match picked {
-                        Some(path) => Message::VideoOutput(path),
-                        None => Message::VideoOutput(String::new()),
-                    },
-                );
-            }
-            Message::VideoWrite => {
-                // The preconditions live here, where the catalog is; the worker's own failures are
-                // ffmpeg's, and those are better left as ffmpeg wrote them.
-                if self.video_path.trim().is_empty() {
-                    self.video_note = self.i18n.tr("choose a video first");
-                } else if self.video_output.trim().is_empty() {
-                    self.video_note = self.i18n.tr("choose where to write first");
-                } else {
-                    self.video_writing = true;
-                    self.video_note = String::new();
-                    let request = VideoWriteRequest {
-                        command: self.video_command.clone(),
-                        input: self.video_path.clone(),
-                        output: self.video_output.clone(),
-                        fps: self.video_fps,
-                        quality: self.video_quality,
-                        lossless: self.video_lossless,
-                    };
-                    return Task::perform(async move { video_write(request) }, Message::VideoWrote);
-                }
-            }
-            Message::VideoWrote(result) => {
-                self.video_writing = false;
-                self.video_note = match result {
-                    Ok(path) => format!("{} {path}", self.i18n.tr("wrote")),
-                    Err(detail) => detail,
-                };
-            }
+            Message::VideoPickOutput => return self.video_pick_output(),
+            Message::VideoWrite => return self.video_write(),
+            Message::VideoWrote(result) => return self.video_wrote(result),
             Message::KeyWrote(result) => return self.key_wrote(result),
             Message::KeyChosen(path) => return self.key_chosen(path),
             Message::KeyBackground(rgb) => return self.key_background(rgb),

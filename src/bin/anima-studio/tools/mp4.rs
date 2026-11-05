@@ -111,3 +111,103 @@ impl Studio {
             .unwrap_or_else(|| "gif".to_string())
     }
 }
+
+// The messages this card handles, moved out of the window's single `handle` match.
+impl Studio {
+    pub(crate) fn video_pick_file(&mut self) -> Task<Message> {
+        Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .add_filter("video", &["mp4", "mov", "mkv", "webm", "avi"])
+                    .pick_file()
+                    .await
+                    .map(|file| file.path().display().to_string())
+            },
+            |picked| match picked {
+                Some(path) => Message::VideoChosen(path),
+                None => Message::VideoChosen(String::new()),
+            },
+        )
+    }
+
+    pub(crate) fn video_chosen(&mut self, path: String) -> Task<Message> {
+        self.video_path = path;
+        if !self.video_path.is_empty() {
+            // A real number about the file instead of a promise that it will work.
+            self.video_probe = anima_engine_rs::ffmpeg::probe_duration_seconds(&self.video_path)
+                .map(|seconds| format!("{seconds:.1} s"));
+            if self.video_output.is_empty() {
+                let stem = std::path::Path::new(&self.video_path)
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.video_output = format!("{stem}.gif");
+            }
+            self.video_note = String::new();
+        }
+        Task::none()
+    }
+
+    pub(crate) fn video_format(&mut self, chosen: String) -> Task<Message> {
+        if let Some((_, template)) = anima_engine_rs::ffmpeg::VIDEO_PRESETS
+            .iter()
+            .find(|(name, _)| *name == chosen)
+        {
+            self.video_command = (*template).to_string();
+        }
+        Task::none()
+    }
+
+    pub(crate) fn video_pick_output(&mut self) -> Task<Message> {
+        let suggestion = if self.video_output.is_empty() {
+            "animation.gif".to_string()
+        } else {
+            self.video_output.clone()
+        };
+        Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_file_name(suggestion)
+                    .save_file()
+                    .await
+                    .map(|file| file.path().display().to_string())
+            },
+            |picked| match picked {
+                Some(path) => Message::VideoOutput(path),
+                None => Message::VideoOutput(String::new()),
+            },
+        )
+    }
+
+    pub(crate) fn video_write(&mut self) -> Task<Message> {
+        // The preconditions live here, where the catalog is; the worker's own failures are
+        // ffmpeg's, and those are better left as ffmpeg wrote them.
+        if self.video_path.trim().is_empty() {
+            self.video_note = self.i18n.tr("choose a video first");
+        } else if self.video_output.trim().is_empty() {
+            self.video_note = self.i18n.tr("choose where to write first");
+        } else {
+            self.video_writing = true;
+            self.video_note = String::new();
+            let request = VideoWriteRequest {
+                command: self.video_command.clone(),
+                input: self.video_path.clone(),
+                output: self.video_output.clone(),
+                fps: self.video_fps,
+                quality: self.video_quality,
+                lossless: self.video_lossless,
+            };
+            return Task::perform(async move { video_write(request) }, Message::VideoWrote);
+        }
+        Task::none()
+    }
+
+    pub(crate) fn video_wrote(&mut self, result: Result<String, String>) -> Task<Message> {
+        self.video_writing = false;
+        self.video_note = match result {
+            Ok(path) => format!("{} {path}", self.i18n.tr("wrote")),
+            Err(detail) => detail,
+        };
+        Task::none()
+    }
+}
