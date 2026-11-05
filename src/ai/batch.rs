@@ -62,8 +62,12 @@ pub fn extract_frames(video: &str, into: &Path) -> Result<u64, String> {
             "-i",
             video,
             // One file per frame, and no frame rate guessing: the video's own timing is what we want.
-            "-vsync",
-            "0",
+            // `-fps_mode passthrough`, not `-vsync 0`: ffmpeg 7 deprecated that spelling and 8 removed it
+            // outright, so the machine running ffmpeg 9 answers "-vsync" with "Unrecognized option". One
+            // output frame per input frame is what an extraction wants, and this spelling says so on every
+            // version that still ships an image2 muxer.
+            "-fps_mode",
+            "passthrough",
             "-pix_fmt",
             "rgba",
             pattern.to_str().unwrap_or_default(),

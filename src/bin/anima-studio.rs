@@ -3289,7 +3289,7 @@ impl Studio {
         let mut page = column![
             text(self.i18n.tr("Tools")).size(20),
             text(self.i18n.tr(
-                "the conversion and removal tools, ported in a later step — nothing here runs yet",
+                "the conversion and removal tools — the three pipelines below run here, in Rust",
             ))
             .size(12),
         ]

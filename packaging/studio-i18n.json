@@ -85,7 +85,6 @@
     "downloading · {}": "downloading · {}",
     "Steam is downloading this one; this is how much has landed so far": "Steam is downloading this one; this is how much has landed so far",
     "Tools": "Tools",
-    "the conversion and removal tools, ported in a later step — nothing here runs yet": "the conversion and removal tools, ported in a later step — nothing here runs yet",
     "MP4 to animation": "MP4 to animation",
     "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way",
     "Background removal by colour": "Background removal by colour",
@@ -138,7 +137,8 @@
     "frames": "frames",
     "working…": "working…",
     "stopping…": "stopping…",
-    "Start": "Start"
+    "Start": "Start",
+    "the conversion and removal tools — the three pipelines below run here, in Rust": "the conversion and removal tools — the three pipelines below run here, in Rust"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -226,7 +226,6 @@
     "downloading · {}": "下载中 · {}",
     "Steam is downloading this one; this is how much has landed so far": "Steam 正在下载这一项；这是已经落盘的量",
     "Tools": "工具",
-    "the conversion and removal tools, ported in a later step — nothing here runs yet": "转换与去背工具 —— 后续步骤移植，这里目前都不会执行",
     "MP4 to animation": "MP4 转为动画",
     "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 —— gif 走 moviepy，webp 与 apng 走 ffmpeg；图片 zip 也能反向生成视频",
     "Background removal by colour": "按颜色去背景",
@@ -279,7 +278,9 @@
     "frames": "帧",
     "working…": "处理中…",
     "stopping…": "正在停止…",
-    "Start": "开始"
+    "Start": "开始",
+    "转换与去背工具 —— 下面三条管线都在这里跑，用 Rust 实现": "转换与去背工具 —— 后续步骤移植，这里目前都不会执行",
+    "the conversion and removal tools — the three pipelines below run here, in Rust": "转换与去背工具 —— 下面三条管线都在这里跑，用 Rust 实现"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -367,7 +368,6 @@
     "downloading · {}": "下載中 · {}",
     "Steam is downloading this one; this is how much has landed so far": "Steam 正在下載這一項；這是已經落盤的量",
     "Tools": "工具",
-    "the conversion and removal tools, ported in a later step — nothing here runs yet": "轉換與去背工具 —— 後續步驟移植，這裡目前都不會執行",
     "MP4 to animation": "MP4 轉為動畫",
     "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 —— gif 走 moviepy，webp 與 apng 走 ffmpeg；圖片 zip 也能反向產生影片",
     "Background removal by colour": "按顏色去背景",
@@ -420,7 +420,9 @@
     "frames": "影格",
     "working…": "處理中…",
     "stopping…": "正在停止…",
-    "Start": "開始"
+    "Start": "開始",
+    "轉換與去背工具 —— 下面三條管線都在這裡跑，用 Rust 實作": "轉換與去背工具 —— 後續步驟移植，這裡目前都不會執行",
+    "the conversion and removal tools — the three pipelines below run here, in Rust": "轉換與去背工具 —— 下面三條管線都在這裡跑，用 Rust 實作"
   },
   "ja": {
     "Refresh": "更新",
@@ -508,7 +510,6 @@
     "downloading · {}": "ダウンロード中 · {}",
     "Steam is downloading this one; this is how much has landed so far": "Steam がダウンロード中です。これは現在までに保存された量です",
     "Tools": "ツール",
-    "the conversion and removal tools, ported in a later step — nothing here runs yet": "変換と背景除去のツール — 後の手順で移植します。ここではまだ何も実行しません",
     "MP4 to animation": "MP4 をアニメーションに変換",
     "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 — gif は moviepy、webp と apng は ffmpeg。画像 ZIP から動画を作ることもできます",
     "Background removal by colour": "色で背景を除去",
@@ -561,6 +562,8 @@
     "frames": "フレーム",
     "working…": "処理中…",
     "stopping…": "停止中…",
-    "Start": "開始"
+    "Start": "開始",
+    "変換と背景除去のツール — 下の3つの処理はすべてここで、Rust で動きます": "変換と背景除去のツール — 後の手順で移植します。ここではまだ何も実行しません",
+    "the conversion and removal tools — the three pipelines below run here, in Rust": "変換と背景除去のツール — 下の3つの処理はすべてここで、Rust で動きます"
   }
 }
