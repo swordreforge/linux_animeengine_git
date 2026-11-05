@@ -20,7 +20,7 @@ optdepends=(
   'xdg-desktop-portal: file dialogs in the studio'
   'libsteam_api: Steam presence, if built with the steamworks feature'
 )
-source=("$pkgname-$pkgver.tar.gz::https://example.invalid/anima-engine/archive/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/swordreforge/linux_animeengine_git/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')  # fill this in before uploading to the AUR
 
 build() {
