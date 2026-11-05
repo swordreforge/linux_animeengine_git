@@ -1611,6 +1611,29 @@ fn load_item(id: u64, dir: PathBuf) -> Loaded {
 /// of a reading is a few files in `/proc`.
 const TELEMETRY_MS: u64 = 1000;
 
+/// One line for the set of overlays: the sums, and how many instances they came from.
+///
+/// The count is not decoration. A step in a summed line is either one instance getting heavier or another one
+/// starting, and without `overlays=` those two are the same drawn line.
+fn log_overlays(count: usize, sum: &Sample) {
+    let cpu = format!("{:.1}", sum.cpu);
+    let memory = format!("{:.1}", sum.rss_bytes as f64 / (1024.0 * 1024.0));
+    let gpu = sum
+        .gpu
+        .map_or_else(|| "-".to_string(), |value| format!("{value:.1}"));
+    log::event(
+        log::Level::Debug,
+        "studio.resources",
+        &[
+            ("who", &"overlays"),
+            ("overlays", &count),
+            ("cpu", &cpu),
+            ("mem_mib", &memory),
+            ("gpu", &gpu),
+        ],
+    );
+}
+
 /// One line per process per tick: the numbers the resource charts are drawn from.
 ///
 /// `Debug` rather than `Info`: this repeats every second for as long as the window is open, and that is the
@@ -1641,9 +1664,37 @@ impl Studio {
     fn sample_telemetry(&mut self) {
         let sample = self.resources.sample();
         log_resource("studio", std::process::id(), &sample);
-        if let Some((pid, sampler)) = self.overlay_resources.as_mut() {
+
+        // Discovered, not remembered — see `overlays` on the struct. The control directory says which
+        // instances exist, the liveness marker says which of them are running, and the two together are what
+        // makes a count mean something on a machine where the files outlive their processes.
+        let running = ControlState::running_instances();
+        self.overlays
+            .retain(|slug, _| running.iter().any(|(running, _)| running == slug));
+        for (slug, pid) in running {
+            match self.overlays.get(&slug) {
+                // The same instance in the same process: keep the baseline it is measuring from.
+                Some((known, _)) if *known == pid => {}
+                // New to us, or running again as a different process, which is a different thing to measure.
+                _ => {
+                    self.overlays
+                        .insert(slug, (pid, Sampler::for_process(Process::pid(pid))));
+                }
+            }
+        }
+
+        let mut sum = Sample::default();
+        for (_, sampler) in self.overlays.values_mut() {
             let sample = sampler.sample();
-            log_resource("overlay", *pid, &sample);
+            sum.cpu += sample.cpu;
+            sum.rss_bytes += sample.rss_bytes;
+            sum.gpu = match (sum.gpu, sample.gpu) {
+                (Some(total), Some(value)) => Some(total + value),
+                (total, value) => total.or(value),
+            };
+        }
+        if !self.overlays.is_empty() {
+            log_overlays(self.overlays.len(), &sum);
         }
     }
 }
@@ -1777,8 +1828,13 @@ struct Studio {
     /// from, so a process needs one of its own: two processes through one sampler would subtract each
     /// other's counters and report nonsense.
     resources: Sampler,
-    /// The overlay we started, with its own sampler. `None` until one is running.
-    overlay_resources: Option<(u32, Sampler)>,
+    /// The overlays that are running, by slug, with a sampler each.
+    ///
+    /// Rebuilt from the control directory every tick rather than remembered from the spawn, because this
+    /// window does not own them: it can ask one to close, but one outliving the window is normal, and one the
+    /// shepherd started never passed through here at all. One sampler per slug — per instance, not per pid —
+    /// is what makes a restart show up as a restarted measurement instead of a step in the line.
+    overlays: std::collections::BTreeMap<String, (u32, Sampler)>,
     /// Fingerprint of the control files as of the last read (see [`overlay_signature`]).
     overlay_signature: String,
     /// Modification time of the focus marker this window already followed, so a new claim
@@ -1865,7 +1921,7 @@ impl Studio {
             overlay_selected: None,
             children: Vec::new(),
             resources: Sampler::new(),
-            overlay_resources: None,
+            overlays: std::collections::BTreeMap::new(),
             overlay_signature: String::new(),
             focus_seen: None,
         };
@@ -3419,11 +3475,7 @@ impl Studio {
             Ok(child) => {
                 // Keep the handle so `poll_overlay` can wait for it: a killed overlay that
                 // nobody reaps stays a zombie in `/proc`, where it still looks alive.
-                let pid = child.id();
                 self.children.push(child);
-                // A sampler's first reading is only a baseline, so this one starts now and the first
-                // number arrives one tick later.
-                self.overlay_resources = Some((pid, Sampler::for_process(Process::pid(pid))));
                 format!(
                     "{} {}",
                     self.i18n.tr("started an overlay for"),

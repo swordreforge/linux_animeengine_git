@@ -184,7 +184,12 @@ impl ControlState {
 
     /// Existing per-instance control files, sorted for stable output.
     pub fn instances() -> Vec<PathBuf> {
-        let Ok(entries) = std::fs::read_dir(paths::user_data_dir().join(CONTROL_DIR)) else {
+        Self::instances_in(&paths::user_data_dir().join(CONTROL_DIR))
+    }
+
+    /// The same, in a directory named by the caller, so a test can use one of its own.
+    pub fn instances_in(dir: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
         let mut paths: Vec<PathBuf> = entries
@@ -243,6 +248,29 @@ impl ControlState {
     /// Is the process that owns `control` still alive?
     pub fn is_running(control: &Path) -> bool {
         marker_running(&Self::announce_path(control))
+    }
+
+    /// The instances that are actually running, as `(slug, pid)`.
+    ///
+    /// A control file outlives its process on purpose — it carries the desired state — so the directory keeps
+    /// one per instance that has ever run. Counting files would therefore report every overlay of the last
+    /// few days: this machine had nine of them and none running. The pair is what a resource chart needs, and
+    /// the slug rather than the pid is the identity, because a pid can be recycled and the name check is the
+    /// only thing standing between a reused number and a wrong reading.
+    pub fn running_instances() -> Vec<(String, u32)> {
+        Self::running_in(&paths::user_data_dir().join(CONTROL_DIR))
+    }
+
+    /// The same, in a directory named by the caller.
+    pub fn running_in(dir: &Path) -> Vec<(String, u32)> {
+        Self::instances_in(dir)
+            .into_iter()
+            .filter_map(|control| {
+                let pid = marker_live_pid(&Self::announce_path(&control))?;
+                let slug = control.file_stem()?.to_str()?.to_string();
+                Some((slug, pid))
+            })
+            .collect()
     }
 
     /// Every liveness marker on disk, so a caller can notice an instance starting or
@@ -488,17 +516,21 @@ pub fn write_marker(marker: &Path, name: &str) -> std::io::Result<()> {
 
 /// Is the process described by a `<pid> <process name>` marker still alive?
 ///
+/// This is [`marker_live_pid`] with the pid thrown away, so that a caller which only needs the answer and a
+/// caller which needs the process cannot end up with two ideas of what "alive" means.
+pub fn marker_running(marker: &Path) -> bool {
+    marker_live_pid(marker).is_some()
+}
+
+/// The pid in a `<pid> <process name>` marker, when that process is still running.
+///
 /// `/proc/<pid>/comm` is truncated to 15 bytes, so the name is compared by prefix — and
 /// that comparison is also what keeps a recycled pid from passing as the process we
 /// started. Where there is no procfs the marker's own age is used instead.
-pub fn marker_running(marker: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(marker) else {
-        return false;
-    };
+pub fn marker_live_pid(marker: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(marker).ok()?;
     let mut parts = text.split_whitespace();
-    let Some(pid) = parts.next().and_then(|pid| pid.parse::<u32>().ok()) else {
-        return false;
-    };
+    let pid = parts.next().and_then(|pid| pid.parse::<u32>().ok())?;
     let expected = parts.next().unwrap_or("anima-overlay");
     let proc_dir = PathBuf::from(format!("/proc/{pid}"));
     if proc_dir.is_dir() {
@@ -507,12 +539,13 @@ pub fn marker_running(marker: &Path) -> bool {
                 let comm = comm.trim();
                 !comm.is_empty() && (expected == comm || expected.starts_with(comm))
             })
-            .unwrap_or(true);
+            .unwrap_or(true)
+            .then_some(pid);
     }
     // Where procfs exists, a pid missing from it is gone — do not fall back to the
     // heartbeat here, or a SIGKILLed instance would look alive for the next 15 seconds.
     if Path::new("/proc/self").is_dir() {
-        return false;
+        return None;
     }
     // No procfs at all: the marker's own age is all we have.
     std::fs::metadata(marker)
@@ -520,6 +553,7 @@ pub fn marker_running(marker: &Path) -> bool {
         .ok()
         .and_then(|time| SystemTime::now().duration_since(time).ok())
         .is_some_and(|age| age.as_secs() < 15)
+        .then_some(pid)
 }
 
 #[cfg(test)]
@@ -699,6 +733,29 @@ mod tests {
         assert_eq!(
             ControlState::focused_in(dir.path()).as_deref(),
             Some(first.as_path())
+        );
+    }
+
+    #[test]
+    fn a_control_file_from_a_previous_session_is_not_an_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        // The file survives the process, which is the whole point of it: it carries the state the next
+        // overlay for that animation should start with. So a directory full of them says nothing about what
+        // is running, and counting them would report every overlay of the last few days.
+        std::fs::write(dir.path().join("aaaaaaaaaaaaaaaa.json"), "{}").unwrap();
+        let live = dir.path().join("bbbbbbbbbbbbbbbb.json");
+        std::fs::write(&live, "{}").unwrap();
+        ControlState::announce(&live).unwrap();
+
+        assert_eq!(
+            ControlState::instances_in(dir.path()).len(),
+            2,
+            "both files are there"
+        );
+        assert_eq!(
+            ControlState::running_in(dir.path()),
+            vec![("bbbbbbbbbbbbbbbb".to_string(), std::process::id())],
+            "only the one whose process is alive counts, and it carries the pid"
         );
     }
 
