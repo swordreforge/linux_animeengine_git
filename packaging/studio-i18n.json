@@ -109,7 +109,20 @@
     "feather": "feather",
     "original": "original",
     "result": "result",
-    "Choose file": "Choose file"
+    "Choose file": "Choose file",
+    "format": "format",
+    "ffmpeg command, editable": "ffmpeg command, editable",
+    "fps": "fps",
+    "output": "output",
+    "Write": "Write",
+    "writing…": "writing…",
+    "nothing to write — load an animation first": "nothing to write — load an animation first",
+    "choose the output file": "choose the output file",
+    "quality": "quality",
+    "lossless": "lossless",
+    "lossy": "lossy",
+    "wrote": "wrote",
+    "choose where to write first": "choose where to write first"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -221,7 +234,20 @@
     "feather": "羽化",
     "original": "原图",
     "result": "结果",
-    "Choose file": "选择文件"
+    "Choose file": "选择文件",
+    "format": "格式",
+    "ffmpeg command, editable": "ffmpeg 命令（可编辑）",
+    "fps": "帧率",
+    "output": "输出",
+    "Write": "写出",
+    "writing…": "正在写出…",
+    "nothing to write — load an animation first": "没有可写出的内容 —— 先载入动画",
+    "choose the output file": "选择输出文件",
+    "quality": "质量",
+    "lossless": "无损",
+    "lossy": "有损",
+    "wrote": "已写出",
+    "choose where to write first": "请先选择输出位置"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -333,7 +359,20 @@
     "feather": "羽化",
     "original": "原圖",
     "result": "結果",
-    "Choose file": "選擇檔案"
+    "Choose file": "選擇檔案",
+    "format": "格式",
+    "ffmpeg command, editable": "ffmpeg 命令（可編輯）",
+    "fps": "影格率",
+    "output": "輸出",
+    "Write": "寫出",
+    "writing…": "正在寫出…",
+    "nothing to write — load an animation first": "沒有可寫出的內容 —— 先載入動畫",
+    "choose the output file": "選擇輸出檔案",
+    "quality": "品質",
+    "lossless": "無損",
+    "lossy": "有損",
+    "wrote": "已寫出",
+    "choose where to write first": "請先選擇輸出路徑"
   },
   "ja": {
     "Refresh": "更新",
@@ -445,6 +484,19 @@
     "feather": "ぼかし",
     "original": "元の画像",
     "result": "結果",
-    "Choose file": "ファイルを選択"
+    "Choose file": "ファイルを選択",
+    "format": "形式",
+    "ffmpeg command, editable": "ffmpeg コマンド（編集可）",
+    "fps": "fps",
+    "output": "出力先",
+    "Write": "書き出す",
+    "writing…": "書き出し中…",
+    "nothing to write — load an animation first": "書き出すものがありません — 先にアニメーションを読み込んでください",
+    "choose the output file": "出力ファイルを選択",
+    "quality": "品質",
+    "lossless": "可逆圧縮",
+    "lossy": "非可逆",
+    "wrote": "書き出しました",
+    "choose where to write first": "先に出力先を選んでください"
   }
 }

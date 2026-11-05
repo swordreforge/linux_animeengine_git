@@ -13,6 +13,7 @@ pub mod control;
 #[cfg(feature = "dbus")]
 pub mod dbus_intent;
 pub mod error;
+pub mod ffmpeg;
 pub mod i18n;
 pub mod input_map;
 pub mod keying;

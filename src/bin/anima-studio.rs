@@ -105,6 +105,77 @@ fn danger(
     }
 }
 
+/// Everything one write needs, owned, so the task can move it off this thread.
+struct KeyWriteRequest {
+    source: String,
+    background: [u8; 3],
+    tolerance: u8,
+    feather: u8,
+    command: String,
+    output: String,
+    fps: u8,
+    quality: u8,
+    lossless: bool,
+}
+
+/// Decode every frame, key it, write the frames out as PNGs, and hand them to ffmpeg.
+///
+/// The frames go through a temporary directory because that is the interface the original tools used and
+/// the one every encoder accepts — a `%04d.png` pattern — and the point of the template is that the
+/// command around it is the user's to change. Returns the path written, or what went wrong: both are data,
+/// so the caller is the only place that has to know about language.
+fn key_write(request: KeyWriteRequest) -> Result<String, String> {
+    let animation = anima_engine_rs::anim::decode(std::path::Path::new(request.source.trim()))
+        .map_err(|error| format!("{error}"))?;
+    let (width, height) = animation.dimensions();
+    let dir = std::env::temp_dir().join(format!("anima-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|error| format!("{error}"))?;
+
+    let mut written = 0usize;
+    for (index, frame) in animation.frames.iter().enumerate() {
+        let mut rgba = frame.rgba.clone();
+        anima_engine_rs::keying::key_out(
+            &mut rgba,
+            request.background,
+            request.tolerance,
+            request.feather,
+        );
+        // `::image`, with the leading colons: the widget import above binds the name `image` to
+        // `iced::widget::image`, so an unqualified path finds the widget and not the crate.
+        let still = ::image::RgbaImage::from_raw(width, height, rgba)
+            .ok_or_else(|| "frame does not match the animation's size".to_string())?;
+        let path = dir.join(format!("frame_{index:04}.png"));
+        still.save(&path).map_err(|error| format!("{error}"))?;
+        written += 1;
+    }
+    if written == 0 {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err("the animation has no frames".to_string());
+    }
+
+    let pattern = dir.join("frame_%04d.png").display().to_string();
+    let fps = request.fps.to_string();
+    let quality = request.quality.to_string();
+    let lossless = if request.lossless { "1" } else { "0" }.to_string();
+    let command = anima_engine_rs::ffmpeg::expand(
+        &request.command,
+        &[
+            ("{frames}", pattern.as_str()),
+            ("{output}", request.output.trim()),
+            ("{fps}", fps.as_str()),
+            ("{quality}", quality.as_str()),
+            ("{lossless}", lossless.as_str()),
+        ],
+    );
+    let rendered = anima_engine_rs::ffmpeg::run(&command);
+    let _ = std::fs::remove_dir_all(&dir);
+    if rendered.ok {
+        Ok(request.output.trim().to_string())
+    } else {
+        Err(rendered.detail)
+    }
+}
+
 /// Which external commands this machine has. Running the command *is* the test — a binary that starts is
 /// one that can be called later — and a non-zero exit still counts, because `-h` is not universal.
 fn probe_commands() -> Vec<(String, bool)> {
@@ -952,6 +1023,18 @@ enum Message {
     KeyPickFile,
     /// A path the user chose in the dialog: unlike typing, this one is finished, so it loads.
     KeyChosen(String),
+    /// Pick one of the shipped presets: replaces the command with that preset's template.
+    KeyFormat(String),
+    KeyCommand(String),
+    KeyFps(u8),
+    KeyQuality(u8),
+    KeyLossless(bool),
+    KeyOutput(String),
+    /// Choose where to write, through the same dialog as the input.
+    KeyPickOutput,
+    /// Encode what is in the previews and write it.
+    KeyWrite,
+    KeyWrote(Result<String, String>),
     KeyLoad,
     KeyBackground([u8; 3]),
     /// Take the background from the image's top-left corner — the one control the original tool did not
@@ -1460,8 +1543,18 @@ struct Studio {
     key_feather: u8,
     key_before: Option<iced::widget::image::Handle>,
     key_after: Option<iced::widget::image::Handle>,
-    /// What the last load said, if it failed.
+    /// What the last action said: a failed load, or how the write went.
     key_note: String,
+    /// The write half of the panel. `key_command` starts from the chosen preset and is editable, which is
+    /// the whole point: if a future ffmpeg renames `libwebp_anim`, the fix is a line in this field.
+    key_format: String,
+    key_command: String,
+    key_fps: u8,
+    key_quality: u8,
+    key_lossless: bool,
+    key_output: String,
+    /// A render is running: the button goes quiet until it answers.
+    key_writing: bool,
     /// The settings tab's key field. Deliberately starts empty and is cleared after a save: the stored
     /// key is never rendered, only whether one is stored.
     key_draft: String,
@@ -1532,6 +1625,14 @@ impl Studio {
             key_before: None,
             key_after: None,
             key_note: String::new(),
+            key_format: "gif".to_string(),
+            key_command: anima_engine_rs::ffmpeg::PRESETS[0].1.to_string(),
+            // 60 was the number the Python tools hard-coded in three places. It is a field now.
+            key_fps: 30,
+            key_quality: 90,
+            key_lossless: true,
+            key_output: String::new(),
+            key_writing: false,
             key_draft: String::new(),
             scale_draft: None,
             pending_remove: None,
@@ -1957,6 +2058,73 @@ impl Studio {
                 );
             }
             Message::KeyLoad => self.key_load(),
+            Message::KeyFormat(chosen) => {
+                if let Some((_, template)) = anima_engine_rs::ffmpeg::PRESETS
+                    .iter()
+                    .find(|(name, _)| *name == chosen)
+                {
+                    self.key_command = (*template).to_string();
+                }
+                self.key_format = chosen;
+            }
+            Message::KeyCommand(command) => self.key_command = command,
+            Message::KeyFps(value) => self.key_fps = value,
+            Message::KeyQuality(value) => self.key_quality = value,
+            Message::KeyLossless(value) => self.key_lossless = value,
+            Message::KeyOutput(path) => self.key_output = path,
+            Message::KeyPickOutput => {
+                let suggested = if self.key_output.is_empty() {
+                    self.key_path.clone()
+                } else {
+                    self.key_output.clone()
+                };
+                return Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_file_name(suggested)
+                            .save_file()
+                            .await
+                            .map(|file| file.path().display().to_string())
+                    },
+                    |picked| match picked {
+                        Some(path) => Message::KeyOutput(path),
+                        None => Message::KeyOutput(String::new()),
+                    },
+                );
+            }
+            Message::KeyWrite => {
+                // Checked here rather than in the worker, because this is where the catalog is: they are
+                // sentences for a person, and the worker's own failures are ffmpeg's and the filesystem's.
+                if self.key_source.is_none() {
+                    self.key_note = self.i18n.tr("nothing to write — load an animation first");
+                    self.key_writing = false;
+                } else if self.key_output.trim().is_empty() {
+                    self.key_note = self.i18n.tr("choose where to write first");
+                    self.key_writing = false;
+                } else {
+                    self.key_writing = true;
+                    self.key_note = String::new();
+                    let request = KeyWriteRequest {
+                        source: self.key_path.clone(),
+                        background: self.key_background,
+                        tolerance: self.key_tolerance,
+                        feather: self.key_feather,
+                        command: self.key_command.clone(),
+                        output: self.key_output.clone(),
+                        fps: self.key_fps,
+                        quality: self.key_quality,
+                        lossless: self.key_lossless,
+                    };
+                    return Task::perform(async move { key_write(request) }, Message::KeyWrote);
+                }
+            }
+            Message::KeyWrote(result) => {
+                self.key_writing = false;
+                self.key_note = match result {
+                    Ok(detail) => detail,
+                    Err(error) => error,
+                };
+            }
             Message::KeyChosen(path) => {
                 // A chosen path is finished, unlike a typed one, so it loads without a second press.
                 self.key_path = path;
@@ -2900,13 +3068,73 @@ impl Studio {
                 .spacing(12),
             );
         }
+        let formats: Vec<String> = anima_engine_rs::ffmpeg::PRESETS
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
         key_card = key_card.push(
             row![
-                text(self.i18n.tr("write the file")).size(11),
-                space().width(Length::Fill),
-                text(self.i18n.tr("not yet — encoding is the next step")).size(11),
+                text(self.i18n.tr("format")).size(11),
+                pick_list(formats, Some(self.key_format.clone()), Message::KeyFormat),
+                text(self.i18n.tr("fps")).size(11),
+                slider(1..=60u8, self.key_fps, Message::KeyFps).width(Length::Fixed(140.0)),
+                text(format!("{}", self.key_fps)).size(11),
+                text(self.i18n.tr("quality")).size(11),
+                slider(0..=100u8, self.key_quality, Message::KeyQuality)
+                    .width(Length::Fixed(140.0)),
+                text(format!("{}", self.key_quality)).size(11),
+                toggle(
+                    self,
+                    self.key_lossless,
+                    "lossless",
+                    "lossy",
+                    Message::KeyLossless(!self.key_lossless),
+                ),
             ]
-            .spacing(8),
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .wrap(),
+        );
+        key_card = key_card.push(
+            row![
+                text(self.i18n.tr("ffmpeg command, editable")).size(11),
+                text_input("ffmpeg …", &self.key_command)
+                    .on_input(Message::KeyCommand)
+                    .width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
+        key_card = key_card.push(
+            row![
+                text(self.i18n.tr("output")).size(11),
+                text_input("…", &self.key_output)
+                    .on_input(Message::KeyOutput)
+                    .width(Length::Fill),
+                button(text(self.i18n.tr("Choose file")))
+                    .style(secondary)
+                    .on_press(Message::KeyPickOutput),
+                if self.key_writing {
+                    button(text(self.i18n.tr("writing…"))).style(secondary)
+                } else {
+                    button(text(self.i18n.tr("Write")))
+                        .style(primary)
+                        .on_press(Message::KeyWrite)
+                },
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
+        // The template's vocabulary is not a secret: a field you cannot fill in is not editable.
+        key_card = key_card.push(
+            text(
+                anima_engine_rs::ffmpeg::VARIABLES
+                    .iter()
+                    .map(|(name, what)| format!("{name} {what}"))
+                    .collect::<Vec<_>>()
+                    .join("   ·   "),
+            )
+            .size(10),
         );
         page = page.push(
             container(key_card)
