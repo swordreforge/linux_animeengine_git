@@ -2925,8 +2925,25 @@ impl Studio {
             .into()
     }
 
-    /// One `key: value` per line — plain text on purpose, for pasting into an issue.
+    /// The block that gets pasted into an issue: the live numbers first, in the units a person says them in,
+    /// then the facts that do not move while the window is open.
+    ///
+    /// The order is the point. Those facts were the whole block until the charts existed, and a reader
+    /// scrolling past eight lines of paths to reach three numbers that change every second has the two the
+    /// wrong way round. The body below is the facts, unchanged and renamed — the live part is prepended here
+    /// rather than spliced into the middle of it.
     fn diagnostics_lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .charts
+            .iter()
+            .map(crate::chart::Chart::readout)
+            .collect();
+        lines.extend(self.diagnostics_facts());
+        lines
+    }
+
+    /// One `key: value` per line — plain text on purpose, for pasting into an issue.
+    fn diagnostics_facts(&self) -> Vec<String> {
         let watcher = WorkshopWatcher::discover();
         let roots = watcher.roots();
         let catalog = self

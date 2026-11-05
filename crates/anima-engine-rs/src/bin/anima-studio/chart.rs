@@ -69,9 +69,11 @@ impl Chart {
         Self::new("cpu", "%", |sample| Some(sample.cpu))
     }
 
-    /// How much of the GPU's time it has been given.
+    /// How much of the GPU's time it has been given. A process that has not touched the GPU has used none of
+    /// it, which is zero rather than unknown: the log keeps that distinction for whoever reads it, and a chart
+    /// that refused to draw the zero would be refusing to draw a true line.
     pub fn gpu() -> Self {
-        Self::new("gpu", "%", |sample| sample.gpu)
+        Self::new("gpu", "%", |sample| Some(sample.gpu.unwrap_or(0.0)))
     }
 
     fn new(name: &'static str, unit: &'static str, pick: fn(&Sample) -> Option<f32>) -> Self {
@@ -96,6 +98,37 @@ impl Chart {
             points.pop_front();
         }
         points.push_back((at, value));
+    }
+
+    /// The latest value of each line, in this chart's unit, in the units a person would say them in. For the
+    /// diagnostics block, which is read and pasted rather than looked at.
+    pub fn readout(&self) -> String {
+        let mut parts = Vec::new();
+        for (who, points) in &self.series {
+            if let Some((_, value)) = points.back() {
+                parts.push(format!("{who} {}", self.show(f64::from(*value))));
+            }
+        }
+        if parts.is_empty() {
+            return format!("{}: -", self.name);
+        }
+        format!("{}: {}", self.name, parts.join(" · "))
+    }
+
+    /// One value in the unit a person would say it in. Two conversions are worth having and no more.
+    ///
+    /// A thousand mebibytes is a gibibyte, which is the whole of the first. The second is the one that matters:
+    /// a percentage of one core, or of one engine, is milliseconds of work in every second of wall time — the
+    /// same number times ten. "120 %" is a budget being spent; "1200 ms/s" is a sentence about what the process
+    /// did, and it is what the counter was measuring before anything divided it.
+    fn show(&self, value: f64) -> String {
+        if self.unit == "MiB" && value >= 1024.0 {
+            return format!("{:.2} GiB", value / 1024.0);
+        }
+        if self.unit == "%" {
+            return format!("{:.0} ms/s", value * 10.0);
+        }
+        format!("{value:.1} {}", self.unit)
     }
 
     /// Every line in this chart's unit, on a shared scale, and the tallest value across them.
