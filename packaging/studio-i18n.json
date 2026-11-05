@@ -122,7 +122,10 @@
     "lossless": "lossless",
     "lossy": "lossy",
     "wrote": "wrote",
-    "choose where to write first": "choose where to write first"
+    "choose where to write first": "choose where to write first",
+    "paste a video path": "paste a video path",
+    "choose a video first": "choose a video first",
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -247,7 +250,10 @@
     "lossless": "无损",
     "lossy": "有损",
     "wrote": "已写出",
-    "choose where to write first": "请先选择输出位置"
+    "choose where to write first": "请先选择输出位置",
+    "paste a video path": "粘贴视频路径",
+    "choose a video first": "请先选择视频",
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 —— 一次 ffmpeg 调用，直接读视频；帧率是字段，不是字面量"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -372,7 +378,10 @@
     "lossless": "無損",
     "lossy": "有損",
     "wrote": "已寫出",
-    "choose where to write first": "請先選擇輸出路徑"
+    "choose where to write first": "請先選擇輸出路徑",
+    "paste a video path": "貼上影片路徑",
+    "choose a video first": "請先選擇影片",
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 —— 一次 ffmpeg 呼叫，直接讀影片；影格率是欄位，不是字面值"
   },
   "ja": {
     "Refresh": "更新",
@@ -497,6 +506,9 @@
     "lossless": "可逆圧縮",
     "lossy": "非可逆",
     "wrote": "書き出しました",
-    "choose where to write first": "先に出力先を選んでください"
+    "choose where to write first": "先に出力先を選んでください",
+    "paste a video path": "動画のパスを貼り付け",
+    "choose a video first": "先に動画を選んでください",
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 — ffmpeg を一度呼ぶだけ。動画を直接読みます。フレームレートは入力欄です"
   }
 }

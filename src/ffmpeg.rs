@@ -29,10 +29,29 @@ pub const PRESETS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The same idea for a video input: one ffmpeg invocation that reads the file directly, so there is no
+/// frame directory and no intermediate PNGs. `-vf fps={fps}` is what decides the animation's frame rate,
+/// and it is a variable for the same reason the others are.
+pub const VIDEO_PRESETS: &[(&str, &str)] = &[
+    (
+        "gif",
+        "ffmpeg -y -i {input} -vf \"fps={fps},split[a][b];[a]palettegen[p];[b][p]paletteuse\" -loop 0 {output}",
+    ),
+    (
+        "apng",
+        "ffmpeg -y -i {input} -vf \"fps={fps}\" -plays 0 {output}",
+    ),
+    (
+        "webp",
+        "ffmpeg -y -i {input} -vf \"fps={fps}\" -c:v libwebp_anim -lossless {lossless} -quality {quality} -loop 0 {output}",
+    ),
+];
+
 /// The variables every template may use, with what they mean. Shown next to the field, because a template
 /// whose vocabulary is a secret is not editable in any useful sense.
 pub const VARIABLES: &[(&str, &str)] = &[
     ("{frames}", "the frame pattern, e.g. /tmp/x/frame_%04d.png"),
+    ("{input}", "the video to read"),
     ("{output}", "the file to write"),
     ("{fps}", "frames per second"),
     ("{quality}", "0-100, encoders that take one"),
@@ -148,6 +167,27 @@ pub fn run(command: &str) -> Rendered {
     }
 }
 
+/// Ask ffprobe how long a video is, in seconds. Returns `None` when ffprobe is missing or the file is
+/// not a video — this only ever decorates a row, so a failure is silence rather than an error.
+pub fn probe_duration_seconds(path: &str) -> Option<f64> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            path,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +250,36 @@ mod tests {
                 );
                 assert!(expanded.contains("-quality"));
             }
+        }
+    }
+
+    #[test]
+    fn the_video_presets_expand_and_keep_quoting_intact() {
+        for (name, template) in VIDEO_PRESETS {
+            let expanded = expand(
+                template,
+                &[
+                    ("{input}", "/t/in.mp4"),
+                    ("{output}", "/t/out"),
+                    ("{fps}", "24"),
+                    ("{quality}", "90"),
+                    ("{lossless}", "1"),
+                ],
+            );
+            assert!(!expanded.contains('{'), "{name}: {expanded}");
+            let args = split_command(&expanded);
+            let filter = args
+                .windows(2)
+                .find(|pair| pair[0] == "-vf")
+                .map(|pair| pair[1].clone())
+                .unwrap_or_default();
+            assert!(filter.contains("fps=24"), "{name}: {filter}");
+            // One argument, whatever the preset: a filter graph handed over in pieces is how `-vf` becomes
+            // seven arguments and ffmpeg reads the last piece as an output file.
+            assert!(
+                !filter.contains(' '),
+                "{name} split the filter graph: {filter:?}"
+            );
         }
     }
 

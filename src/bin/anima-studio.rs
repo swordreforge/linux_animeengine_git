@@ -176,6 +176,39 @@ fn key_write(request: KeyWriteRequest) -> Result<String, String> {
     }
 }
 
+/// One video render: a single ffmpeg call. ffmpeg reads the video itself, so unlike the keying path there
+/// is no frame directory to write and clean up.
+struct VideoWriteRequest {
+    command: String,
+    input: String,
+    output: String,
+    fps: u8,
+    quality: u8,
+    lossless: bool,
+}
+
+fn video_write(request: VideoWriteRequest) -> Result<String, String> {
+    let fps = request.fps.to_string();
+    let quality = request.quality.to_string();
+    let lossless = if request.lossless { "1" } else { "0" }.to_string();
+    let command = anima_engine_rs::ffmpeg::expand(
+        &request.command,
+        &[
+            ("{input}", request.input.trim()),
+            ("{output}", request.output.trim()),
+            ("{fps}", fps.as_str()),
+            ("{quality}", quality.as_str()),
+            ("{lossless}", lossless.as_str()),
+        ],
+    );
+    let rendered = anima_engine_rs::ffmpeg::run(&command);
+    if rendered.ok {
+        Ok(request.output.trim().to_string())
+    } else {
+        Err(rendered.detail)
+    }
+}
+
 /// Which external commands this machine has. Running the command *is* the test — a binary that starts is
 /// one that can be called later — and a non-zero exit still counts, because `-h` is not universal.
 fn probe_commands() -> Vec<(String, bool)> {
@@ -1035,6 +1068,18 @@ enum Message {
     /// Encode what is in the previews and write it.
     KeyWrite,
     KeyWrote(Result<String, String>),
+    VideoPath(String),
+    VideoChosen(String),
+    VideoPickFile,
+    VideoFormat(String),
+    VideoCommand(String),
+    VideoFps(u8),
+    VideoQuality(u8),
+    VideoLossless(bool),
+    VideoOutput(String),
+    VideoPickOutput,
+    VideoWrite,
+    VideoWrote(Result<String, String>),
     KeyLoad,
     KeyBackground([u8; 3]),
     /// Take the background from the image's top-left corner — the one control the original tool did not
@@ -1555,6 +1600,18 @@ struct Studio {
     key_output: String,
     /// A render is running: the button goes quiet until it answers.
     key_writing: bool,
+    /// The MP4 card. Its own fields rather than a shared abstraction, because the two panels differ in
+    /// the interesting place: one reads a video, the other reads frames and writes a directory.
+    video_path: String,
+    video_command: String,
+    video_output: String,
+    video_fps: u8,
+    video_quality: u8,
+    video_lossless: bool,
+    video_writing: bool,
+    video_note: String,
+    /// What ffprobe said about the chosen file, if it had anything to say.
+    video_probe: Option<String>,
     /// The settings tab's key field. Deliberately starts empty and is cleared after a save: the stored
     /// key is never rendered, only whether one is stored.
     key_draft: String,
@@ -1633,6 +1690,15 @@ impl Studio {
             key_lossless: true,
             key_output: String::new(),
             key_writing: false,
+            video_path: String::new(),
+            video_command: anima_engine_rs::ffmpeg::VIDEO_PRESETS[0].1.to_string(),
+            video_output: String::new(),
+            video_fps: 30,
+            video_quality: 90,
+            video_lossless: true,
+            video_writing: false,
+            video_note: String::new(),
+            video_probe: None,
             key_draft: String::new(),
             scale_draft: None,
             pending_remove: None,
@@ -2117,6 +2183,100 @@ impl Studio {
                     };
                     return Task::perform(async move { key_write(request) }, Message::KeyWrote);
                 }
+            }
+            Message::VideoPath(path) => self.video_path = path,
+            Message::VideoPickFile => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("video", &["mp4", "mov", "mkv", "webm", "avi"])
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().display().to_string())
+                    },
+                    |picked| match picked {
+                        Some(path) => Message::VideoChosen(path),
+                        None => Message::VideoChosen(String::new()),
+                    },
+                );
+            }
+            Message::VideoChosen(path) => {
+                self.video_path = path;
+                if !self.video_path.is_empty() {
+                    // A real number about the file instead of a promise that it will work.
+                    self.video_probe =
+                        anima_engine_rs::ffmpeg::probe_duration_seconds(&self.video_path)
+                            .map(|seconds| format!("{seconds:.1} s"));
+                    if self.video_output.is_empty() {
+                        let stem = std::path::Path::new(&self.video_path)
+                            .file_stem()
+                            .map(|stem| stem.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        self.video_output = format!("{stem}.gif");
+                    }
+                    self.video_note = String::new();
+                }
+            }
+            Message::VideoFormat(chosen) => {
+                if let Some((_, template)) = anima_engine_rs::ffmpeg::VIDEO_PRESETS
+                    .iter()
+                    .find(|(name, _)| *name == chosen)
+                {
+                    self.video_command = (*template).to_string();
+                }
+            }
+            Message::VideoCommand(command) => self.video_command = command,
+            Message::VideoFps(value) => self.video_fps = value,
+            Message::VideoQuality(value) => self.video_quality = value,
+            Message::VideoLossless(value) => self.video_lossless = value,
+            Message::VideoOutput(path) => self.video_output = path,
+            Message::VideoPickOutput => {
+                let suggestion = if self.video_output.is_empty() {
+                    "animation.gif".to_string()
+                } else {
+                    self.video_output.clone()
+                };
+                return Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_file_name(suggestion)
+                            .save_file()
+                            .await
+                            .map(|file| file.path().display().to_string())
+                    },
+                    |picked| match picked {
+                        Some(path) => Message::VideoOutput(path),
+                        None => Message::VideoOutput(String::new()),
+                    },
+                );
+            }
+            Message::VideoWrite => {
+                // The preconditions live here, where the catalog is; the worker's own failures are
+                // ffmpeg's, and those are better left as ffmpeg wrote them.
+                if self.video_path.trim().is_empty() {
+                    self.video_note = self.i18n.tr("choose a video first");
+                } else if self.video_output.trim().is_empty() {
+                    self.video_note = self.i18n.tr("choose where to write first");
+                } else {
+                    self.video_writing = true;
+                    self.video_note = String::new();
+                    let request = VideoWriteRequest {
+                        command: self.video_command.clone(),
+                        input: self.video_path.clone(),
+                        output: self.video_output.clone(),
+                        fps: self.video_fps,
+                        quality: self.video_quality,
+                        lossless: self.video_lossless,
+                    };
+                    return Task::perform(async move { video_write(request) }, Message::VideoWrote);
+                }
+            }
+            Message::VideoWrote(result) => {
+                self.video_writing = false;
+                self.video_note = match result {
+                    Ok(path) => format!("{} {path}", self.i18n.tr("wrote")),
+                    Err(detail) => detail,
+                };
             }
             Message::KeyWrote(result) => {
                 self.key_writing = false;
@@ -2909,6 +3069,16 @@ impl Studio {
         self.key_after = Some(iced::widget::image::Handle::from_rgba(width, height, keyed));
     }
 
+    /// Which video preset the current command came from, for the pick list's label. Matched by template
+    /// text, because that is what choosing an entry actually sets.
+    fn video_format_name(&self) -> String {
+        anima_engine_rs::ffmpeg::VIDEO_PRESETS
+            .iter()
+            .find(|(_, template)| *template == self.video_command)
+            .map(|(name, _)| (*name).to_string())
+            .unwrap_or_else(|| "gif".to_string())
+    }
+
     /// The background choices offered as swatches. The corner button beside them is the one that matters
     /// on a real file; these are for the cases where the corner is not the background.
     fn key_swatches(&self) -> El<'_> {
@@ -2959,18 +3129,12 @@ impl Studio {
         ]
         .spacing(6);
 
-        for (title, detail, needs) in [
-            (
-                "MP4 to animation",
-                "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way",
-                "ffmpeg",
-            ),
-            (
+        {
+            let (title, detail, needs) = (
                 "Background removal by AI",
                 "rembg with alpha matting — soft edges rather than a hard key, at the cost of a model download",
                 "rembg",
-            ),
-        ] {
+            );
             let (command, found) = self
                 .commands
                 .iter()
@@ -3002,6 +3166,101 @@ impl Studio {
                 .width(Length::Fill),
             );
         }
+
+        // The MP4 card. The same shape as the keying panel below it, and one ffmpeg invocation: ffmpeg
+        // reads the video itself, so nothing here decodes anything and there is no frame directory.
+        let mut video_card = column![
+            text(self.i18n.tr("MP4 to animation")).size(15),
+            text(self.i18n.tr(
+                "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal",
+            ))
+            .size(11),
+            row![
+                text_input(&self.i18n.tr("paste a video path"), &self.video_path)
+                    .on_input(Message::VideoPath)
+                    .width(Length::Fill),
+                button(text(self.i18n.tr("Choose file")))
+                    .style(secondary)
+                    .on_press(Message::VideoPickFile),
+            ]
+            .spacing(8),
+        ]
+        .spacing(6);
+        if let Some(probe) = &self.video_probe {
+            video_card = video_card.push(text(format!("ffprobe: {probe}")).size(11));
+        }
+        let video_formats: Vec<String> = anima_engine_rs::ffmpeg::VIDEO_PRESETS
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        video_card = video_card.push(
+            row![
+                text(self.i18n.tr("format")).size(11),
+                pick_list(
+                    video_formats,
+                    Some(self.video_format_name()),
+                    Message::VideoFormat
+                ),
+                text(self.i18n.tr("fps")).size(11),
+                slider(1..=60u8, self.video_fps, Message::VideoFps).width(Length::Fixed(120.0)),
+                text(format!("{}", self.video_fps)).size(11),
+                text(self.i18n.tr("quality")).size(11),
+                slider(0..=100u8, self.video_quality, Message::VideoQuality)
+                    .width(Length::Fixed(120.0)),
+                text(format!("{}", self.video_quality)).size(11),
+                toggle(
+                    self,
+                    self.video_lossless,
+                    "lossless",
+                    "lossy",
+                    Message::VideoLossless(!self.video_lossless),
+                ),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .wrap(),
+        );
+        video_card = video_card.push(
+            row![
+                text(self.i18n.tr("ffmpeg command, editable")).size(11),
+                text_input("ffmpeg …", &self.video_command)
+                    .on_input(Message::VideoCommand)
+                    .width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
+        video_card = video_card.push(
+            row![
+                text(self.i18n.tr("output")).size(11),
+                text_input("…", &self.video_output)
+                    .on_input(Message::VideoOutput)
+                    .width(Length::Fill),
+                button(text(self.i18n.tr("Choose file")))
+                    .style(secondary)
+                    .on_press(Message::VideoPickOutput),
+                if self.video_writing {
+                    button(text(self.i18n.tr("writing…"))).style(secondary)
+                } else {
+                    button(text(self.i18n.tr("Write")))
+                        .style(primary)
+                        .on_press(Message::VideoWrite)
+                },
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
+        if !self.video_note.is_empty() {
+            video_card = video_card.push(text(self.video_note.clone()).size(11));
+        }
+        // No progress bar, deliberately: a real one needs a fraction, and the only source of one is
+        // parsing ffmpeg's own output. It says "writing…" while it works, which is true.
+        page = page.push(
+            container(video_card)
+                .style(iced_material::container::surface_container)
+                .padding(12)
+                .width(Length::Fill),
+        );
 
         // The colour-key panel is the first thing on this page that actually does something, so it is
         // built here rather than in the placeholder loop above. What it does not do is write a file:

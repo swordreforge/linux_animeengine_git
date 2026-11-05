@@ -4,3 +4,8 @@
 packaging/flatpak/staging/
 packaging/flatpak/build-dir/
 packaging/flatpak/.flatpak-builder/
+
+# Animations the Tools tab produces: output, not source. Named rather than `*.gif`, because the project
+# legitimately tracks gifs and a blanket rule would quietly stop adding them.
+生成视频*.gif
+animation.gif
