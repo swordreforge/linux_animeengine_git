@@ -34,6 +34,13 @@ const DEFAULT_REGION_MAX_RECTS: usize = 4096;
 /// How many frames of a real animation to measure. A clip can have hundreds, and the shape of the cost is the
 /// point rather than its total.
 const FRAMES_MEASURED: usize = 60;
+/// Rounds per measurement, of which the best is kept.
+///
+/// Five was not enough. Two runs of *identical* code produced 1.442 ms and 1.473 ms at step 1 — a spread of
+/// 2.1 % — which is the same size as the effect anyone would be trying to see, so the round count has to be
+/// high enough that a two-percent change is distinguishable before any such change is believed. Fifty rounds
+/// of sixty frames costs a few seconds.
+const ROUNDS: usize = 50;
 const FRAME_SIZE: (u32, u32) = (480, 270);
 const FRAMES: usize = 12;
 
@@ -136,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut at: Vec<(u32, Duration, usize)> = Vec::new();
     for step in [1u32, 2, 4, 8] {
         let (per_rebuild, mean, worst) =
-            measure_step(&animation, surface, orientation, step, 5, frames);
+            measure_step(&animation, surface, orientation, step, ROUNDS, frames);
         let reachable = if step <= max_step {
             ""
         } else {

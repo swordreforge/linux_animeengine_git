@@ -11,6 +11,13 @@ pub const VISIBLE_ALPHA: u8 = 25;
 
 impl Animation {
     /// Alpha (0-255) of a frame pixel; 0 when out of range.
+    ///
+    /// `#[inline]` is a try, not a fix: `alpha_at_unit` calls this once per scanned cell, so it sits in the
+    /// scan's innermost loop, but both are in this crate and small enough that LLVM very likely inlines them
+    /// already. `docs/rust-performance.md` records it as the third Outstanding item, with the note that the
+    /// effect may be zero — which is why `examples/frame_bench.rs` keeps the rectangles and the timing side by
+    /// side, so a change here can be told apart from noise before it is believed.
+    #[inline]
     pub fn alpha_at(&self, frame: usize, x: u32, y: u32) -> u8 {
         if x >= self.width || y >= self.height {
             return 0;
@@ -46,6 +53,7 @@ impl Animation {
     }
 
     /// Opaque test at native unit coordinates (0..1, origin top-left).
+    #[inline]
     fn alpha_at_unit(&self, frame: usize, u: f64, v: f64, threshold: u8) -> bool {
         let fx = (u * f64::from(self.width)).floor();
         let fy = (v * f64::from(self.height)).floor();
