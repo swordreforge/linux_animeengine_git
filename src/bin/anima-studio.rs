@@ -25,8 +25,14 @@
 
 // The Tools tab lives in its own file: it is the part of this window that changes most, and a
 // 5000-line file is no place to be making careful edits.
+#[path = "anima-studio/library_update.rs"]
+pub(crate) mod library_update;
+#[path = "anima-studio/settings_update.rs"]
+pub(crate) mod settings_update;
 #[path = "anima-studio/tools/mod.rs"]
 pub(crate) mod tools;
+#[path = "anima-studio/workshop_update.rs"]
+pub(crate) mod workshop_update;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -2116,69 +2122,14 @@ impl Studio {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Frame(at) => {
-                self.spin_ms = self
-                    .spin_ms
-                    .saturating_add(at.duration_since(self.last_frame).as_millis() as u64);
-                self.last_frame = at;
-                self.now = at;
-            }
+            Message::Frame(at) => return self.settings_frame(at),
             Message::Tab(tab) => self.tab = tab,
-            Message::ToggleFollow => {
-                self.follow = !self.follow;
-                self.note = format!(
-                    "{}: {}",
-                    self.i18n.tr("follow"),
-                    if self.follow { "●" } else { "○" }
-                );
-            }
+            Message::ToggleFollow => return self.settings_toggle_follow(),
             Message::KeyDraft(draft) => self.key_draft = draft,
-            Message::SaveKey => {
-                use anima_engine_rs::settings::{ConfigFile, StudioSettings};
-
-                let path = anima_engine_rs::workshop_web::studio_settings_path();
-                let mut stored = StudioSettings::load(&path);
-                stored.steam_api_key = self.key_draft.trim().to_string();
-                self.note = match stored.save(&path) {
-                    Ok(()) => {
-                        // Never leave the key sitting in a text field.
-                        self.key_draft.clear();
-                        self.i18n.tr("Steam API key saved")
-                    }
-                    Err(error) => format!("{}: {error}", self.i18n.tr("could not save the key")),
-                };
-            }
-            Message::ToggleReduceMotion => {
-                use anima_engine_rs::settings::{ConfigFile, StudioSettings};
-
-                let path = anima_engine_rs::workshop_web::studio_settings_path();
-                let mut stored = StudioSettings::load(&path);
-                stored.reduce_motion = !stored.reduce_motion;
-                self.note = match stored.save(&path) {
-                    Ok(()) => self.i18n.tr("motion preference saved"),
-                    Err(error) => format!(
-                        "{}: {error}",
-                        self.i18n.tr("could not save the motion preference")
-                    ),
-                };
-                // Re-resolve instead of flipping in memory: the environment may override the file, and
-                // the UI must not claim a change that will not happen.
-                self.motion = motion_enabled();
-                if std::env::var_os("ANIMA_NO_MOTION").is_some() {
-                    self.note.push_str(&format!(
-                        " — {}",
-                        self.i18n.tr("ANIMA_NO_MOTION is set and overrides it")
-                    ));
-                }
-            }
-            Message::CopyDiagnostics => {
-                return iced::clipboard::write(self.diagnostics_lines().join("\n"));
-            }
-            Message::Language(code) => {
-                if let Err(error) = self.i18n.set_language(&code) {
-                    self.note = format!("{}: {error}", self.i18n.tr("language not saved"));
-                }
-            }
+            Message::SaveKey => return self.settings_save_key(),
+            Message::ToggleReduceMotion => return self.settings_toggle_reduce_motion(),
+            Message::CopyDiagnostics => return self.settings_copy_diagnostics(),
+            Message::Language(code) => return self.settings_language(code),
             Message::KeyPath(path) => self.key_path = path,
             Message::KeyPickFile => return self.key_pick_file(),
             Message::KeyLoad => self.key_load(),
@@ -2218,209 +2169,35 @@ impl Studio {
             Message::KeyCorner => return self.key_corner(),
             Message::KeyTolerance(value) => return self.key_tolerance(value),
             Message::KeyFeather(value) => return self.key_feather(value),
-            Message::Refresh => {
-                self.refresh();
-                // A refresh is also the moment to pick up titles for anything new.
-                if let Some(task) = installed_meta_task(self) {
-                    return task;
-                }
-            }
-            Message::Search(query) => {
-                // Typing only filters. Every keystroke used to open the picker, which popped the
-                // installed list up under the cursor while the user was still typing a word.
-                // Enter, or the button next to the field, is what opens it.
-                self.query = query;
-            }
-            Message::ClearSearch => {
-                self.query.clear();
-                // The box and the list have to agree: with the box empty, Steam results for the
-                // query that was just deleted have no business being on screen.
-                if self.remote.is_some() {
-                    self.leave_remote();
-                }
-            }
-            Message::SearchSteam => {
-                // A new search starts at the first page, with no cursor history behind it.
-                self.remote_query = search_text(&self.query);
-                self.remote_page = 1;
-                self.remote_cursors = vec![None];
-                self.remote_next = None;
-                self.remote_total = 0;
-                return self.goto_remote_page(1);
-            }
+            Message::Refresh => return self.workshop_refresh(),
+            Message::Search(query) => return self.workshop_search(query),
+            Message::ClearSearch => return self.workshop_clear_search(),
+            Message::SearchSteam => return self.workshop_search_steam(),
             Message::RemotePage(page) => return self.goto_remote_page(page),
             Message::RemoteResults(request, page, Ok(loaded)) => {
-                if request != self.remote_request {
-                    // A reply to a search the user has already left.
-                    eprintln!("[studio] dropping a stale Workshop reply (page {page})");
-                    return Task::none();
-                }
-                self.remote_page = page;
-                self.remote_total = loaded.total;
-                self.remote_next = loaded.next_cursor;
-                self.remote_loading = false;
-                // Steam counts its matches, so the pager can say how many pages there are instead
-                // of making the user walk to the end to find out.
-                self.remote_note = match loaded.rows.len() {
-                    0 => self.i18n.tr("no Workshop results"),
-                    _ if loaded.total > 0 => fill(
-                        &self.i18n.tr("about {} Workshop result(s) · page {}/{}"),
-                        &[
-                            loaded.total.to_string(),
-                            page.to_string(),
-                            page_count(loaded.total, REMOTE_PER_PAGE).to_string(),
-                        ],
-                    ),
-                    count => format!("{count} Workshop result(s)"),
-                };
-                self.remote = Some(loaded.rows);
+                return self.workshop_remote_results(request, page, loaded);
             }
             Message::RemoteResults(request, _, Err(error)) => {
-                if request != self.remote_request {
-                    return Task::none();
-                }
-                self.remote_loading = false;
-                self.remote = None;
-                self.remote_note = error;
+                return self.workshop_remote_results_2(request, error);
             }
             // Back to the installed list, from the Steam results.
             Message::ShowInstalled => self.leave_remote(),
-            Message::Select(id) => {
-                // A different item means a different set of assets: the one on show, and the
-                // parameters staged for it, belong to the old item and go with it.
-                if self.selected_item != Some(id) {
-                    self.previewed_asset = None;
-                    self.staged = None;
-                }
-                self.selected_item = Some(id);
-                // A remote result has no directory yet; its preview comes from the CDN.
-                let dir = self
-                    .item(id)
-                    .map(|item| item.path.clone())
-                    .unwrap_or_default();
-                if !self.thumbs.contains_key(&id) {
-                    return self.load_thumb_task(id, dir);
-                }
-            }
-            Message::Loaded(id, meta, thumb) => {
-                if let Some(meta) = meta {
-                    self.meta.insert(id, meta);
-                }
-                if thumb.is_ok() && self.selected_item == Some(id) {
-                    self.item_fade = fade_in(self.now, self.motion);
-                }
-                self.thumbs.insert(
-                    id,
-                    match thumb {
-                        Ok((width, height, rgba)) => {
-                            Thumb::Ready(image::Handle::from_rgba(width, height, rgba))
-                        }
-                        Err(error) => Thumb::Failed(error),
-                    },
-                );
-            }
-            Message::CopyPath(path) => {
-                self.note = format!("{}: {path}", self.i18n.tr("copied"));
-                return iced::clipboard::write(path);
-            }
-            Message::OpenPage(id) => {
-                // Subscribe and unsubscribe both live in the Steam client; this is the
-                // page that carries the toggle.
-                let url = format!("steam://url/CommunityFilePage/{id}");
-                self.note = match std::process::Command::new("xdg-open").arg(&url).spawn() {
-                    Ok(_) => format!("opened {url} — subscribe/unsubscribe there"),
-                    Err(error) => format!("{} {url}: {error}", self.i18n.tr("could not open")),
-                };
-            }
-            Message::ArmRemove(id) => {
-                self.pending_remove = Some(id);
-                self.note = self.i18n.tr("confirm the removal in the warning");
-            }
-            Message::Remove(id) => {
-                self.pending_remove = None;
-                // The tuning area must not keep pointing at a file the removal takes away.
-                let gone = self.previewed_asset.as_ref().is_some_and(|asset| {
-                    self.item(id)
-                        .is_some_and(|item| asset.starts_with(&item.path))
-                });
-                if gone {
-                    self.previewed_asset = None;
-                    self.staged = None;
-                }
-                let root = self.steamcmd_root.clone();
-                let Some(item) = self.snapshot.items.get(&id) else {
-                    return Task::none();
-                };
-                let ours = root
-                    .as_ref()
-                    .is_some_and(|root| item.path.starts_with(root));
-                if !ours {
-                    self.note = self.i18n.tr(
-                        "only our own SteamCMD downloads can be removed here; unsubscribe in Steam",
-                    );
-                } else {
-                    let path = item.path.clone();
-                    self.note = match std::fs::remove_dir_all(&path) {
-                        Ok(()) => {
-                            self.thumbs.remove(&id);
-                            self.meta.remove(&id);
-                            format!("{} {id}", self.i18n.tr("removed the local copy of"))
-                        }
-                        Err(error) => format!("remove failed: {error}"),
-                    };
-                    self.refresh();
-                }
-            }
+            Message::Select(id) => return self.library_select(id),
+            Message::Loaded(id, meta, thumb) => return self.library_loaded(id, meta, thumb),
+            Message::CopyPath(path) => return self.workshop_copy_path(path),
+            Message::OpenPage(id) => return self.workshop_open_page(id),
+            Message::ArmRemove(id) => return self.workshop_arm_remove(id),
+            Message::Remove(id) => return self.workshop_remove(id),
             Message::OverlayOn(control, action) => self.apply_overlay_to(control, action),
             Message::SetScale(control, percent) => self.set_scale_on(control, percent),
-            Message::PollWorkshop => {
-                // Read every tick, unconditionally. The first version skipped the read unless something was
-                // already known to be pending, which made the whole thing unable to start: the single
-                // observation that could have told it "yes, there is one" was the observation it refused to
-                // make. It is one small file twice a second; there was never a cost worth that.
-                let roots = WorkshopWatcher::discover().roots().to_vec();
-                self.refresh_states(&roots);
-            }
-            Message::CancelRemove => {
-                self.pending_remove = None;
-                self.note = self.i18n.tr("cancelled");
-            }
-            Message::ScaleDraft(control, text) => {
-                let cleaned: String = text.chars().filter(char::is_ascii_digit).take(3).collect();
-                self.scale_draft = Some((control, cleaned));
-            }
-            Message::CommitScale(control) => {
-                let percent = self
-                    .scale_draft
-                    .as_ref()
-                    .filter(|(path, _)| path == &control)
-                    .and_then(|(_, text)| text.parse::<u32>().ok());
-                self.scale_draft = None;
-                if let Some(percent) = percent {
-                    self.set_scale_on(control, percent);
-                }
-            }
-            Message::MetaLoaded(loaded) => {
-                let count = loaded.len();
-                for (id, meta) in loaded {
-                    self.meta.insert(id, meta);
-                }
-                eprintln!("[studio] metadata: {count} item(s) arrived in the batch");
-            }
+            Message::PollWorkshop => return self.workshop_poll_workshop(),
+            Message::CancelRemove => return self.workshop_cancel_remove(),
+            Message::ScaleDraft(control, text) => return self.settings_scale_draft(control, text),
+            Message::CommitScale(control) => return self.settings_commit_scale(control),
+            Message::MetaLoaded(loaded) => return self.workshop_meta_loaded(loaded),
             Message::SelectAsset(asset) => return self.select_asset(asset),
             Message::AssetPreview(asset, loaded) => {
-                if loaded.is_ok() {
-                    self.asset_fade = fade_in(self.now, self.motion);
-                }
-                self.asset_previews.insert(
-                    asset,
-                    match loaded {
-                        Ok((width, height, rgba)) => {
-                            Thumb::Ready(image::Handle::from_rgba(width, height, rgba))
-                        }
-                        Err(error) => Thumb::Failed(error),
-                    },
-                );
+                return self.settings_asset_preview(asset, loaded);
             }
             Message::StageOverlay(action) => self.stage_overlay(action),
             Message::PlayAsset(asset) => self.play_on_overlay(&asset),
