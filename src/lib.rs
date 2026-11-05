@@ -15,6 +15,7 @@ pub mod dbus_intent;
 pub mod error;
 pub mod i18n;
 pub mod input_map;
+pub mod keying;
 pub mod library;
 pub mod pack;
 pub mod paths;
