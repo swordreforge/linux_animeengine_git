@@ -93,8 +93,9 @@ fight that binding them by reference produces.
 
 ## Testing layout
 
-4775 of 21758 lines are `#[cfg(test)]` modules, 22%, holding 241 `#[test]` functions — 238 of which pass,
-4 are ignored, and the rest is the end-to-end AI removal that has to be asked for by name. That is deliberate: they test private
+4775 of 21758 lines are `#[cfg(test)]` modules, 22%, holding 241 `#[test]` functions, of which 238 pass and five are ignored: four
+studio tests that need a display, and the end-to-end AI removal that downloads a 176 MB model and has to be
+asked for by name. That is deliberate: they test private
 behaviour, next to the code whose specification they are, and `#[cfg(test)]` costs nothing in a release build.
 Moving them to `tests/` would make them public-API-only — either leaking internals or forcing
 `#[cfg(test)] pub(crate)` shims. If any need to leave their file, put them in `src/foo/tests.rs` behind

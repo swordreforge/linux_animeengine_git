@@ -157,9 +157,18 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **142** default (139 lib + 3 CLI); **147** with `bc7` (the `bc7`
-  feature needs a C++ toolchain, as does the `overlay,bc7` build).
+- `cargo test`: **198** passing with default features; **203** with `bc7` (the
+  `bc7` feature needs a C++ toolchain, as does the `overlay,bc7` build); **229**
+  with `studio,workshop-web`; **238** with everything —
+  `--features overlay,bc7,dbus,studio,workshop-web,steamworks`. Five are ignored:
+  four studio tests that need a display, and the end-to-end AI removal, which
+  downloads a 176 MB model.
 - `cargo clippy --all-targets`: clean for default and all features.
+- `tests/function_length.rs`: a ratchet on function length — it fails when any
+  function passes 150 lines without being on a list with a reason, and when a
+  listed one grows or shrinks. `docs/code-audit.md` explains why.
+- `ANIMA_FN_LIMIT=100 cargo test --test function_length -- --nocapture` prints the
+  eleven functions between 100 and 150 lines: the next pass, on purpose.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
 - `anima-workshop`: `roots` / `libraries` found `~/.local/share/Steam`; `list`
