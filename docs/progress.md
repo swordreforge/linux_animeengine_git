@@ -1148,6 +1148,17 @@ search field with IME, and Workshop browse/search.
       The cost is a few hundred `stat` calls twice a second over small trees. That is cheaper than the bug it
       replaces, and it is the user's trade to make, not mine: I twice chose the cleverer mechanism and twice
       it was the one that did not work.
+- [x] **The Tools tab exists as a skeleton, and says what it is.** Three cards — MP4 to animation,
+      background removal by colour, background removal by AI — each with one sentence about what it would
+      do and which formats it takes, and each marked **not wired yet**. No buttons, because a button that
+      does nothing is worse than a sentence that says so.
+      What *is* real is the environment: `probe_commands()` runs `ffmpeg`, `rembg` and `steamcmd` once at
+      startup — spawning is the test, and a non-zero exit still counts, because `-h` is not universal — and
+      each card reports found or not-on-PATH for the command its pipeline needs. So the page already answers
+      the question a user actually has: *will this work on my machine?*
+      Deliberately absent: file pickers and format dropdowns. They need a native-dialog dependency and they
+      would be affordances for a pipeline that cannot run yet — the same trap the overlays tab fell into
+      with its ±10% button pair.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

@@ -105,6 +105,18 @@ fn danger(
     }
 }
 
+/// Which external commands this machine has. Running the command *is* the test — a binary that starts is
+/// one that can be called later — and a non-zero exit still counts, because `-h` is not universal.
+fn probe_commands() -> Vec<(String, bool)> {
+    ["ffmpeg", "rembg", "steamcmd"]
+        .into_iter()
+        .map(|name| {
+            let found = std::process::Command::new(name).arg("-h").output().is_ok();
+            (name.to_string(), found)
+        })
+        .collect()
+}
+
 /// How often the window measures the items' directories: twice a second. A download can land between two
 /// ticks, so the point is to catch the state while it is true rather than to be frugal — the walk is a few
 /// hundred `stat` calls over small trees, and it happens on this tick only.
@@ -606,6 +618,7 @@ enum Tab {
     #[default]
     Workshop,
     Overlays,
+    Tools,
     Settings,
     Diagnostics,
 }
@@ -1420,6 +1433,10 @@ struct Studio {
     motion: bool,
     /// Which screen is showing.
     tab: Tab,
+    /// External commands this machine has, each with the argument that was used to ask. Probed once at
+    /// startup: the Tools page reports facts, and spawning processes on a timer to re-learn them would
+    /// be work for nothing.
+    commands: Vec<(String, bool)>,
     /// The settings tab's key field. Deliberately starts empty and is cleared after a save: the stored
     /// key is never rendered, only whether one is stored.
     key_draft: String,
@@ -1477,6 +1494,7 @@ impl Studio {
             shown_seen: String::new(),
             motion: motion_enabled(),
             tab: Tab::default(),
+            commands: probe_commands(),
             key_draft: String::new(),
             scale_draft: None,
             pending_remove: None,
@@ -2125,6 +2143,7 @@ impl Studio {
         if self.tab != Tab::Workshop {
             let body: El<'_> = match self.tab {
                 Tab::Overlays => self.tab_overlays(),
+                Tab::Tools => self.tab_tools(),
                 Tab::Settings => self.tab_settings(),
                 _ => self.tab_diagnostics(),
             };
@@ -2505,6 +2524,7 @@ impl Studio {
         let tabs = [
             (Tab::Workshop, "Workshop"),
             (Tab::Overlays, "Overlay"),
+            (Tab::Tools, "Tools"),
             (Tab::Settings, "Settings"),
             (Tab::Diagnostics, "Diagnostics"),
         ];
@@ -2595,6 +2615,74 @@ impl Studio {
     }
 
     /// What the status line knows, laid out so it can be pasted into a bug report.
+    /// The Tools tab. Three pipelines the Python app offers, described accurately and **not wired yet** —
+    /// no buttons, because a button that does nothing is worse than a sentence that says so. What *is*
+    /// real here is the environment: whether the commands each pipeline needs exist on this machine.
+    fn tab_tools(&self) -> El<'_> {
+        let mut page = column![
+            text(self.i18n.tr("Tools")).size(20),
+            text(self.i18n.tr(
+                "the conversion and removal tools, ported in a later step — nothing here runs yet",
+            ))
+            .size(12),
+        ]
+        .spacing(6);
+
+        for (title, detail, needs) in [
+            (
+                "MP4 to animation",
+                "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way",
+                "ffmpeg",
+            ),
+            (
+                "Background removal by colour",
+                "pick a background colour and a tolerance, applied to every frame of an animation",
+                "ffmpeg",
+            ),
+            (
+                "Background removal by AI",
+                "rembg with alpha matting — soft edges rather than a hard key, at the cost of a model download",
+                "rembg",
+            ),
+        ] {
+            let (command, found) = self
+                .commands
+                .iter()
+                .find(|(name, _)| name == needs)
+                .map(|(name, found)| (name.clone(), *found))
+                .unwrap_or_else(|| (needs.to_string(), false));
+            let state = if found {
+                format!("{} {}", self.i18n.tr("found"), command)
+            } else {
+                format!("{} {}", self.i18n.tr("not on PATH"), command)
+            };
+            page = page.push(
+                container(
+                    column![
+                        text(self.i18n.tr(title)).size(15),
+                        text(self.i18n.tr(detail)).size(11),
+                        row![
+                            text(state).size(11),
+                            space().width(Length::Fill),
+                            text(self.i18n.tr("not wired yet")).size(11),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
+                    ]
+                    .spacing(4),
+                )
+                .style(iced_material::container::surface_container)
+                .padding(12)
+                .width(Length::Fill),
+            );
+        }
+
+        page = page.push(text(self.i18n.tr("checked once at startup")).size(10));
+        scrollable(page.spacing(10))
+            .style(iced_material::scrollable::default)
+            .into()
+    }
+
     fn tab_diagnostics(&self) -> El<'_> {
         let mut lines = column![text(self.i18n.tr("Diagnostics")).size(20)].spacing(6);
         for line in self.diagnostics_lines() {

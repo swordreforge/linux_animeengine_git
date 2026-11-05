@@ -83,7 +83,19 @@
     "downloaded": "downloaded",
     "the Steam client has this item": "the Steam client has this item",
     "downloading · {}": "downloading · {}",
-    "Steam is downloading this one; this is how much has landed so far": "Steam is downloading this one; this is how much has landed so far"
+    "Steam is downloading this one; this is how much has landed so far": "Steam is downloading this one; this is how much has landed so far",
+    "Tools": "Tools",
+    "the conversion and removal tools, ported in a later step — nothing here runs yet": "the conversion and removal tools, ported in a later step — nothing here runs yet",
+    "MP4 to animation": "MP4 to animation",
+    "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way",
+    "Background removal by colour": "Background removal by colour",
+    "pick a background colour and a tolerance, applied to every frame of an animation": "pick a background colour and a tolerance, applied to every frame of an animation",
+    "Background removal by AI": "Background removal by AI",
+    "rembg with alpha matting — soft edges rather than a hard key, at the cost of a model download": "rembg with alpha matting — soft edges rather than a hard key, at the cost of a model download",
+    "found": "found",
+    "not on PATH": "not on PATH",
+    "not wired yet": "not wired yet",
+    "checked once at startup": "checked once at startup"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -169,7 +181,19 @@
     "downloaded": "已下载",
     "the Steam client has this item": "Steam 客户端已经拥有这一项",
     "downloading · {}": "下载中 · {}",
-    "Steam is downloading this one; this is how much has landed so far": "Steam 正在下载这一项；这是已经落盘的量"
+    "Steam is downloading this one; this is how much has landed so far": "Steam 正在下载这一项；这是已经落盘的量",
+    "Tools": "工具",
+    "the conversion and removal tools, ported in a later step — nothing here runs yet": "转换与去背工具 —— 后续步骤移植，这里目前都不会执行",
+    "MP4 to animation": "MP4 转为动画",
+    "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 —— gif 走 moviepy，webp 与 apng 走 ffmpeg；图片 zip 也能反向生成视频",
+    "Background removal by colour": "按颜色去背景",
+    "pick a background colour and a tolerance, applied to every frame of an animation": "选定背景色与容差，对动画的每一帧生效",
+    "Background removal by AI": "AI 去背景",
+    "rembg with alpha matting — soft edges rather than a hard key, at the cost of a model download": "rembg 配合 alpha matting —— 软边而非硬抠，代价是要下载模型",
+    "found": "已找到",
+    "not on PATH": "不在 PATH 上",
+    "not wired yet": "尚未接线",
+    "checked once at startup": "以上在启动时检查一次"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -255,7 +279,19 @@
     "downloaded": "已下載",
     "the Steam client has this item": "Steam 客戶端已經擁有這一項",
     "downloading · {}": "下載中 · {}",
-    "Steam is downloading this one; this is how much has landed so far": "Steam 正在下載這一項；這是已經落盤的量"
+    "Steam is downloading this one; this is how much has landed so far": "Steam 正在下載這一項；這是已經落盤的量",
+    "Tools": "工具",
+    "the conversion and removal tools, ported in a later step — nothing here runs yet": "轉換與去背工具 —— 後續步驟移植，這裡目前都不會執行",
+    "MP4 to animation": "MP4 轉為動畫",
+    "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 —— gif 走 moviepy，webp 與 apng 走 ffmpeg；圖片 zip 也能反向產生影片",
+    "Background removal by colour": "按顏色去背景",
+    "pick a background colour and a tolerance, applied to every frame of an animation": "選定背景色與容差，對動畫的每一格生效",
+    "Background removal by AI": "AI 去背景",
+    "rembg with alpha matting — soft edges rather than a hard key, at the cost of a model download": "rembg 搭配 alpha matting —— 軟邊而非硬摳，代價是要下載模型",
+    "found": "已找到",
+    "not on PATH": "不在 PATH 上",
+    "not wired yet": "尚未接線",
+    "checked once at startup": "以上在啟動時檢查一次"
   },
   "ja": {
     "Refresh": "更新",
@@ -341,6 +377,18 @@
     "downloaded": "ダウンロード済み",
     "the Steam client has this item": "Steam クライアントにこの項目があります",
     "downloading · {}": "ダウンロード中 · {}",
-    "Steam is downloading this one; this is how much has landed so far": "Steam がダウンロード中です。これは現在までに保存された量です"
+    "Steam is downloading this one; this is how much has landed so far": "Steam がダウンロード中です。これは現在までに保存された量です",
+    "Tools": "ツール",
+    "the conversion and removal tools, ported in a later step — nothing here runs yet": "変換と背景除去のツール — 後の手順で移植します。ここではまだ何も実行しません",
+    "MP4 to animation": "MP4 をアニメーションに変換",
+    "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way": "mp4 — gif は moviepy、webp と apng は ffmpeg。画像 ZIP から動画を作ることもできます",
+    "Background removal by colour": "色で背景を除去",
+    "pick a background colour and a tolerance, applied to every frame of an animation": "背景色と許容値を選び、アニメーションの全フレームに適用します",
+    "Background removal by AI": "AI による背景除去",
+    "rembg with alpha matting — soft edges rather than a hard key, at the cost of a model download": "rembg とアルファマッティング — 硬いキーではなく柔らかい輪郭。モデルのダウンロードが必要です",
+    "found": "見つかりました",
+    "not on PATH": "PATH にありません",
+    "not wired yet": "未接続",
+    "checked once at startup": "起動時に一度だけ確認しています"
   }
 }
