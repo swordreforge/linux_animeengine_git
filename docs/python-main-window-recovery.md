@@ -272,3 +272,45 @@ Library browsing, the overlay runtime, the workshop browser with its three-tier 
 translation catalog all exist in the Rust window. The **Tools page is the gap**: conversion, both kinds of
 background removal, and the MDAA manager have no equivalent there yet — which matches what the two worked
 examples above found, and is the honest summary of what this file was about.
+
+## Worked example: what `SendVideoRequestWindow` actually sends
+
+The answer is smaller and stranger than the question. The window is a `QLineEdit` with the placeholder
+*"Paste the video URL here..."*, a `Send` button, and one call: **`send_to_firestore`**. That name appears
+**twice in the whole 373 KB entry script** — once as a string inside a tuple of candidate method names,
+once as `LOAD_ATTR` — and **nowhere as a definition**.
+
+What that means, and how it was checked:
+
+* The call is **by name, at run time**. The module deals in tokens read from files (`tokens`, `my_token`,
+  `_anim_token`, `_ws_upload_token`, `workshop_api_key.txt`), and the tuple that `send_to_firestore`
+  appears in is a list of names to try on an object it was handed. So the implementation is deliberately
+  not statically visible from the caller.
+* It is **not** in the loose `_internal/*.py` sources either: the only files there that mention firestore
+  are `firebase_admin/firestore.py` and `firestore_async.py`, which are the **vendored official Admin SDK**.
+  The SDK being bundled is the real finding — the sending half authenticates as the *project*, not the user.
+* `pyinstxtractor` extracts the PYZ (3,913 modules) and finds `send_to_firestore` in exactly the same
+  `AnimaEngineKIVI` module, byte-for-byte the entry script again. Dumping it with `pycdas` gives no
+  `Object Name: send_to_firestore` either. The definition is not in this build.
+
+### The two `.Lim` files, which are not what their names suggest
+
+They sit in the app directory, two and four bytes long, and they are **constants, not counters**:
+
+```
+limitRecur.Lim -> 5000
+refres.Lim     -> 10
+```
+
+A recurrence limit of 5000 and a refresh value of 10, shipped as plain text, read by a build whose other
+state is JSON and `.acf` files. Whatever they gate, the numbers are the author's policy, not user settings.
+
+### What this means for a port
+
+**This feature cannot be reproduced.** Firestore with the Admin SDK needs the project's own
+service-account credentials, so the send path belongs to the author's Firebase project and to nobody else.
+A rewrite has three honest options: run its own endpoint for the same purpose, keep the feature to "open
+the Discord/Steam page instead", or drop it — but it cannot be copied, and it should not be *silently*
+dropped either, because the window's own text says what it is for: *"send video links for Luis
+(AnimaEngine creator) to process and share with the community"*, which is both a support channel and a
+content pipeline.
