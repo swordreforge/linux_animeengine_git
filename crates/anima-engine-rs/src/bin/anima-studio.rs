@@ -42,6 +42,7 @@ use anima_engine_rs::log;
 use anima_engine_rs::paths::{ensure_dir, user_data_dir};
 use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::steamcmd::SteamCmd;
+use anima_engine_rs::telemetry::{Process, Sample, Sampler};
 use anima_engine_rs::workshop::{WorkshopItem, WorkshopSnapshot, WorkshopWatcher};
 use anima_engine_rs::workshop_web::WorkshopWeb;
 use std::time::Instant;
@@ -1128,6 +1129,8 @@ fn overlay_instances() -> Vec<OverlayInstance> {
 
 #[derive(Debug, Clone)]
 enum Message {
+    /// The resource numbers, read on their own clock. See `sample_telemetry`.
+    Telemetry,
     Language(String),
     /// The colour-key panel: the typed path, its background colour, its two numbers.
     KeyPath(String),
@@ -1604,6 +1607,47 @@ fn load_item(id: u64, dir: PathBuf) -> Loaded {
     Loaded { id, meta, thumb }
 }
 
+/// How often the resource numbers are read. One second is the cadence the charts are drawn at, and the cost
+/// of a reading is a few files in `/proc`.
+const TELEMETRY_MS: u64 = 1000;
+
+/// One line per process per tick: the numbers the resource charts are drawn from.
+///
+/// `Debug` rather than `Info`: this repeats every second for as long as the window is open, and that is the
+/// distinction `src/log.rs` draws between the two levels. Units are in the field names, so a line pasted into
+/// an issue needs no explanation.
+fn log_resource(who: &str, pid: u32, sample: &Sample) {
+    let cpu = format!("{:.1}", sample.cpu);
+    let memory = format!("{:.1}", sample.rss_bytes as f64 / (1024.0 * 1024.0));
+    let gpu = sample
+        .gpu
+        .map_or_else(|| "-".to_string(), |value| format!("{value:.1}"));
+    log::event(
+        log::Level::Debug,
+        "studio.resources",
+        &[
+            ("who", &who),
+            ("pid", &pid),
+            ("cpu", &cpu),
+            ("mem_mib", &memory),
+            ("gpu", &gpu),
+        ],
+    );
+}
+
+impl Studio {
+    /// Read both processes and say what they cost. Nothing is drawn from this yet: the charts come next, and
+    /// until they exist the log is the way to see whether the numbers are right.
+    fn sample_telemetry(&mut self) {
+        let sample = self.resources.sample();
+        log_resource("studio", std::process::id(), &sample);
+        if let Some((pid, sampler)) = self.overlay_resources.as_mut() {
+            let sample = sampler.sample();
+            log_resource("overlay", *pid, &sample);
+        }
+    }
+}
+
 struct Studio {
     i18n: I18n,
     snapshot: WorkshopSnapshot,
@@ -1729,6 +1773,12 @@ struct Studio {
     overlay_selected: Option<PathBuf>,
     /// Overlays this window started, so their exits can be reaped.
     children: Vec<std::process::Child>,
+    /// Resource readings for this window, for the charts. A sampler holds the previous reading it subtracts
+    /// from, so a process needs one of its own: two processes through one sampler would subtract each
+    /// other's counters and report nonsense.
+    resources: Sampler,
+    /// The overlay we started, with its own sampler. `None` until one is running.
+    overlay_resources: Option<(u32, Sampler)>,
     /// Fingerprint of the control files as of the last read (see [`overlay_signature`]).
     overlay_signature: String,
     /// Modification time of the focus marker this window already followed, so a new claim
@@ -1814,6 +1864,8 @@ impl Studio {
             overlay: Vec::new(),
             overlay_selected: None,
             children: Vec::new(),
+            resources: Sampler::new(),
+            overlay_resources: None,
             overlay_signature: String::new(),
             focus_seen: None,
         };
@@ -2158,6 +2210,7 @@ impl Studio {
         match message {
             Message::Frame(at) => return self.settings_frame(at),
             Message::Tab(tab) => self.tab = tab,
+            Message::Telemetry => self.sample_telemetry(),
             Message::ToggleFollow => return self.settings_toggle_follow(),
             Message::KeyDraft(draft) => self.key_draft = draft,
             Message::SaveKey => return self.settings_save_key(),
@@ -3366,7 +3419,11 @@ impl Studio {
             Ok(child) => {
                 // Keep the handle so `poll_overlay` can wait for it: a killed overlay that
                 // nobody reaps stays a zombie in `/proc`, where it still looks alive.
+                let pid = child.id();
                 self.children.push(child);
+                // A sampler's first reading is only a baseline, so this one starts now and the first
+                // number arrives one tick later.
+                self.overlay_resources = Some((pid, Sampler::for_process(Process::pid(pid))));
                 format!(
                     "{} {}",
                     self.i18n.tr("started an overlay for"),
@@ -3433,6 +3490,11 @@ impl Studio {
             control_events(),
             // Steam downloads on its own schedule and tells nobody, so the row has to notice by itself.
             // Outside the `animating` branch on purpose: a download is not an animation.
+            // Resource use is a trend over seconds, so this runs on its own clock rather than on the
+            // overlay poll's: tying a chart's resolution to a constant that exists for another reason would
+            // make it an accident.
+            iced::time::every(std::time::Duration::from_millis(TELEMETRY_MS))
+                .map(|_| Message::Telemetry),
             iced::time::every(std::time::Duration::from_millis(WORKSHOP_POLL_MS))
                 .map(|_| Message::PollWorkshop),
             // The floor. Everything above can fail — an event the watcher never got, an `.acf` Steam has
