@@ -115,15 +115,45 @@ should be re-measured rather than trusted.
 | Library / Interoperability, UX, Resilience, Building | See *Scope* above |
 | **M-AVOID-STATICS** | The three statics are `OnceLock`/`Mutex` initialisation guards, which the guideline permits |
 
+## Measured, and decided against
+
+**M-MIMALLOC-APPS — mimalloc as the global allocator.** The guideline says applications *should* set it, with
+"up to 25%" taken from Microsoft's own benchmarks. That figure describes their workload, not ours, so
+`examples/alloc_bench.rs` measures ours. Intel Core Ultra 7 155H, glibc 2.44, rustc 1.99.1, mimalloc 0.1.52,
+best of fifteen rounds:
+
+| case | system | mimalloc |
+|---|---|---|
+| 50,000 short-lived buffers | 3.3 ms | **0.8 ms** (4.1x faster) |
+| 200 × 480×270 RGBA frames | 2.6 ms | 2.6 ms |
+| 20 × 12 MiB f32 buffers | **9.3 ms** | 10.6 ms (1.14x slower) |
+| 2,000 vectors grown from empty | 1.1 ms | 1.2 ms |
+| 4 threads × 50,000 buffers | 4.6 ms | **2.2 ms** (2.1x faster) |
+| peak RSS | 41,588 kB | **31,588 kB** (24% lower) |
+
+The two halves agree with each other instead of being noise: mimalloc is faster exactly where it is supposed
+to be — many small allocations, and contention between threads — and slower on large blocks, which is what an
+allocator that returns memory to the OS more eagerly looks like. That same eagerness is why its peak RSS is
+lower.
+
+What settled it is the arithmetic rather than the ratios. The small-object win is 2.5 ms across 50,000
+allocations, about **50 ns each**; a frame at 60 fps that made a hundred of them would save **5 microseconds**
+out of a 16.7 ms budget. Meanwhile our per-frame work is dominated by the allocation mimalloc is *slower* at:
+518 kB frame buffers, and a 12 MiB model input for the AI path. So the dependency buys a path we do not have
+and charges us on the one we do.
+
+Not covered, and worth saying plainly: the studio's Iced element tree is rebuilt every frame out of very many
+small boxes, which is the shape mimalloc wins on, and this benchmark does not measure it. If that ever shows
+up in a profile, run the example with `--features mimalloc` and time the window itself. The feature and the
+benchmark are kept, off by default, so that costs one build.
+
 ## Outstanding, in the order worth doing
 
-1. `mimalloc` as the global allocator — then measure it. The guideline says "up to 25%", which is a claim from
-   someone else's benchmark, not a result in this tree.
-2. Move the overlay's `eprintln!` diagnostics onto `telemetry`.
-3. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
+1. Move the overlay's `eprintln!` diagnostics onto `telemetry`.
+2. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
-4. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
-5. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
+3. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
+4. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
    future readers rather than a resolution.
 
 Done from this list: the two lint overrides; `rust-version`, which turned out to be 1.92 rather than the 1.88 I
