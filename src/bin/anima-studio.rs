@@ -25,8 +25,8 @@
 
 // The Tools tab lives in its own file: it is the part of this window that changes most, and a
 // 5000-line file is no place to be making careful edits.
-#[path = "anima-studio/tools.rs"]
-mod tools;
+#[path = "anima-studio/tools/mod.rs"]
+pub(crate) mod tools;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
