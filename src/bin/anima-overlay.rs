@@ -37,11 +37,14 @@ mod gpu;
 use gpu::Gpu;
 #[path = "anima-overlay/pipelines.rs"]
 mod pipelines;
+#[path = "anima-overlay/wayland.rs"]
+mod wayland;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use wayland::Wayland;
 
 use anima_engine_rs::anim::{Animation, DecodeLimits, Frame, Orientation};
 use anima_engine_rs::cache::{Blocks, FrameCache};
@@ -2142,30 +2145,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // only other argument.
     let config = Config::load()?;
     // The same destructuring the code above this line used to do inline, so nothing below changed.
+    let wayland = Wayland::connect(&config)?;
     let Config {
         path,
         tray_wanted,
         loaded,
         width,
         height,
-        instance_key,
         slug,
         label,
-        state_path,
         control_path,
-        region_tuning,
         pos_x,
         pos_y,
-        initial_scale,
-        always_on_top,
-        initial_mode,
-        initial_locked,
-        initial_hover_hide,
-        fps,
-        meta_fps,
-        orientation,
-        disp_w,
-        disp_h,
+        ..
     } = config;
     let Loaded {
         animation,
@@ -2173,127 +2165,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         crop,
         limits: decode_limits,
     } = loaded;
-    let conn = Connection::connect_to_env()?;
-    let mut event_queue: EventQueue<OverlayState> = conn.new_event_queue();
-    let qh = event_queue.handle();
-    let (globals, _) = registry_queue_init::<OverlayState>(&conn)?;
-
-    // Diagnostic for sandboxed runs (e.g. a Flatpak that does not offer a global):
-    // print what the compositor actually announced, then continue as usual.
-    if std::env::var_os("ANIMA_DUMP_GLOBALS").is_some() {
-        let mut offered = globals.contents().clone_list();
-        offered.sort_by(|left, right| left.interface.cmp(&right.interface));
-        for global in &offered {
-            eprintln!(
-                "[overlay] global {} v{} (name {})",
-                global.interface, global.version, global.name
-            );
-        }
-        eprintln!("[overlay] {} global(s) offered", offered.len());
-    }
-
-    let compositor: wl_compositor::WlCompositor = globals
-        .bind(&qh, 1..=4, ())
-        .map_err(|err| format!("binding wl_compositor: {err}"))?;
-    let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals
-        .bind(&qh, 1..=4, ())
-        .map_err(|err| format!("binding zwlr_layer_shell_v1: {err}"))?;
-    let seat: wl_seat::WlSeat = globals
-        .bind(&qh, 1..=9, ())
-        .map_err(|err| format!("binding wl_seat: {err}"))?;
-    let outputs = OutputState::new(&globals, &qh);
-
-    let surface = compositor.create_surface(&qh, ());
-    let layer = if always_on_top {
-        zwlr_layer_shell_v1::Layer::Overlay
-    } else {
-        zwlr_layer_shell_v1::Layer::Bottom
-    };
-    let layer_surface =
-        layer_shell.get_layer_surface(&surface, None, layer, "anima-overlay".to_string(), &qh, ());
-    let scaled = |value: u32| (u64::from(value) * u64::from(initial_scale) / 100).max(1) as u32;
-    layer_surface.set_size(scaled(disp_w), scaled(disp_h));
-    layer_surface
-        .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
-    layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
-    layer_surface.set_margin(pos_y, 0, 0, pos_x);
-    // Receive input so we can drag on opaque pixels. The empty region toggled
-    // by the tray / portal makes the whole surface click-through.
-    let empty_region = compositor.create_region(&qh, ());
-    surface.set_input_region(None);
-    surface.commit();
-
-    let mut state = OverlayState {
-        configured: None,
-        closed: false,
-        surface,
-        layer_surface,
-        _seat: seat,
-        _pointer: None,
-        pointer_pos: (0.0, 0.0),
-        dragging: false,
-        drag_start: (0.0, 0.0),
-        margin_left: pos_x,
-        margin_top: pos_y,
-        frame_margin_left: pos_x,
-        frame_margin_top: pos_y,
-        animation: Arc::clone(&animation),
-        frame_index: 0,
-        native_size: (width, height),
-        scale_percent: initial_scale,
-        orientation,
-        surface_size: (scaled(disp_w), scaled(disp_h)),
-        desired_size: (scaled(disp_w), scaled(disp_h)),
-        compositor: compositor.clone(),
-        qh: qh.clone(),
-        empty_region,
-        input_mode: InputMode::Full,
-        region: None,
-        applied_rects: Vec::new(),
-        instance_key,
-        state_path,
-        fps,
-        meta_fps,
-        crop,
-        locked: initial_locked,
-        hover_hide: initial_hover_hide,
-        hidden: false,
-        pointer_inside: false,
-        pointer_over: false,
-        outputs,
-        active_output: None,
-        last_output_size: None,
-        region_dirty: false,
-        visual_dirty: true,
-        region_tuning,
-        applied_step: 1,
-        menu: menu::Menu::new(),
-        control_path: control_path.clone(),
-    };
-    event_queue.roundtrip(&mut state)?;
-    // Configures the input region for the restored mode (Opaque builds the
-    // per-pixel region; PassThrough installs the empty one).
-    apply_input_mode(&mut state, initial_mode);
-
-    // --- control channel: tray + portal global shortcuts -------------------
-    let mut control = ControlState::fresh();
-    // Seed the runtime channel with the persisted display size so a CLI
-    // read-modify-write cannot silently reset it.
-    control.scale_percent = initial_scale;
-    control.input_mode = initial_mode;
-    control.locked = initial_locked;
-    control.rotation = orientation.degrees();
-    control.flip_h = orientation.flip_h;
-    control.flip_v = orientation.flip_v;
-    control.region_step = region_tuning.step.label();
-    control.region_soft_rects = region_tuning.soft_rects;
-    control.region_max_rects = region_tuning.max_rects;
-    if let Err(err) = control.save(&control_path) {
-        eprintln!("[overlay] control file init failed: {err}");
-    }
-    let mut control_mtime = std::fs::metadata(&control_path)
-        .and_then(|m| m.modified())
-        .ok();
+    let Wayland {
+        conn,
+        mut event_queue,
+        mut state,
+        mut control,
+        mut control_mtime,
+    } = wayland;
+    // The tray is main's business rather than the connection's: it is a handle that has to outlive the
+    // program, and naming its type in a struct would say nothing useful about it.
     let _tray = if tray_wanted {
         spawn_tray(control_path.clone(), slug.clone(), label)
     } else {
