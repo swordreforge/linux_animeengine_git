@@ -94,12 +94,17 @@ impl Animation {
 
         let mut rects: Vec<(i32, i32, i32, i32)> = Vec::new();
         let mut band: Vec<(u32, u32)> = Vec::new();
+        // Two buffers, swapped rather than moved. `band = runs` used to hand the row's allocation to the band
+        // and leave the next row to allocate again; swapping gives the row the buffer the previous band used,
+        // so after the first row nothing in this loop allocates. `cols` is an upper bound on the runs a row can
+        // produce, so the first row does not grow either.
+        let mut runs: Vec<(u32, u32)> = Vec::with_capacity(cols as usize);
         let mut band_start = 0u32;
         let mut band_height = 0u32;
 
         for gy in 0..rows {
             let v = (f64::from((gy * step + step / 2).min(sh - 1)) + 0.5) / f64::from(sh);
-            let mut runs: Vec<(u32, u32)> = Vec::new();
+            runs.clear();
             let mut start: Option<u32> = None;
             for gx in 0..cols {
                 let u = (f64::from((gx * step + step / 2).min(sw - 1)) + 0.5) / f64::from(sw);
@@ -119,7 +124,7 @@ impl Animation {
             }
 
             if gy == 0 {
-                band = runs;
+                std::mem::swap(&mut band, &mut runs);
                 band_start = 0;
                 band_height = 1;
             } else if runs == band {
@@ -133,7 +138,7 @@ impl Animation {
                     surface_size,
                     &mut rects,
                 );
-                band = runs;
+                std::mem::swap(&mut band, &mut runs);
                 band_start = gy;
                 band_height = 1;
             }
