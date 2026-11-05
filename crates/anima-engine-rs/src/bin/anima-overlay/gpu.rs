@@ -69,6 +69,10 @@ impl Gpu {
             ],
         );
 
+        // The adapter's limits, for the early size check below: a device does not exist yet. What the
+        // *device* will accept is a different number — it is built from `required_limits`, which we leave at
+        // the defaults — so anything that decides what to allocate must compare against `device.limits()`,
+        // which is what goes into the struct.
         let limits = adapter.limits();
         if width > limits.max_texture_dimension_2d || height > limits.max_texture_dimension_2d {
             return Err(format!(
@@ -160,11 +164,11 @@ impl Gpu {
         Ok((
             wgpu_surface,
             Gpu {
+                limits: device.limits(),
                 device,
                 queue,
                 config,
                 format,
-                limits,
                 bc7,
                 sampler,
                 uniform,
