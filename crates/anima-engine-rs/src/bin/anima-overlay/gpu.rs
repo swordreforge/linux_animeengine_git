@@ -69,11 +69,7 @@ impl Gpu {
             ],
         );
 
-        // The adapter's limits, for the early size check below: a device does not exist yet. What the
-        // *device* will accept is a different number — it is built from `required_limits`, which we leave at
-        // the defaults — so anything that decides what to allocate must compare against `device.limits()`,
-        // which is what goes into the struct.
-        let limits = adapter.limits();
+        let limits = adapter.limits(); // for the size check; the struct keeps `device.limits()`, which is stricter
         if width > limits.max_texture_dimension_2d || height > limits.max_texture_dimension_2d {
             return Err(format!(
                 "frame {width}x{height} exceeds max texture size {}",
