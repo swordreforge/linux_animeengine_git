@@ -314,3 +314,50 @@ the Discord/Steam page instead", or drop it — but it cannot be copied, and it 
 dropped either, because the window's own text says what it is for: *"send video links for Luis
 (AnimaEngine creator) to process and share with the community"*, which is both a support channel and a
 content pipeline.
+
+## Worked example: the GPU engine that never shipped
+
+`nuevoMotor.py` ("beast_overlay_engine", 844 lines) is the ambitious one, and the first thing to say about
+it is that **nothing imports it**. It has no references in the main window's bytecode (`monoModule`, the
+raster overlay that *does* ship, appears twice) and no loose source imports it either. Whatever follows is
+research that stayed in the file.
+
+### What it does about smoothness
+
+The engineering is in the pipeline shape rather than in OpenGL calls:
+
+* **A decode worker thread** (`DecodeWorker`) composes the animation's delta frames into full frames once,
+  then emits `QImage` objects — with the per-pixel **alpha mask kept as a separate `bytes` buffer**, which
+  is what makes `alpha_opaque_at(x, y, threshold)` possible: click-through decided *per pixel*, not per
+  window.
+* **A bounded buffer** of decoded frames (`buffer_frames: int = 12`) between the decoder and the painter,
+  driven by a `Qt.PreciseTimer`. Decode and presentation are decoupled, so a slow frame does not stall the
+  clock.
+* **`premultiply_alpha`**, on by default, with a comment recording the bug it fixes: without it the overlay
+  "dulls the colours" — the classic halo/darkening that comes from treating straight alpha as
+  premultiplied. `smooth_alpha` with a 0.85px blur does the feathering the colour-key tool never had.
+
+### What it does not do
+
+`paintGL` is not an OpenGL renderer. It paints with a `QPainter` — `QImage` → `QPixmap::fromImage` →
+`drawPixmap` — which on a `QOpenGLWidget` does end up GPU-composited, but uploads a fresh texture every
+frame and gives up all control over the upload. There are no shaders, no `glTexSubImage`, no PBO, no
+texture reuse. It is a GL-backed widget used as a canvas, not a renderer, and the **two image conversions
+per frame** are the concrete cost of that.
+
+It also re-clears to transparent with `CompositionMode_Source` before every paint, annotated "FIX
+stacking" — a real ghosting bug it hit and fixed, and worth knowing because the same artifact appears in
+any overlay that forgets it.
+
+### The configuration is the interesting artefact
+
+`BeastConfig` is a better specification than anything the shipped overlay has: fps, alpha blur radius,
+premultiply toggle, hit-test threshold, topmost, click-through, fullscreen, **span all monitors**,
+`scale_to_fit` (off by default, and the comment says so — the same conclusion the Rust overlay reached from
+the other direction with `MAX_SCALE_PERCENT = 100`), `center_when_native`, hover-hide with
+`focus_fade`/`smart_dodge`/`snap_to_edge`, a 24 ms hover interval, three alpha levels
+(hidden/faded/normal), an 800 ms topmost watchdog, buffer depth, and a decode scale with a chosen resample
+filter.
+
+For a port, that list is the useful output of this file: it is the feature set four hover behaviours deep
+that nobody documented anywhere else.
