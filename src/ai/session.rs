@@ -10,6 +10,7 @@ use ort::value::Tensor;
 const INPUT_NAME: &str = "img";
 
 /// A loaded model. ONNX Runtime wants `&mut self` for `run`, so whoever owns this owns it exclusively.
+#[derive(Debug)]
 pub struct Removal {
     session: Session,
 }

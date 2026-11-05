@@ -150,6 +150,7 @@ struct Progress {
 
 /// The supervision policy. Process handling is injected — `is_running` takes a control
 /// file, `spawn` takes an animation — so the whole thing is testable without processes.
+#[derive(Debug)]
 pub struct Supervisor {
     registry_path: PathBuf,
     registry: Registry,

@@ -666,6 +666,7 @@ impl FrameLimiter {
 }
 
 /// Decoder backed by the `image` crate.
+#[derive(Debug)]
 pub struct ImageSource;
 
 impl FrameSource for ImageSource {

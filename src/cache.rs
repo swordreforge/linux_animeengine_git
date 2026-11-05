@@ -40,6 +40,7 @@ const MAGIC: &[u8; 8] = b"ANIMCACH";
 const COMPRESSION_LEVEL: i32 = 3;
 
 /// A content-addressed store of composited animation frames.
+#[derive(Debug)]
 pub struct FrameCache {
     root: PathBuf,
     max_bytes: u64,

@@ -201,6 +201,7 @@ mod web {
     pub const API_KEY_ENV: &str = "STEAM_WEB_API_KEY";
 
     /// Blocking Steam Web API client for workshop metadata.
+    #[derive(Debug)]
     pub struct WorkshopWeb {
         client: reqwest::blocking::Client,
         base_url: String,

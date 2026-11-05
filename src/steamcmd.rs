@@ -18,6 +18,7 @@ pub const STEAMCMD_DIR_ENV: &str = "STEAMCMD_DIR";
 const UPLOAD_SUBDIR: &str = "anima_upload";
 
 /// A `steamcmd` installation used to download workshop items.
+#[derive(Debug)]
 pub struct SteamCmd {
     program: PathBuf,
     install_dir: PathBuf,

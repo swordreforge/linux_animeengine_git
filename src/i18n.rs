@@ -493,6 +493,7 @@ pub struct TranslationStatus {
 }
 
 /// Loaded catalog + active language.
+#[derive(Debug)]
 pub struct I18n {
     catalog: Catalog,
     language: String,

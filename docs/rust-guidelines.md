@@ -49,7 +49,7 @@ should be re-measured rather than trusted.
 
 | | Do | Don't |
 |---|---|---|
-| **M-PUBLIC-DEBUG** | `#[derive(Debug)]` on every public type | Ship a public type a caller cannot print. *(30 of 79 lack it today)* |
+| **M-PUBLIC-DEBUG** | `#[derive(Debug)]` on every public type; `src/lib.rs` carries `#![deny(missing_debug_implementations)]` so a new one cannot slip in | Ship a public type a caller cannot print. *(A regex of mine said 30 of 79; the compiler named 13, and it is the one that counts)* |
 | **M-STRONG-TYPES-GUARD** | Let the newtype enforce its invariant in a fallible constructor, as `Config`/`Loaded` do for geometry | Build the newtype and trust callers to keep it valid afterwards |
 | **M-DI-HIERARCHY** | Concrete types first, then generics, and `dyn` only where the set of implementations is open | Port a C# interface shape into a `dyn Trait` that has exactly one implementor |
 | **M-PARAMETER-CONSISTENCY** | Same conceptual parameter in the same position everywhere: **(1)** the subject being changed (`&mut state`), **(2)** read-only context (`&Config`, `&Path`, `&Gpu`), **(3)** call-specific scalars, **(4)** closures last | Let the order drift between two functions that take the same things. Our `poll_control(state, control, control_mtime, control_path, pos_x, pos_y)` is the reference |
@@ -117,12 +117,16 @@ should be re-measured rather than trusted.
 
 ## Outstanding, in the order worth doing
 
-1. Derive `Debug` on the 30 public types. *(The `#[allow]` sites and `rust-version` are done.)*
-2. `mimalloc` as the global allocator — then measure it. The guideline says "up to 25%", which is a claim from
+1. `mimalloc` as the global allocator — then measure it. The guideline says "up to 25%", which is a claim from
    someone else's benchmark, not a result in this tree.
-3. Move the overlay's `eprintln!` diagnostics onto `telemetry`.
-4. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
+2. Move the overlay's `eprintln!` diagnostics onto `telemetry`.
+3. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
-5. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
-6. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
+4. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
+5. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
    future readers rather than a resolution.
+
+Done from this list: the two lint overrides; `rust-version`, which turned out to be 1.92 rather than the 1.88 I
+derived; and `Debug` on the public types, which is now a `#![deny(missing_debug_implementations)]` in
+`src/lib.rs` rather than a promise — a new public type without it fails the build. That guard covers the
+library only, which is the scope the rule is about: a `pub` type in a binary is not public API.

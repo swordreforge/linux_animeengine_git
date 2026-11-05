@@ -125,6 +125,7 @@ pub fn split_command(command: &str) -> Vec<String> {
 }
 
 /// What running a template produced, for the status line.
+#[derive(Debug)]
 pub struct Rendered {
     pub ok: bool,
     pub detail: String,

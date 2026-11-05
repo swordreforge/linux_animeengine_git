@@ -18,6 +18,7 @@ pub const OBJECT_PATH: &str = "/dev/AnimaEngine/Shepherd";
 pub const INTERFACE: &str = "dev.AnimaEngine.Shepherd";
 
 /// The served object: a registry path and nothing else.
+#[derive(Debug)]
 pub struct Intent {
     registry: PathBuf,
 }

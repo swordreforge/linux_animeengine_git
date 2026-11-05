@@ -71,6 +71,7 @@ pub trait UgcTransport {
 }
 
 /// Subscribe-and-download flow over any [`UgcTransport`].
+#[derive(Debug)]
 pub struct SteamWorkshop<T> {
     transport: T,
     timeout: Duration,
@@ -192,6 +193,7 @@ pub mod flat {
     ];
 
     /// A loaded `libsteam_api` with the UGC entry points bound.
+    #[derive(Debug)]
     pub struct FlatSteamApi {
         _lib: Library,
         ugc: *mut c_void,

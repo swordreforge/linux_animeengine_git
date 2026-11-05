@@ -5,6 +5,10 @@
 //! modules here depend on a windowing system or GPU, so they are unit-testable
 //! on any platform. The always-on-top window/render layer is added later.
 
+// A public type a caller cannot print is a public type a caller cannot debug. `#[expect]` with a reason is
+// the way to exempt one, not `#[allow]`.
+#![deny(missing_debug_implementations)]
+
 pub mod ai;
 pub mod anim;
 #[cfg(feature = "bc7")]

@@ -337,6 +337,7 @@ pub fn diff(previous: &WorkshopSnapshot, current: &WorkshopSnapshot) -> Workshop
 /// When the SDK *is* loaded, `steam::FlatSteamApi::run_callbacks` can drive the same
 /// diff instead of polling. A poll costs one `read_dir` per item directory, so it is
 /// cheap for the handful of items a user has installed.
+#[derive(Debug)]
 pub struct WorkshopWatcher {
     roots: Vec<PathBuf>,
     snapshot: WorkshopSnapshot,
@@ -444,6 +445,7 @@ pub fn sync(source: &dyn WorkshopSource) -> Result<WorkshopSnapshot> {
 
 /// Reads Steam's already-downloaded content from disk. Needs no Steam client
 /// and is also the fallback when the Steamworks SDK is unavailable.
+#[derive(Debug)]
 pub struct LocalWorkshopSource {
     pub content_root: PathBuf,
 }
