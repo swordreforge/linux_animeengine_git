@@ -264,6 +264,43 @@ Cheapest first. Each says what it would take and what would have to be measured 
    the Gantt chart and the IR line list; touch generic code only if a number says to. Nothing has measured
    compile time here beyond the 8.42 s `build --features studio` on a machine where the tree was already warm.
 
+## Profiled, which is not the same as reasoned
+
+Four explanations were offered for where the AI stages spend their time before anything was profiled, and all
+four were wrong. The profile is here because it is the record of that.
+
+It needed no privileges and no system change, only a build that keeps its symbols — the release profile strips
+them — and a software event, because the hybrid cores refuse the cycles PMU:
+
+```text
+CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --features studio --example ai_frame_bench
+perf record -e cpu-clock ./target/release/examples/ai_frame_bench
+```
+
+| share | symbol |
+|---|---|
+| 30.61 % | `anima_ai::preprocess::preprocess` |
+| 27.17 % | `ai_frame_bench::main` |
+| 18.98 % | `anima_ai::preprocess::mask_from_output` |
+| **18.87 %** | **`roundf`** |
+| 0.77 % | `apply_mask` |
+
+`roundf` is a libm **call** reaching nearly a fifth of the profile, and it is not in any loop of ours: it is in
+`image`'s Lanczos3 kernel, which calls it per tap, alongside `sinf32`, `floorf` and `ceilf`. Both resizes use
+that filter, so both pay it. The 66 ms attributed to "the resize" in `preprocess` is therefore better described
+as "the Lanczos3 kernel", and the same is true of the stage inside `mask_from_output`.
+
+Which settles a line of work. The per-pixel closure and the bounds check were worth 3 ms; replacing `round` in
+the mask loop was worth 1.9 ms; and the "thirty milliseconds of our own row loop" that the arithmetic pointed at
+is largely the dependency's kernel after all. Vectorising our loops, by hand or otherwise, is aiming at code that
+is not where the samples are. The one remaining lever on this path that is ours is the filter, and changing it
+changes pixels — a quality decision, now with a price: about 25 ms a frame, 2.4 %.
+
+One methodological note worth keeping. `ai_frame_bench::main` is 27 % of the samples, because generating ten
+synthetic frames and ten synthetic outputs happens in `main` too. The three reported numbers are not affected —
+they are timed around the stages — but a profile of a benchmark measures the benchmark. Setup belongs outside the
+region being profiled, and a longer measuring loop dilutes whatever remains.
+
 ## Coverage
 
 **Chapters read, in full, from the 890-line extraction:** Introduction; Benchmarking; Build Configuration
