@@ -1611,6 +1611,11 @@ fn apply_input_mode(state: &mut OverlayState, mode: InputMode) {
 /// detailed silhouettes are sampled on a coarser grid, then fall back to their
 /// bounding box.
 fn apply_opaque_region(state: &mut OverlayState) {
+    // The scan and the install are timed apart because they are different kinds of cost. The first is this
+    // process's CPU over its own memory, which `frame_bench` measures. The second is a Wayland round trip
+    // whose other end is the compositor's hit-testing over however many rectangles we just sent it — the
+    // bench cannot see it at all, and it is the half nobody has a number for.
+    let scan_started = Instant::now();
     let build = |state: &OverlayState, step: u32| {
         state.animation.alpha_rects_step(
             state.frame_index,
@@ -1647,16 +1652,43 @@ fn apply_opaque_region(state: &mut OverlayState) {
     {
         rects = vec![bounds];
     }
+    let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
+
     if rects == state.applied_rects && state.region.is_some() {
+        // The common case, and worth a line of its own: it is the only evidence of how often the install is
+        // actually skipped, which no other number here can show.
+        log::event(
+            log::Level::Debug,
+            "overlay.region.skip",
+            &[
+                ("rects", &rects.len()),
+                ("step", &step),
+                ("scan_ms", &format!("{scan_ms:.3}")),
+            ],
+        );
         return;
     }
 
+    let install_started = Instant::now();
     let region = state.compositor.create_region(&state.qh, ());
     for &(x, y, w, h) in &rects {
         region.add(x, y, w, h);
     }
     state.surface.set_input_region(Some(&region));
     state.surface.commit();
+    log::event(
+        log::Level::Debug,
+        "overlay.region.install",
+        &[
+            ("rects", &rects.len()),
+            ("step", &step),
+            ("scan_ms", &format!("{scan_ms:.3}")),
+            (
+                "install_ms",
+                &format!("{:.3}", install_started.elapsed().as_secs_f64() * 1000.0),
+            ),
+        ],
+    );
     if let Some(previous) = state.region.replace(region) {
         previous.destroy();
     }
