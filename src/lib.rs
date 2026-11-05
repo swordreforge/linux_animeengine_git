@@ -27,6 +27,7 @@ pub mod shepherd;
 pub mod state;
 pub mod steam;
 pub mod steamcmd;
+pub mod telemetry;
 pub mod vdf;
 pub mod workshop;
 pub mod workshop_web;
