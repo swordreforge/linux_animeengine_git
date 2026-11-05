@@ -582,12 +582,7 @@ mod menu {
                             white,
                         );
                     }
-                    Action::Quit => {
-                        let s = r * 0.9;
-                        for (x1, y1, x2, y2) in [(-s, -s, s, s), (s, -s, -s, s)] {
-                            push_diagonal(&mut out, frame, cx, cy, x1, y1, x2, y2, 1.6, white);
-                        }
-                    }
+                    Action::Quit => push_cross(&mut out, frame, (cx, cy), r, white),
                 }
             }
             out
@@ -596,6 +591,18 @@ mod menu {
 
     fn ndc(frame: (f32, f32), x: f32, y: f32) -> [f32; 2] {
         [x / frame.0 * 2.0 - 1.0, 1.0 - y / frame.1 * 2.0]
+    }
+
+    /// A line segment to draw: two endpoints, the origin they are measured from, and its half width.
+    ///
+    /// The sibling of `Rect` for lines. Both exist so the drawing helpers take a shape rather than a list of
+    /// numbers, which is the same reason `push_rect` takes a `Rect`.
+    struct Segment {
+        /// The point `from` and `to` are measured from, so the caller can place a shape by its centre.
+        origin: (f32, f32),
+        from: (f32, f32),
+        to: (f32, f32),
+        half_width: f32,
     }
 
     fn push_rect(out: &mut Vec<MenuVertex>, frame: (f32, f32), r: Rect, color: [f32; 4]) {
@@ -619,25 +626,42 @@ mod menu {
         }
     }
 
-    // The ten arguments are one shape: a frame, the origin it is measured from, two endpoints, a half
-    // width and a colour. Grouping them into a type would read better than a long list, and is tracked in
-    // `docs/rust-guidelines.md`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one shape's geometry; a type would say the same thing more clearly, and is on the list in docs/rust-guidelines.md"
-    )]
+    /// The shape that means quit: two diagonals crossing at the centre.
+    fn push_cross(
+        out: &mut Vec<MenuVertex>,
+        frame: (f32, f32),
+        centre: (f32, f32),
+        r: f32,
+        color: [f32; 4],
+    ) {
+        let s = r * 0.9;
+        for (x1, y1, x2, y2) in [(-s, -s, s, s), (s, -s, -s, s)] {
+            push_diagonal(
+                out,
+                frame,
+                Segment {
+                    origin: centre,
+                    from: (x1, y1),
+                    to: (x2, y2),
+                    half_width: 1.6,
+                },
+                color,
+            );
+        }
+    }
+
     fn push_diagonal(
         out: &mut Vec<MenuVertex>,
         frame: (f32, f32),
-        cx: f32,
-        cy: f32,
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-        half_width: f32,
+        segment: Segment,
         color: [f32; 4],
     ) {
+        let Segment {
+            origin: (cx, cy),
+            from: (x1, y1),
+            to: (x2, y2),
+            half_width,
+        } = segment;
         let c = [
             color[0] * color[3],
             color[1] * color[3],

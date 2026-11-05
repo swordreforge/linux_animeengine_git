@@ -36,8 +36,9 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     (
         "src/bin/anima-overlay.rs",
         "vertices",
-        281,
-        "building the overlay's geometry; a candidate for pulling the shapes out one at a time",
+        276,
+        "building the overlay's geometry; a candidate for pulling the shapes out one at a time, one of which has \
+         been pulled — the quit cross is `push_cross` now",
     ),
     (
         "src/bin/anima-shepherd.rs",

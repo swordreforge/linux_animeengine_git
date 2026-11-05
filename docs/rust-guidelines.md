@@ -24,7 +24,7 @@ should be re-measured rather than trusted.
 
 | | Do | Don't |
 |---|---|---|
-| **M-LINT-OVERRIDE-EXPECT** | Silence a lint with `#[expect(clippy::x, reason = "why")]`, which fails when the lint stops firing | Use `#[allow]` outside generated code — it goes stale silently. *(both former sites are dealt with: one fixture was rewritten so it no longer needs the lint, the other is an `#[expect]` carrying its reason)* |
+| **M-LINT-OVERRIDE-EXPECT** | Silence a lint with `#[expect(clippy::x, reason = "why")]`, which fails when the lint stops firing | Use `#[allow]` outside generated code — it goes stale silently. *(both former sites were dealt with and then removed: one fixture was rewritten so it no longer needs the lint, and the other wanted a type rather than an exemption. There are no lint overrides in either crate now)* |
 | **M-MSRV** | Declare `rust-version` in `Cargo.toml`, and find the number by running a `cargo +<older toolchain>` command: cargo names every dependency that refuses that toolchain, and the highest refusal is the floor | Derive it from the language features you use. Ours is 1.92 in `anima-ai`, set by `ort` (ONNX Runtime) — not the 1.88 that let-chains and `is_multiple_of` suggest, which is what I wrote first. The engine is 1.88, and only reaches 1.92 through the `studio` feature that pulls the AI crate in, which is the point of having two numbers |
 | **M-STATIC-VERIFICATION** | Keep `cargo clippy --all-targets` at zero for every feature set we ship. The function-length ratchet is part of it | Add a binary without adding it to a feature set that CI builds |
 
@@ -56,7 +56,7 @@ should be re-measured rather than trusted.
 | **M-SHORT-NAMES** | Two short words at most: `AppConfig` | `GlobalApplicationConfig`. Don't bake the module into the name: `pack::Id`, not `pack::PackId` |
 | **M-WEASEL-WORDS** | A name that says what it is: `RegionTuning`, `HotReload` | `Manager`, `Service`, `Factory`, and `handle`/`process` for a function whose job you cannot name |
 | **M-REGULAR-FN** | Free functions for computation; `impl` for constructing and for methods that need a receiver | A type that exists only to host a namespace of functions |
-| **M-INIT-BUILDER** / **M-BUILD-RESULT** | A builder when construction has more than four inputs, validating in `build()` | An eight-parameter constructor — that is a missing type, not a long list |
+| **M-INIT-BUILDER** / **M-BUILD-RESULT** | A builder when construction has more than four inputs, validating in `build()` | An eight-parameter constructor — that is a missing type, not a long list. *(the overlay's `push_diagonal` had ten; it takes a `Segment` now, beside the `Rect` its neighbour `push_rect` already took)* |
 
 ## Functions and modules
 
@@ -216,8 +216,12 @@ covers, ignored, because it wants the 176 MB model.
 
 ## Outstanding, in the order worth doing
 
-1. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
-   future readers rather than a resolution.
+Nothing. Every item this document raised has been done or decided against, and each decision that went against
+a guideline has its numbers recorded above.
+
+The next pass, if one is wanted, is smaller than the last:
+`ANIMA_FN_LIMIT=100 cargo test -p anima-engine-rs --test function_length -- --nocapture` prints the eleven
+functions between 100 and 150 lines, which is where the next splits would come from.
 
 Done from this list: the two lint overrides; `rust-version`, which turned out to be 1.92 rather than the 1.88 I
 derived; `Debug` on the public types, which is now a `#![deny(missing_debug_implementations)]` in
