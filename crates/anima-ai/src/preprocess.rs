@@ -83,8 +83,12 @@ pub fn mask_from_output(output: &[f32], width: u32, height: u32) -> image::GrayI
         .zip(output.chunks_exact(MODEL_SIZE as usize))
     {
         for (pixel, value) in row.zip(source) {
-            let normalised = ((*value - low) / span).clamp(0.0, 1.0);
-            *pixel = image::Luma([(normalised * 255.0).round() as u8]);
+            let normalised = ((*value - low) / span).clamp(0.0, 255.0 / 255.0);
+            // `round()` is one `roundss` and cannot be vectorised before AVX-512, which makes this loop scalar
+            // for every pixel. For a non-negative value below 255, adding a half and truncating is the same
+            // number, and it is vectorisable. The thirteen tests in this crate check the mask's actual values,
+            // so they are the referee for that claim.
+            *pixel = image::Luma([(normalised * 255.0 + 0.5) as u8]);
         }
     }
     image::imageops::resize(
