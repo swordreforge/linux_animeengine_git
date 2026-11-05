@@ -98,3 +98,28 @@ schedule.
 It does **not** give readable source for the whole module. For that, the choice is: fix pycdc's 3.10
 exception model, or read the disassembly one question at a time. The second is what has been done so far,
 and it has been enough for every question asked.
+
+## Worked example: the MP4 conversion, and what is adjustable in it
+
+Answering this from the disassembly took one grep, and the answer was smaller than expected: the option
+lives in a handler and is **hard-coded**, so the honest finding is that the user cannot adjust it at all.
+
+* The main window contains **no conversion code**. `'Convert MP4 to animation'` appears only in
+  `_build_tools_page` — a button on the Tools page — and the work happens in a `subprocess` call to the
+  standalone tool.
+* That tool **is** source we already have: `_internal/mp4ToAnimations.py`. Three pipelines:
+  * **MP4 → GIF** through `moviepy`: `clip.write_gif(output_path, fps=fps)`. No palette, no dithering, no
+    scale — whatever moviepy decides.
+  * **MP4 → WebP** through `ffmpeg` twice: extract `frame_%04d.png` with `-pix_fmt rgba`, then
+    `-vcodec libwebp -lossless 1 -q:v 100 -loop 0 -an`.
+  * **MP4 → APNG** through `ffmpeg`, same extraction.
+* **The knobs are literals.** `start_conversion(..., fps, ...)` takes a frame rate, but its caller writes
+  `fps = 30  # Puedes cambiar el FPS si es necesario` — a comment where a control should be. The WebP path
+  does not even use that parameter: it passes `-framerate 60` with a comment saying the same thing. And
+  `mp4_to_webp`'s docstring documents `quality` and `lossless` parameters that **are not in its signature**;
+  both are literals inside the command.
+* The ZIP-of-images path is the same story from the other end: `create_video_with_ffmpeg(..., fps=60)`.
+
+For a port, the interesting part is the inverse of that list: frame rate, quality, lossless, scale and
+loop count are all things the original decided for the user, and the `ffmpeg` argument lists above are the
+part worth copying exactly.
