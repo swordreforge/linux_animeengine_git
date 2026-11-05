@@ -3090,22 +3090,32 @@ impl Studio {
             ("chroma blue", [0, 0, 255]),
         ] {
             let chosen = self.key_background == rgb;
-            row_of_swatches = row_of_swatches.push(
-                button(text(self.i18n.tr(label)).size(11))
-                    .style(move |theme: &iced_material::Theme, _status| {
-                        let mut style = iced_material::button::outlined(
-                            theme,
-                            iced::widget::button::Status::Active,
-                        );
+            // A colour needs no caption: the swatch is its own explanation, so the word moves to the
+            // tooltip where it costs nothing, and the selected one is ringed rather than described.
+            row_of_swatches = row_of_swatches.push(tooltip(
+                button(space())
+                    .style(move |theme: &iced_material::Theme, status| {
+                        let mut style = iced_material::button::outlined(theme, status);
                         style.background =
                             Some(iced::Color::from_rgb8(rgb[0], rgb[1], rgb[2]).into());
-                        if chosen {
-                            style.border.width = 2.0;
-                        }
+                        style.border = iced::Border {
+                            radius: 9999.0.into(),
+                            width: if chosen { 2.0 } else { 1.0 },
+                            color: if chosen {
+                                theme.colors().primary.color
+                            } else {
+                                theme.colors().surface.text_variant
+                            },
+                        };
                         style
                     })
+                    .width(Length::Fixed(26.0))
+                    .height(Length::Fixed(26.0))
+                    .padding(0)
                     .on_press(Message::KeyBackground(rgb)),
-            );
+                text(self.i18n.tr(label)).size(11),
+                tooltip::Position::Top,
+            ));
         }
         row_of_swatches
             .push(
