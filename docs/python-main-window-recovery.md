@@ -235,3 +235,40 @@ The `mdaaStart.txt` behaviour — restoring the last bundle on launch — is a r
 generation does not obviously have it. Everything else here is superseded, including the duplicated
 implementation: `animacionesAvanzadas` and `start` are two near-identical copies of the same feature in
 one file, differing in how many callbacks the caller passes in.
+
+## The map: what the main window is made of
+
+Neither the disassembly nor the sources answer this quickly; the **shipped translation catalog does**. It
+holds **793 entries across 31 languages**, and its keys are the UI's own vocabulary, so the labels are the
+inventory. Cross-checked against the page builders that exist as code objects, the main window is:
+
+* **Pages** — `_build_library_page`, `_build_apps_page`, `_build_tools_page`, `_build_workshop_page` with
+  four sub-pages of its own (`_workshop_public_page(s)`, `_workshop_steamworks_page`, `_ws_build_upload_page`),
+  `_build_discover_grid_page`, and a "side" action set (`_build_side_resize_page`, `_build_side_rotate_page`,
+  `_build_side_audio_page`, `_build_side_detail_page`).
+* **Tools page — five real entries.** The bytecode's own imports name them all: `mp4ToAnimations`,
+  `RemoveBackWeb`, `eliminarFondo`, `advancedCodeAnimations`, and Piskel (a web editor opened at it).
+* **Umbrella.** The window also *launches sibling executables* — `AnimaProfiles.exe` and `AnimaTriggers` —
+  and has a label for failing to find them, so it is a hub for the whole suite rather than one app.
+* **Overlay.** `monoModule` is imported from the window itself, which is where the transparent-window
+  renderer is driven from.
+
+### What the catalog exposes that the code does not
+
+* **A dead entry.** `MP4 to Gif converter no losses performance (BETA)` has **no occurrences in the
+  bytecode at all** — the label ships, the feature does not. (`mp4ToGif.py`, whose name suggests it is the
+  equivalent, is in fact an APNG player for a hard-coded file: dead code with a misleading name.)
+* **Two labels, one implementation.** `Animation remove background (IA TOOL)` and
+  `MP4 background remover (IA TOOL)` both route to the single `eliminarFondo` import, which takes any video
+  through ffmpeg — the split is a menu decision, not an engine one.
+* **A feature with no counterpart in the port.** `SendVideoRequestWindow`: "Here you can send video links
+  for Luis (AnimaEngine creator) to process and share with the community." Roughly, a request queue to the
+  author, which is both a support channel and a content pipeline, and the kind of thing that quietly
+  disappears in a rewrite unless it is written down.
+
+### The parts that are already covered
+
+Library browsing, the overlay runtime, the workshop browser with its three-tier fallback, and the
+translation catalog all exist in the Rust window. The **Tools page is the gap**: conversion, both kinds of
+background removal, and the MDAA manager have no equivalent there yet — which matches what the two worked
+examples above found, and is the honest summary of what this file was about.
