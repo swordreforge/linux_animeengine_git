@@ -147,6 +147,12 @@ Interaction and control:
   Pragmatic Rust Guidelines reduced to the roughly forty items this project
   actually has to decide, the ones that do not apply and why, and the outstanding
   five in the order worth doing.
+- `docs/rust-performance.md` — the same code read against *The Rust Performance
+  Book*, in the same do/don't shape: rows by topic with the `file:line` each one
+  touches, the techniques that do not fit an application, the measured decisions
+  against (mimalloc, the AI stages, the region scan), the outstanding small items
+  cheapest first, and a section naming which chapters were read. Every number is
+  one already in this tree; every rule that has none is marked unmeasured.
 - `docs/python-app-feature-map.md` — the whole Python app as a porting checklist,
   with the parts that are not worth porting named as such.
 - `docs/python-main-window-recovery.md` — how the main window's bytecode was
