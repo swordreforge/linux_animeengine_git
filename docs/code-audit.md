@@ -14,13 +14,13 @@ edits go wrong, and the only way to keep a refactor from being undone is a check
 | — `main` | **852** | **312** |
 | The Tools tab | one 444-line file, one 345-line function | **4 files**, largest function ~134 |
 | Functions over 150 lines | 4 | **4, each on a list with a reason** |
-| Tests | 196 | **238** |
+| Tests | 196 | **246** |
 | Clippy | — | **0** |
 
 The library side was already healthy: apart from `anim/mod.rs` (1540 lines, largest function 77) no library
 file has a function over 100 lines. All of the trouble was in the binaries, which is worth knowing before
-deciding that a big file is a big problem — `src/ai/` is 700 lines with 19 tests and no function over 52, and
-that is the shape the rest now aims at.
+deciding that a big file is a big problem — `src/ai/` was 712 lines with 13 tests and no function over 52, and
+that is the shape the rest aims at — it is now its own crate, `anima-ai`, for exactly that reason.
 
 ## The method that worked
 
@@ -76,7 +76,7 @@ three times during the session — once before each of the commits that followed
 reason the splits will still be splits in three months.
 
 Four functions are on the list: the overlay's `main` at 312, the studio's `view` at 302, the overlay's
-`vertices` at 281, and the shepherd's `menu` at 172. Run `ANIMA_FN_LIMIT=100 cargo test --test function_length
+`vertices` at 281, and the shepherd's `menu` at 172. Run `ANIMA_FN_LIMIT=100 cargo test -p anima-engine-rs --test function_length
 -- --nocapture` to see the eleven functions between 100 and 150; that is the next pass.
 
 ## What is left, and why it is left
@@ -93,7 +93,7 @@ fight that binding them by reference produces.
 
 ## Testing layout
 
-4775 of 21758 lines are `#[cfg(test)]` modules, 22%, holding 241 `#[test]` functions, of which 238 pass and five are ignored: four
+4775 of 21758 lines are `#[cfg(test)]` modules, 22% — counted before the crate split, which moved code without changing it — holding about 250 `#[test]` functions, of which 246 pass and five are ignored: four
 studio tests that need a display, and the end-to-end AI removal that downloads a 176 MB model and has to be
 asked for by name. That is deliberate: they test private
 behaviour, next to the code whose specification they are, and `#[cfg(test)]` costs nothing in a release build.
@@ -107,7 +107,7 @@ end-to-end AI removal (ignored by default; it downloads 176 MB), and the length 
 ## Checking any of this
 
 ```text
-cargo test --features overlay,bc7,dbus,studio,workshop-web,steamworks
-cargo clippy --all-targets --features overlay,bc7,dbus,studio,workshop-web,steamworks
-ANIMA_FN_LIMIT=100 cargo test --test function_length -- --nocapture
+cargo test -p anima-engine-rs --features overlay,bc7,dbus,studio,workshop-web,steamworks
+cargo clippy -p anima-engine-rs --all-targets --features overlay,bc7,dbus,studio,workshop-web,steamworks
+ANIMA_FN_LIMIT=100 cargo test -p anima-engine-rs --test function_length -- --nocapture
 ```

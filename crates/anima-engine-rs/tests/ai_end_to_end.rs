@@ -6,7 +6,7 @@
 //! cargo test --test ai_end_to_end -- --ignored --nocapture
 //! ```
 
-use anima_engine_rs::ai;
+use anima_ai as ai;
 
 #[test]
 #[ignore = "downloads 176 MB and runs inference"]

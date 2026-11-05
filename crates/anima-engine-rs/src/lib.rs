@@ -9,7 +9,6 @@
 // the way to exempt one, not `#[allow]`.
 #![deny(missing_debug_implementations)]
 
-pub mod ai;
 pub mod anim;
 #[cfg(feature = "bc7")]
 pub mod bc7;

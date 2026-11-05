@@ -13,7 +13,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use anima_engine_rs::ai::{MODEL_SIZE, apply_mask, mask_from_output, preprocess};
+use anima_ai::{MODEL_SIZE, apply_mask, mask_from_output, preprocess};
 use image::{GrayImage, RgbaImage};
 
 /// A frame the size the Python app's clips are.

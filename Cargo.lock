@@ -105,9 +105,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "anima-ai"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "md-5",
+ "ort",
+ "tempfile",
+ "ureq",
+]
+
+[[package]]
 name = "anima-engine-rs"
 version = "0.1.0"
 dependencies = [
+ "anima-ai",
  "ashpd 0.13.13",
  "bytemuck",
  "cc",
@@ -119,10 +131,8 @@ dependencies = [
  "image-webp",
  "ksni",
  "libloading",
- "md-5",
  "mimalloc",
  "notify",
- "ort",
  "png 0.17.16",
  "pollster",
  "reqwest",
@@ -134,7 +144,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "ureq",
  "wayland-client",
  "wgpu 29.0.4",
  "zbus",

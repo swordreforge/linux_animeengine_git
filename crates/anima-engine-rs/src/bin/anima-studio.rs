@@ -224,13 +224,13 @@ fn ai_cut(request: AiRequest) -> Result<String, String> {
     let frames = work.join("frames");
     let _ = std::fs::remove_dir_all(&work);
 
-    let extracted = anima_engine_rs::ai::extract_frames(&request.video, &frames)?;
+    let extracted = anima_ai::extract_frames(&request.video, &frames)?;
     let total = Some(extracted);
     request.running.total.store(extracted, Ordering::Relaxed);
 
-    let mut model = anima_engine_rs::ai::Removal::load()?;
+    let mut model = anima_ai::Removal::load()?;
     let running = request.running.clone();
-    let cut = anima_engine_rs::ai::cut_animation(
+    let cut = anima_ai::cut_animation(
         &frames,
         &request.output,
         total,

@@ -1,0 +1,124 @@
+[package]
+name = "anima-engine-rs"
+version.workspace = true
+edition.workspace = true
+# Measured by asking an older toolchain what refuses it: with default features nothing does, and what is left
+# is the language itself — let-chains in `if` conditions, which several modules use. The `studio` feature
+# raises the floor to 1.92, because it pulls in `anima-ai` and therefore ONNX Runtime; a 1.90 toolchain will
+# refuse that combination and name the crate responsible.
+rust-version = "1.88"
+description = "Rust rewrite of AnimaEngine — pure logic core (animation state, frame cache, preferences, i18n)."
+license.workspace = true
+
+[features]
+default = []
+# Enables the Steam Web API adapter (`workshop_web::WorkshopWeb`).
+workshop-web = ["dep:reqwest"]
+# Enables runtime `libsteam_api` binding (`steam::flat`); no build-time SDK.
+steamworks = ["dep:libloading"]
+# Enables BC7 block compression via the vendored bc7enc_rdo (needs a C++
+# toolchain at build time). Quality-first alternative to the lossless cache.
+bc7 = []
+# Enables the `anima-overlay` binary (Wayland layer-shell + wgpu).
+overlay = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:pollster", "dep:bytemuck", "dep:wayland-client", "dep:ksni", "dep:ashpd", "dep:futures-util", "dep:tokio"]
+# Enables the `anima-studio` main window (Iced). `workshop-web` brings the keyless
+# Steam metadata the previews come from.
+studio = ["dep:anima-ai", "dep:iced", "dep:iced_material", "dep:rfd", "workshop-web", "dep:notify", "dep:futures-util", "dep:tokio"]
+# Enables the shepherd's session-bus interface (`dbus_intent`), so other programs can ask it to
+# supervise an animation. `zbus` is already in the tree via the tray; this reuses that copy.
+dbus = ["dep:zbus"]
+# Adds mimalloc as the global allocator. Exists so `examples/alloc_bench.rs` can be run with and without it,
+# because the guideline's figure for it comes from someone else's workload. Remove it, and the dependency
+# below, once that comparison has been made either way.
+mimalloc = ["dep:mimalloc"]
+
+[dependencies]
+anima-ai = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+image = { workspace = true, features = ["gif", "png", "webp", "jpeg"] }
+sha2 = "0.10"
+zstd = "0.13"
+# Also used by `pack` for the Python `.mdaa` / pack archives.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+libloading = { version = "0.8", optional = true }
+wgpu = { version = "29", optional = true }
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"], optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+wayland-client = { version = "0.31", features = ["system", "dlopen"], optional = true }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "tokio"], optional = true }
+# The window watches the control directory instead of asking about it every second.
+notify = { version = "8", optional = true }
+# Same backend features the tray uses, so `dbus` adds no new crates to the tree.
+zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"], optional = true }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"], optional = true }
+# `tokio` is what gives `iced::time::every`: the default `thread-pool` backend has no
+# timer, so a polling subscription needs the tokio backend.
+iced = { version = "0.14.0", features = ["image", "tokio"], optional = true }
+# A native file dialog. The xdg-portal backend on purpose: the default one links GTK3, and this only has
+# to open a picker.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"], optional = true }
+iced_material = { version = "0.14.2", optional = true }
+# Off by default, behind the `mimalloc` feature. See the note above that feature.
+mimalloc = { version = "0.1", optional = true }
+
+[[bin]]
+name = "anima-overlay"
+path = "src/bin/anima-overlay.rs"
+required-features = ["overlay"]
+
+[[bin]]
+name = "anima-overlay-ctl"
+path = "src/bin/anima-overlay-ctl.rs"
+
+[[bin]]
+name = "anima-workshop"
+path = "src/bin/anima-workshop.rs"
+
+[[bin]]
+name = "anima-i18n"
+path = "src/bin/anima-i18n.rs"
+
+[[bin]]
+name = "anima-shepherd"
+path = "src/bin/anima-shepherd.rs"
+# The tray (ksni) comes from the `overlay` feature, and the shepherd is what owns it now.
+required-features = ["overlay"]
+
+[[bin]]
+name = "anima-studio"
+path = "src/bin/anima-studio.rs"
+required-features = ["studio"]
+
+[dev-dependencies]
+tempfile.workspace = true
+gif = "0.13"
+png = "0.17"
+image-webp = "0.2"
+
+[build-dependencies]
+# Compiles the vendored bc7enc_rdo sources when the `bc7` feature is on.
+cc = "1"
+
+[[example]]
+name = "bc7_bench"
+required-features = ["bc7"]
+
+[[example]]
+name = "frame_bench"
+required-features = ["overlay"]
+
+[[example]]
+name = "ai_frame_bench"
+required-features = ["studio"]
+
+# The end-to-end removal test needs the model, which is why it is ignored; it also needs the AI crate, which
+# is why it needs the feature.
+[[test]]
+name = "ai_end_to_end"
+required-features = ["studio"]

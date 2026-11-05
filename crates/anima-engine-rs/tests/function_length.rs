@@ -68,8 +68,15 @@ fn functions_in(path: &Path, text: &str) -> Vec<Found> {
         .iter()
         .position(|line| line.trim_start().starts_with("#[cfg(test)]"))
         .unwrap_or(usize::MAX);
+    // This crate first, then the workspace root, so a sibling crate's files read as `crates/anima-ai/...`
+    // rather than as an absolute path.
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new(""));
     let shown = path
         .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+        .or_else(|_| path.strip_prefix(workspace))
         .unwrap_or(path);
     let mut found = Vec::new();
 
@@ -132,10 +139,26 @@ fn sources(directory: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The source roots this guard covers. `src/ai` moved into its own crate, and a guard that stopped at the
+/// crate boundary would have stopped guarding it; the alternative was a second copy of this file.
+///
+/// The sibling is addressed through the workspace root rather than as `../anima-ai/src`, because `PathBuf`
+/// does not collapse `..` and the path is also used as the display name.
+fn source_roots() -> Vec<PathBuf> {
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = here
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    vec![here.join("src"), workspace.join("crates/anima-ai/src")]
+}
+
 fn all_functions() -> Vec<Found> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    sources(&root, &mut files);
+    for root in source_roots() {
+        sources(&root, &mut files);
+    }
     files.sort();
     files
         .into_iter()
@@ -197,14 +220,15 @@ fn no_function_is_longer_than_the_limit_without_saying_why() {
 }
 
 #[test]
-fn the_scan_reads_the_crate_and_its_binaries() {
+fn the_scan_reads_both_crates() {
     let functions = all_functions();
     let paths: Vec<&str> = functions.iter().map(|f| f.path.as_str()).collect();
-    // Real crates and binaries, not `src/lib.rs`, which only re-exports and has no function to find.
+    // A binary, a library module, and a file in the sibling crate — the one that would go unnoticed if the
+    // scan only looked at this crate's `src`.
     for expected in [
         "src/bin/anima-studio.rs",
         "src/workshop.rs",
-        "src/ai/session.rs",
+        "crates/anima-ai/src/session.rs",
     ] {
         assert!(
             paths.contains(&expected),

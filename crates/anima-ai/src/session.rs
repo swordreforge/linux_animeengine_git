@@ -1,7 +1,7 @@
 //! The ONNX Runtime side: load the model, run it over a frame.
 
-use crate::ai::model::{MODEL_SIZE, model_path};
-use crate::ai::preprocess::{apply_mask, mask_from_output, preprocess};
+use crate::model::{MODEL_SIZE, model_path};
+use crate::preprocess::{apply_mask, mask_from_output, preprocess};
 use ort::session::Session;
 use ort::value::Tensor;
 

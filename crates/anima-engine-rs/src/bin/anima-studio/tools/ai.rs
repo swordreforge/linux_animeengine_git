@@ -22,12 +22,12 @@ impl Studio {
             .spacing(8),
         ]
         .spacing(6);
-        if anima_engine_rs::ai::model_ready() {
+        if anima_ai::model_ready() {
             ai_card = ai_card.push(
                 text(format!(
                     "{} {}",
                     self.i18n.tr("model ready"),
-                    anima_engine_rs::ai::MODEL_FILE
+                    anima_ai::MODEL_FILE
                 ))
                 .size(10),
             );
@@ -37,7 +37,7 @@ impl Studio {
                 text(format!(
                     "{} {}",
                     self.i18n.tr("no model yet — fetch isnet-anime.onnx from"),
-                    anima_engine_rs::ai::MODEL_URL
+                    anima_ai::MODEL_URL
                 ))
                 .size(10),
             );
@@ -118,7 +118,7 @@ impl Studio {
         if !self.ai_path.is_empty() {
             // ffprobe reads the frame count here, where it is fast, so the bar the worker draws
             // can be a real fraction instead of a spinner.
-            let frames = anima_engine_rs::ai::probe_frames(&self.ai_path);
+            let frames = anima_ai::probe_frames(&self.ai_path);
             self.ai_state.reset(frames);
             self.ai_note = match frames {
                 Some(count) => format!("{} {count}", self.i18n.tr("frames")),
@@ -154,13 +154,12 @@ impl Studio {
             self.ai_note = self.i18n.tr("choose an animation first").to_string();
         } else if self.ai_output.trim().is_empty() {
             self.ai_note = self.i18n.tr("choose where to write first").to_string();
-        } else if !anima_engine_rs::ai::model_ready() {
+        } else if !anima_ai::model_ready() {
             self.ai_note = self.i18n.tr("the model is not downloaded yet").to_string();
         } else {
             self.ai_running = true;
             self.ai_note = self.i18n.tr("working…").to_string();
-            self.ai_state
-                .reset(anima_engine_rs::ai::probe_frames(&self.ai_path));
+            self.ai_state.reset(anima_ai::probe_frames(&self.ai_path));
             self.ai_state
                 .stopped
                 .store(false, std::sync::atomic::Ordering::Relaxed);

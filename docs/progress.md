@@ -161,17 +161,21 @@ Interaction and control:
 
 ## Verification
 
-- `cargo test`: **198** passing with default features; **203** with `bc7` (the
-  `bc7` feature needs a C++ toolchain, as does the `overlay,bc7` build); **229**
-  with `studio,workshop-web`; **238** with everything —
-  `--features overlay,bc7,dbus,studio,workshop-web,steamworks`. Five are ignored:
-  four studio tests that need a display, and the end-to-end AI removal, which
-  downloads a 176 MB model.
+- Two crates, so two test runs. `anima-engine-rs`: **193** with default features,
+  **196** with the Steam adapters, **198** with `bc7` (which needs a C++ toolchain,
+  as does `overlay,bc7`), and **233** with every feature. `anima-ai`: **13**. Five
+  are ignored: four studio tests that need a display, and the end-to-end AI
+  removal, which downloads a 176 MB model.
+- The workspace: `crates/anima-engine-rs` and `crates/anima-ai`, with the library
+  and five binaries in the first. `src/ai` referenced nothing else in the library,
+  and it was the only reason the tree depended on ONNX Runtime — so the overlay's
+  dependency graph is 420 lines of `cargo tree` against 1239 with `studio`, and
+  `ort` appears in the second and not the first.
 - `cargo clippy --all-targets`: clean for default and all features.
 - `tests/function_length.rs`: a ratchet on function length — it fails when any
   function passes 150 lines without being on a list with a reason, and when a
   listed one grows or shrinks. `docs/code-audit.md` explains why.
-- `ANIMA_FN_LIMIT=100 cargo test --test function_length -- --nocapture` prints the
+- `ANIMA_FN_LIMIT=100 cargo test -p anima-engine-rs --test function_length -- --nocapture` prints the
   eleven functions between 100 and 150 lines: the next pass, on purpose.
 - Real data: `scan_workshop` parsed the installed `appworkshop_3474900.acf`
   (1 item) and listed item `3828587753`'s 6 `.apng` files.
@@ -1406,12 +1410,13 @@ search field with IME, and Workshop browse/search.
 ## How to run
 
 ```bash
-cargo test                                        # pure logic (129 tests)
-cargo test --features "workshop-web,steamworks"   # + Steam adapters (132)
-cargo test --features bc7                         # + BC7 encode/decode (133)
-cargo run --release --features bc7 --example bc7_bench -- <animation>
-cargo run --bin anima-i18n -- verify <catalog.json>   # per-language health
-cargo run --bin anima-workshop -- watch --once        # installed items (polling fallback)
+cargo test -p anima-engine-rs                     # pure logic (193 tests)
+cargo test -p anima-ai                            # the AI removal (13 tests)
+cargo test -p anima-engine-rs --features "workshop-web,steamworks"  # + Steam (196)
+cargo test -p anima-engine-rs --features bc7      # + BC7 encode/decode (198)
+cargo run -p anima-engine-rs --release --features bc7 --example bc7_bench -- <animation>
+cargo run -p anima-engine-rs --bin anima-i18n -- verify <catalog.json>  # per-language health
+cargo run -p anima-engine-rs --bin anima-workshop -- watch --once  # installed items (polling)
 bash packaging/install.sh --catalog <catalog.json>    # portable user-local install
 curl -fsSL <url> | sh -s -- --repo <git-url>          # build + install one-liner
 ANIMA_DUMP_GLOBALS=1 anima-overlay <anim>             # print the compositor globals

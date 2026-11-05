@@ -4,7 +4,7 @@
 //! produces a mask, just the wrong one. Two details in particular are not the obvious ones, and both are
 //! pinned by tests below.
 
-use crate::ai::model::MODEL_SIZE;
+use crate::model::MODEL_SIZE;
 
 /// The mean and deviation the DIS session normalises with. `std` is all ones, deliberately: every
 /// neighbouring session in rembg uses ImageNet's `(0.229, 0.224, 0.225)` and this one does not.

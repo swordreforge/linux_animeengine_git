@@ -12,9 +12,9 @@ strangers, and ours has no strangers.
 **How to check any of this.** Run these before saying something is true:
 
 ```text
-cargo test --features overlay,bc7,dbus,studio,workshop-web,steamworks
-cargo clippy --all-targets --features overlay,bc7,dbus,studio,workshop-web,steamworks
-ANIMA_FN_LIMIT=100 cargo test --test function_length -- --nocapture
+cargo test -p anima-engine-rs --features overlay,bc7,dbus,studio,workshop-web,steamworks
+cargo clippy -p anima-engine-rs --all-targets --features overlay,bc7,dbus,studio,workshop-web,steamworks
+ANIMA_FN_LIMIT=100 cargo test -p anima-engine-rs --test function_length -- --nocapture
 ```
 
 Counts quoted below are from the commit that added this file. They are here to be worked down to zero, and
@@ -25,7 +25,7 @@ should be re-measured rather than trusted.
 | | Do | Don't |
 |---|---|---|
 | **M-LINT-OVERRIDE-EXPECT** | Silence a lint with `#[expect(clippy::x, reason = "why")]`, which fails when the lint stops firing | Use `#[allow]` outside generated code — it goes stale silently. *(both former sites are dealt with: one fixture was rewritten so it no longer needs the lint, the other is an `#[expect]` carrying its reason)* |
-| **M-MSRV** | Declare `rust-version` in `Cargo.toml`, and find the number by running a `cargo +<older toolchain>` command: cargo names every dependency that refuses that toolchain, and the highest refusal is the floor | Derive it from the language features you use. Ours is 1.92, set by the non-optional `ort` (ONNX Runtime) — not the 1.88 that let-chains and `is_multiple_of` suggest, which is what I wrote first |
+| **M-MSRV** | Declare `rust-version` in `Cargo.toml`, and find the number by running a `cargo +<older toolchain>` command: cargo names every dependency that refuses that toolchain, and the highest refusal is the floor | Derive it from the language features you use. Ours is 1.92 in `anima-ai`, set by `ort` (ONNX Runtime) — not the 1.88 that let-chains and `is_multiple_of` suggest, which is what I wrote first. The engine is 1.88, and only reaches 1.92 through the `studio` feature that pulls the AI crate in, which is the point of having two numbers |
 | **M-STATIC-VERIFICATION** | Keep `cargo clippy --all-targets` at zero for every feature set we ship. The function-length ratchet is part of it | Add a binary without adding it to a feature set that CI builds |
 
 ## Errors
@@ -65,7 +65,7 @@ should be re-measured rather than trusted.
 | **The ratchet** | Keep every function under 150 lines. It is enforced by `tests/function_length.rs` | Add to its `KNOWN` list without a one-line reason next to the entry |
 | **M-BALANCED-MODULES** | Group by responsibility in files: `bin/anima-overlay/{gpu,frames,pipelines,config,wayland}.rs`, `bin/anima-studio/tools/{key,mp4,ai,mod}.rs` | Let a binary file grow past roughly 2600 lines, or a library file past 1000, without a plan |
 | **Library size** | Keep library functions under 100 lines; every one is today, the largest being `shepherd::poll` at exactly 100. Keep library files under about 1000 lines | Assume a large file is fine because its functions are small — `anim/mod.rs` passes 1540 lines with a 77-line maximum function, so its problem is file size rather than function size, and it is the next candidate |
-| **M-SMALLER-CRATES** | When a subtree is self-contained and independently testable, consider its own crate. `src/ai/` — 712 lines, 13 tests, nothing over 52 — is the candidate | Split for its own sake — a crate boundary costs visibility rules and a workspace to manage |
+| **M-SMALLER-CRATES** | When a subtree is self-contained and independently testable, give it its own crate. *(done: `anima-ai` holds the AI removal, which referenced nothing else in the library and no longer imposes ONNX Runtime on the overlay's build)* | Split for its own sake — a crate boundary costs visibility rules, a workspace and a guard that now reads two `src` trees |
 
 ## Tests
 
@@ -102,6 +102,14 @@ should be re-measured rather than trusted.
 | **C-EXAMPLE** / **M-DESIGN-FOR-AI** | Put a runnable example on public API. Agents and newcomers read these first | Ship public API with no example anywhere. *(the library still has no rustdoc examples; `examples/log_events.rs` is the first in `examples/` that shows how to call something rather than measure it)* |
 | **M-DESIGN-FOR-AI** | Keep modules documented, APIs idiomatic, and types strong — compiler checks are what makes an agent's edits safe | Rely on conversation history as the documentation |
 | **M-DOCUMENTED-MAGIC** | Name a number and say where it came from: `ASSET_PREVIEW_PX`, `MAX_IDS_PER_REQUEST` | Leave `100` or `512` in place with no name. *(126 named constants so far)* |
+
+## Project
+
+| | Do | Don't |
+|---|---|---|
+| **M-CRATES-FLAT-FOLDER** | One workspace `Cargo.toml` at the root, with both crates in a single direct subdirectory: `crates/anima-engine-rs` and `crates/anima-ai` | Leave a crate at the root because it was there first |
+| **M-CARGO-WORKSPACE** | Shared metadata in `[workspace.package]`; `[workspace.dependencies]` for anything two crates share or that crosses the boundary, so `anima-ai` is declared once with `version` and `path` | Duplicate a version in two manifests, or enable a dependency's features in the workspace rather than in the crate that wants them |
+| **M-CRATES-IN-WORKSPACE** | Every crate is a member, and an intra-workspace dependency is written `anima-ai.workspace = true` | Depend on a sibling by relative path, which lets its version drift |
 
 ## Deliberately not applicable
 
@@ -152,7 +160,7 @@ benchmark are kept, off by default, so that costs one build.
 Two benchmarks, both run on this machine and both kept as examples so the numbers can be reproduced and
 compared against. The first one's answer was not what I expected.
 
-**The overlay's per frame** — `cargo run --release --features overlay --example frame_bench` (add an animation path for the real
+**The overlay's per frame** — `cargo run -p anima-engine-rs --release --features overlay --example frame_bench` (add an animation path for the real
 numbers below), 12 frames of 480x270 on an Intel Arc MTL through Vulkan:
 
 | | per rebuild | rects | per second at 60 fps |
@@ -187,7 +195,7 @@ the knob is `ANIMA_REGION_SOFT_RECTS`: at 256, `boeeee.apng`'s 264 rectangles wo
 8 ms/s instead of 31, paying for it in two-pixel-batch input accuracy. Worth trading only if the 3% ever shows
 up somewhere.
 
-**The AI removal's CPU stages** — `cargo run --release --example ai_frame_bench`, 1280x720 frames:
+**The AI removal's CPU stages** — `cargo run -p anima-engine-rs --release --features studio --example ai_frame_bench`, 1280x720 frames:
 
 | | per frame |
 |---|---|
@@ -208,8 +216,8 @@ covers, ignored, because it wants the 176 MB model.
 
 ## Outstanding, in the order worth doing
 
-1. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
-   77-line maximum function, is the separate case: it wants splitting by subject, not by function.
+1. `anim/mod.rs`, at 1540 lines with a 77-line maximum function, is the next candidate: it wants splitting by
+   subject, not by function.
 2. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
    future readers rather than a resolution.
 
