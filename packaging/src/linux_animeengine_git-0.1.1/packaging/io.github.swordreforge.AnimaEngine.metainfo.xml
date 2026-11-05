@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.swordreforge.AnimaEngine</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>AnimaEngine</name>
+  <summary>Animated .apng/.gif overlays on Wayland</summary>
+  <description>
+    <p>
+      AnimaEngine keeps a transparent animation anchored above normal windows on
+      the niri Wayland compositor, drawn with a layer-shell surface and wgpu.
+      Frames are decoded once and cached; optional BC7 blocks keep large
+      animations small on the GPU, and transparent padding is cropped away so the
+      art can reach a screen edge.
+    </p>
+    <p>
+      Companion tools control the overlay (input mode, scale, rotation, position),
+      download and play Steam Workshop items through SteamCMD, and manage the
+      translation catalog.
+    </p>
+  </description>
+  <launchable type="desktop-id">anima-engine-overlay.desktop</launchable>
+  <provides>
+    <binary>anima-overlay</binary>
+    <binary>anima-overlay-ctl</binary>
+    <binary>anima-workshop</binary>
+    <binary>anima-i18n</binary>
+    <binary>anima-shepherd</binary>
+    <binary>anima-studio</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+    <category>Graphics</category>
+  </categories>
+  <developer id="io.github.swordreforge">
+    <name>swordreforge</name>
+  </developer>
+  <url type="homepage">https://store.steampowered.com/app/3474900/</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-04"/>
+  </releases>
+</component>

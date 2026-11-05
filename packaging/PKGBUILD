@@ -1,6 +1,6 @@
 # Maintainer: AnimaEngine
 pkgname=anima-engine
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Animated desktop overlays, a Workshop browser, and AI background removal. Builds from source
         with every feature: about ten to twenty minutes, because the release profile uses fat LTO and one
@@ -28,7 +28,7 @@ optdepends=(
 # The tarball is named after `$pkgname`; its contents carry the repository name, which is a different string.
 _archive=linux_animeengine_git
 source=("$pkgname-$pkgver.tar.gz::https://github.com/swordreforge/linux_animeengine_git/archive/v$pkgver.tar.gz")
-sha256sums=('c506b1479783a2180eb1e8b6dac9f69631500782510cdcf3d12a0684657c7e18')
+sha256sums=('95f0b31ea4c123e1e757951c75240c7adcb3a87745d26f8eebd7a55cddd6f10f')
 
 build() {
   cd "$_archive-$pkgver"
@@ -39,7 +39,10 @@ package() {
   cd "$_archive-$pkgver"
   # The install script already takes a prefix and already validates what it copies; `--no-validate` keeps
   # desktop-file-utils and appstream out of the build dependencies, and the validators run in check() instead.
-  PREFIX="$pkgdir/usr" ./packaging/install.sh --no-validate
+    # `install.sh` has two destinations, not one: binaries go under `PREFIX`, desktop entries and icons
+  # under `XDG_DATA_HOME`. Setting only the first put those into the packager's own home and left the
+  # package without a menu entry — a real `makepkg` is the only thing that would have shown it.
+  PREFIX="$pkgdir/usr" XDG_DATA_HOME="$pkgdir/usr/share" ./packaging/install.sh --no-validate
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 packaging/anima-shepherd.service \
     "$pkgdir/usr/lib/systemd/user/anima-shepherd.service"
