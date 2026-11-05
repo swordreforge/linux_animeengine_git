@@ -139,6 +139,14 @@ Interaction and control:
   (flat API bridge, subscribe/download flow, three-tier browse fallback, upload).
 - `docs/overlay-control.md` — input modes, the `anima-overlay-ctl` CLI, niri
   keybindings, tray and portal shortcuts.
+- `docs/code-audit.md` — the audit of the two large binaries and the splits that
+  came out of it: before-and-after numbers, the move-then-let-the-compiler-talk
+  method, the nine lessons that cost time, the function-length ratchet, and what
+  was deliberately left alone and why.
+- `docs/python-app-feature-map.md` — the whole Python app as a porting checklist,
+  with the parts that are not worth porting named as such.
+- `docs/python-main-window-recovery.md` — how the main window's bytecode was
+  recovered from the shipped build, including where the tools stop working.
 - `examples/scan_workshop.rs` — scan a real workshop content dir and print what
   the app would see.
 - `anima-workshop` (bin, no extra features): `roots`, `libraries`, `list`,
