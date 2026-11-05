@@ -142,7 +142,24 @@ judgement rather than a measurement, it says so.
 
 Where the repository has data that says a book technique does not pay here.
 
-**1. mimalloc as the global allocator.** The book recommends an alternative allocator for applications and
+**1. Region coarsening (`ANIMA_REGION_STEP=auto`) — the knob makes it slower.** Measured on the largest clip in
+the library, a 183 MB APNG, at the instance's persisted 40 % scale, twelve seconds each, with the `Debug` events
+added in commit `20210c0`:
+
+| `ANIMA_REGION_STEP` | step seen | rects (mean) | scan | install | total |
+|---|---|---|---|---|---|
+| `off` (the default) | 1 | 1101 | **10.51 ms/s** | 0.98 ms/s | 11.49 ms/s = 1.1 % |
+| `auto` | 1 and 2 | **548** | **15.75 ms/s** | 0.67 ms/s | 16.42 ms/s = 1.6 % |
+
+Coarsening halves the rectangles and makes the scan *slower*, because `apply_opaque_region` runs a full scan,
+finds the count over the soft budget, and runs it again at the coarser step: on any frame over 768 rectangles
+the saving has to cover a scan whose result was thrown away. The policy is worth revisiting rather than
+disabling — deciding the step from the *previous* frame's count would cost one scan — but as it stands, leaving
+it off is measured to be better, and this is the opposite of what the knob is for. Every figure is per clip
+*and* per scale: the same clip at another `scale_percent` gives another number, so these are not comparable
+across clips.
+
+**2. mimalloc as the global allocator.** The book recommends an alternative allocator for applications and
 quotes "large improvements … in practice"; Microsoft's guideline quotes "up to 25 %". That describes someone
 else's workload, so `examples/alloc_bench.rs` measures ours. Intel Core Ultra 7 155H, glibc 2.44, rustc 1.99.1,
 mimalloc 0.1.52, best of fifteen rounds (`docs/rust-guidelines.md`; also commit `0744bd1`):

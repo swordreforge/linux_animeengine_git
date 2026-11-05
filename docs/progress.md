@@ -1429,6 +1429,10 @@ ANIMA_DUMP_GLOBALS=1 anima-overlay <anim>             # print the compositor glo
 cargo run --release --example cache_bench -- <animation>   # zstd vs PNG cache
 
 cargo clippy --all-targets --features "overlay,workshop-web,steamworks"
+cargo clippy --all-targets --features "overlay"
+# Run both. A warning that exists in one feature combination and not another is invisible to the other one —
+# the overlay built without `bc7` warns about a field that the `bc7` build uses, and only the second command
+# sees it.
 
 cargo run --example scan_workshop -- ~/.local/share/Steam/steamapps/workshop/content/3474900
 
