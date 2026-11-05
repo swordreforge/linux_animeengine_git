@@ -20,3 +20,33 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
+
+# Runtime speed, at the cost of build time, binary size and backtraces. `docs/rust-performance.md` lists every
+# one of these as unmeasured; this is the profile to measure them with, one flag at a time, against
+# `examples/frame_bench.rs` with its fifty rounds. Two notes kept beside the values:
+#
+# `panic = "abort"` and `strip = true` together are why a release backtrace is poorer than it was. That is the
+# trade; `docs/rust-performance.md` records it.
+#
+# The dependencies are built for speed as well, not for size. An `opt-level = "z"` there is the common
+# companion to this profile and would be the wrong one here: it optimizes the crates we do not control for
+# *size*, which is the opposite of what this profile is for.
+[profile.release]
+opt-level = 3
+lto = "fat"
+rpath = false
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+debug = false
+strip = true
+debug-assertions = false
+incremental = false
+
+[profile.release.package."*"]
+opt-level = 3
+codegen-units = 1
+strip = true
+debug = false
+debug-assertions = false
+overflow-checks = false
