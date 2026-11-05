@@ -17,7 +17,8 @@ edits go wrong, and the only way to keep a refactor from being undone is a check
 | Tests | 196 | **246** |
 | Clippy | — | **0** |
 
-The library side was already healthy: apart from `anim/mod.rs` (1540 lines, largest function 77) no library
+The library side was already healthy: apart from `anim/mod.rs` (1540 lines, largest function 77, since split
+by subject into five modules) no library
 file has a function over 100 lines. All of the trouble was in the binaries, which is worth knowing before
 deciding that a big file is a big problem — `src/ai/` was 712 lines with 13 tests and no function over 52, and
 that is the shape the rest aims at — it is now its own crate, `anima-ai`, for exactly that reason.

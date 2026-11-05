@@ -64,7 +64,7 @@ should be re-measured rather than trusted.
 |---|---|---|
 | **The ratchet** | Keep every function under 150 lines. It is enforced by `tests/function_length.rs` | Add to its `KNOWN` list without a one-line reason next to the entry |
 | **M-BALANCED-MODULES** | Group by responsibility in files: `bin/anima-overlay/{gpu,frames,pipelines,config,wayland}.rs`, `bin/anima-studio/tools/{key,mp4,ai,mod}.rs` | Let a binary file grow past roughly 2600 lines, or a library file past 1000, without a plan |
-| **Library size** | Keep library functions under 100 lines; every one is today, the largest being `shepherd::poll` at exactly 100. Keep library files under about 1000 lines | Assume a large file is fine because its functions are small — `anim/mod.rs` passes 1540 lines with a 77-line maximum function, so its problem is file size rather than function size, and it is the next candidate |
+| **Library size** | Keep library functions under 100 lines; every one is today, the largest being `shepherd::poll` at exactly 100. Keep library files under about 1000 lines | Assume a large file is fine because its functions are small — `anim/mod.rs` was 1541 lines with a 77-line maximum function, so its problem was file size rather than function size, which is why it was split by subject rather than by function |
 | **M-SMALLER-CRATES** | When a subtree is self-contained and independently testable, give it its own crate. *(done: `anima-ai` holds the AI removal, which referenced nothing else in the library and no longer imposes ONNX Runtime on the overlay's build)* | Split for its own sake — a crate boundary costs visibility rules, a workspace and a guard that now reads two `src` trees |
 
 ## Tests
@@ -216,13 +216,13 @@ covers, ignored, because it wants the 176 MB model.
 
 ## Outstanding, in the order worth doing
 
-1. `anim/mod.rs`, at 1540 lines with a 77-line maximum function, is the next candidate: it wants splitting by
-   subject, not by function.
-2. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
+1. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
    future readers rather than a resolution.
 
 Done from this list: the two lint overrides; `rust-version`, which turned out to be 1.92 rather than the 1.88 I
 derived; `Debug` on the public types, which is now a `#![deny(missing_debug_implementations)]` in
 `src/lib.rs` rather than a promise — a new public type without it fails the build, and that guard covers the
-library only, which is the scope the rule is about, since a `pub` type in a binary is not public API; and the
-console output, which `log` now handles in all three binaries, with `examples/log_events.rs` to see the format.
+library only, which is the scope the rule is about, since a `pub` type in a binary is not public API; the
+console output, which `log` now handles in all three binaries, with `examples/log_events.rs` to see the
+format; and `anim/mod.rs`, which held four subjects at once and is now five modules around a façade, with the
+frame store left in `mod.rs` beside the tests that describe it.
