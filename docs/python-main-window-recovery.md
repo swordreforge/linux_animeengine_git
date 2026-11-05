@@ -158,3 +158,37 @@ agree about which is the default.
 
 For a port: keep `loop`/`duration`/`disposal` inheritance and `-plays 0`; replace the cube with a real
 distance in a perceptual space; give alpha soft edges; and pick a default somebody could see the effect of.
+
+## Worked example: the AI removal pipeline (`eliminarFondo`)
+
+The colour-key tool's opposite in every way that matters: this one **does** produce soft edges, and its
+troubles are in the plumbing instead. Four stages, all of them visible in 206 lines.
+
+1. **Extract** — `ffmpeg -i in -pix_fmt rgba out/frame_%04d.png`. RGBA is preserved through the whole
+   pipeline, which is the thing the colour-key tool also gets right.
+2. **Remove** — per frame, one call to `rembg.remove()` with the session made once:
+   `post_process_mask=True, alpha_matting=True, foreground=270, background=20, erode=11`. Those are real
+   matting parameters, so edges are feathered rather than binary. Source frames are deleted as they are
+   read, so the intermediate directory never holds two copies.
+3. **Model** — `new_session(name, providers=[CUDAExecutionProvider | CPUExecutionProvider])`, the provider
+   picked from the detected device. The **name comes from the chosen file's basename**, so renaming the
+   model file changes which model loads, and the file picker opens at a hard-coded
+   `C:/Users/<user>/.u2net`.
+4. **Encode** — GIF through Pillow with `loop=0` and **`duration=100` as a default parameter**, so the
+   source animation's timing is *not* inherited; APNG through `ffmpeg -plays 0`; WebP through
+   `ffmpeg -c:v libwebp_anim -lossless 1 -qscale 100`.
+
+### The two things a port should not copy
+
+* **`-framerate 60`, again.** This is the third tool in a row to hard-code it. The GIF path has its own
+  version of the same problem: a default `duration=100` where the source file already knows the answer.
+* **`-qscale 100` is not a libwebp option.** It is ignored rather than honoured, so "maximum quality" on
+  the WebP path is a comment, not a setting — and nothing in the UI would tell you.
+
+### The thing that looks like a mistake and is not
+
+`process_frames` runs the model **sequentially**, where its sibling `RemoveBackWeb` spreads its (much
+cheaper) per-pixel work over a process pool. That is not an oversight: an ONNX session belongs to the
+process that created it, so a pool would either need one session per worker — loading the model N times —
+or would serialise anyway. Sequential inference with one session is the correct shape for this pipeline,
+and it is worth writing down so the next reader does not "fix" it.
