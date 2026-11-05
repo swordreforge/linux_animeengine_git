@@ -123,3 +123,38 @@ lives in a handler and is **hard-coded**, so the honest finding is that the user
 For a port, the interesting part is the inverse of that list: frame rate, quality, lossless, scale and
 loop count are all things the original decided for the user, and the `ffmpeg` argument lists above are the
 part worth copying exactly.
+
+## Worked example: the colour-key background removal
+
+The other side of the MP4 finding. This one **is** called from the main window — its Tools page imports
+`RemoveBackWeb` and `eliminarFondo`, so both the colour-key and the AI removal are behind buttons there —
+and unlike the MP4 tool it does have controls. What it does with them is the interesting part.
+
+The whole decision is this, once per pixel, in Python, over `.getdata()` (parallelised across frames with
+a process pool):
+
+```python
+threshold = int((percent / 100) * 255)          # 50% -> 127
+if abs(r - bg[0]) <= threshold and abs(g - bg[1]) <= threshold and abs(b - bg[2]) <= threshold:
+    alpha = 0                                    # fully transparent, or nothing at all
+```
+
+Three consequences worth knowing before copying it:
+
+* **It is a per-channel box in RGB**, not a distance: a pixel is "background" when every channel is within
+  the tolerance, so the region it removes is a cube, not a ball. Ideas of "similar colour" that live near
+  that cube's corners are kept.
+* **The alpha is binary.** There is no partial transparency and no feathering, so a keyed edge is hard.
+* **The default is 50%, and 50% is ±127 of 255.** A white background with the default setting removes
+  anything within half the range of white on all three channels at once — which is a very aggressive key
+  to start from, and the label does not hint at the scale.
+
+The save side is better than the load side, and it is worth copying exactly: for **GIF** it goes through
+Pillow with `loop` and `duration` **inherited from the source animation** and `disposal=2`, which means a
+re-saved file keeps its timing; **APNG** goes through `ffmpeg` with `-plays 0` — also correct — but
+`-framerate 60`, hard-coded, the same flaw as the MP4 tool. Resize is offered at 25/50/75 and a custom
+value, and it is a separate save path (`save_gif` versus `save_gif_without_resizing`), so the two do not
+agree about which is the default.
+
+For a port: keep `loop`/`duration`/`disposal` inheritance and `-plays 0`; replace the cube with a real
+distance in a perceptual space; give alpha soft edges; and pick a default somebody could see the effect of.
