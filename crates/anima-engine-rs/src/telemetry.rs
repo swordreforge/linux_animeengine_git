@@ -92,54 +92,6 @@ pub struct Sample {
     pub threads: Vec<ThreadSample>,
 }
 
-/// The readings so far, oldest first, bounded. A chart needs the history and nothing else does, so the cap
-/// is the only reason this type exists.
-///
-/// `Clone` because a canvas widget is handed the chart by value on every view: the copy is at most a few
-/// hundred readings and is not measurable next to the reading that produced them.
-#[derive(Debug, Clone, Default)]
-pub struct History {
-    points: Vec<Sample>,
-    limit: usize,
-}
-
-impl History {
-    pub fn new(limit: usize) -> Self {
-        Self {
-            points: Vec::new(),
-            limit: limit.max(2),
-        }
-    }
-
-    pub fn push(&mut self, sample: Sample) {
-        if self.points.len() == self.limit {
-            self.points.remove(0);
-        }
-        self.points.push(sample);
-    }
-
-    pub fn points(&self) -> &[Sample] {
-        &self.points
-    }
-
-    pub fn latest(&self) -> Option<&Sample> {
-        self.points.last()
-    }
-
-    /// The series a chart wants: (values, maximum seen). An empty history is (empty, 0.0) so a caller can
-    /// draw an axis without special-casing.
-    pub fn series(&self, pick: impl Fn(&Sample) -> Option<f32>) -> (Vec<f64>, f64) {
-        let values: Vec<f64> = self
-            .points
-            .iter()
-            .filter_map(|s| pick(s).map(f64::from))
-            .collect();
-        let peak = values.iter().copied().fold(0.0f64, f64::max);
-        (values, peak)
-    }
-}
-
-/// Keeps the previous reading so the next one can be a rate rather than a total.
 #[derive(Debug, Default)]
 pub struct Sampler {
     process: Process,
@@ -474,30 +426,5 @@ mod tests {
         assert!(first.gpu.is_none());
         let second = sampler.sample();
         assert!(second.cpu >= 0.0);
-    }
-
-    #[test]
-    fn history_keeps_the_last_points_and_can_still_draw() {
-        let mut history = History::new(3);
-        for cpu in [1.0, 2.0, 3.0, 4.0] {
-            history.push(Sample {
-                cpu,
-                ..Sample::default()
-            });
-        }
-        assert_eq!(history.points().len(), 3);
-        assert_eq!(
-            history.points().first().unwrap().cpu,
-            2.0,
-            "the oldest went"
-        );
-        let (values, peak) = history.series(|sample| Some(sample.cpu));
-        assert_eq!(values, vec![2.0, 3.0, 4.0]);
-        assert_eq!(peak, 4.0);
-        assert_eq!(
-            history.series(|sample| sample.gpu).0.len(),
-            0,
-            "no GPU series"
-        );
     }
 }

@@ -1666,10 +1666,11 @@ impl Studio {
     /// Read both processes and say what they cost. Nothing is drawn from this yet: the charts come next, and
     /// until they exist the log is the way to see whether the numbers are right.
     fn sample_telemetry(&mut self) {
+        let at = std::time::Instant::now();
         let sample = self.resources.sample();
         log_resource("studio", std::process::id(), &sample);
         for chart in &mut self.charts {
-            chart.push("studio", &sample);
+            chart.push("studio", &sample, at);
         }
 
         // Discovered, not remembered — see `overlays` on the struct. The control directory says which
@@ -1712,7 +1713,7 @@ impl Studio {
         if !self.overlays.is_empty() {
             log_overlays(self.overlays.len(), &sum);
             for chart in &mut self.charts {
-                chart.push("overlays", &sum);
+                chart.push("overlays", &sum, at);
             }
         }
     }

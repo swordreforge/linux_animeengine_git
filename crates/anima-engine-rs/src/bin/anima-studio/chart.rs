@@ -12,15 +12,18 @@
 //! makes two subjects comparable, and because three charts of one metric each is the same code three times
 //! rather than three nearly identical pieces of code.
 //!
-//! The readings live here rather than in the window because nothing else reads them, and because the chart is
-//! the only thing that knows how much history it needs.
+//! Each point carries the instant it was read, and the x axis is that in seconds from the oldest point still
+//! held. A tick that never fired is therefore a gap in the line rather than a compression of it: the readings
+//! come from a timer, and a chart that counts readings instead of time would draw the same shape whether they
+//! arrived every second or every ten.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::time::Instant;
 
 use iced::widget::canvas;
 use iced::{Color, Point, Rectangle, Renderer, mouse};
 
-use anima_engine_rs::telemetry::{History, Sample};
+use anima_engine_rs::telemetry::Sample;
 
 /// How much history to keep: five minutes at one sample per second.
 const POINTS: usize = 300;
@@ -40,17 +43,21 @@ const LABEL_BAND: f32 = 16.0;
 pub struct Chart {
     /// What is drawn, for the label: `memory`, `cpu`, `gpu`.
     name: &'static str,
-    /// What the numbers are in, for the label. In the unit rather than in a sentence, because a label on a
-    /// chart is read at a glance and the field names in the log already carry the same units.
+    /// What the numbers are in, for the label. The unit rather than a sentence, because a label on a chart is
+    /// read at a glance and the field names in the log already carry the same units.
     unit: &'static str,
     /// Which number of a reading this chart draws. `None` means the reading does not have it — a process that
     /// has not touched the GPU reports nothing rather than zero — and such a reading is left out of the line
     /// rather than drawn as a drop to the floor.
     pick: fn(&Sample) -> Option<f32>,
-    /// The smallest ceiling to scale to, so a chart of zeros still has an axis rather than a line through it.
+    /// The smallest ceiling to scale to, so a chart of zeros still has an axis rather than a line lying on it.
     floor: f32,
-    histories: BTreeMap<&'static str, History>,
+    /// The instant each reading was taken, and its value.
+    series: BTreeMap<&'static str, VecDeque<(Instant, f32)>>,
 }
+
+/// One point as drawn: seconds from the oldest point still held, and the value.
+type Plotted = (f64, f64);
 
 impl Chart {
     /// What a process costs.
@@ -76,31 +83,51 @@ impl Chart {
             unit,
             pick,
             floor: 1.0,
-            histories: BTreeMap::new(),
+            series: BTreeMap::new(),
         }
     }
 
-    /// Add one reading for one subject, starting its series the first time it appears.
-    pub fn push(&mut self, who: &'static str, sample: &Sample) {
-        self.histories
-            .entry(who)
-            .or_insert_with(|| History::new(POINTS))
-            .push(sample.clone());
+    /// Add one reading for one subject, at the instant it was taken, starting that subject's line the first
+    /// time it appears. A reading with nothing to draw is dropped here rather than at the drawing, so the times
+    /// and the values cannot get out of step.
+    pub fn push(&mut self, who: &'static str, sample: &Sample, at: Instant) {
+        let Some(value) = (self.pick)(sample) else {
+            return;
+        };
+        let points = self.series.entry(who).or_default();
+        if points.len() == POINTS {
+            points.pop_front();
+        }
+        points.push_back((at, value));
     }
 
-    /// Every series in this chart's unit, and the tallest value across them, which is what the y axis is
-    /// scaled to. One scale for every line, because two charts that share an axis can be compared and two that
-    /// do not cannot.
-    fn series(&self) -> (Vec<Vec<f64>>, f64) {
-        let pick = self.pick;
+    /// Every line in this chart's unit, on a shared scale, and the tallest value across them.
+    ///
+    /// The x axis starts at the oldest point still held rather than at the first reading ever taken: a window
+    /// measured from a fixed origin would keep its last five minutes squeezed into the right-hand edge.
+    fn window(&self) -> (Vec<Vec<Plotted>>, f64) {
+        let Some(oldest) = self
+            .series
+            .values()
+            .filter_map(|points| points.front())
+            .map(|(at, _)| *at)
+            .min()
+        else {
+            return (Vec::new(), 0.0);
+        };
         let mut peak: f64 = 0.0;
         let series = self
-            .histories
+            .series
             .values()
-            .map(|history| {
-                let (values, own_peak) = history.series(pick);
-                peak = peak.max(own_peak);
-                values
+            .map(|points| {
+                points
+                    .iter()
+                    .map(|(at, value)| {
+                        let seconds = at.saturating_duration_since(oldest).as_secs_f64();
+                        peak = peak.max(f64::from(*value));
+                        (seconds, f64::from(*value))
+                    })
+                    .collect()
             })
             .collect();
         (series, peak)
@@ -119,8 +146,8 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let (series, peak) = self.series();
-        let names: Vec<&'static str> = self.histories.keys().copied().collect();
+        let (series, peak) = self.window();
+        let names: Vec<&'static str> = self.series.keys().copied().collect();
 
         // A wash behind the lines, so they are legible on either scheme. The window's own background shows
         // through the rest.
@@ -133,31 +160,39 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
         let width = bounds.width;
         let usable = (bounds.height - LABEL_BAND).max(1.0);
         let ceiling = (peak * 1.1).max(f64::from(self.floor));
-        let count = series.iter().map(Vec::len).max().unwrap_or(0);
+        // One reading is a point and a line needs two of them, which is what the span being at least a
+        // millisecond guards: it cannot be zero once anything has been read.
+        let span = series
+            .iter()
+            .filter_map(|points| points.last())
+            .map(|(seconds, _)| *seconds)
+            .fold(0.0f64, f64::max)
+            .max(0.001);
 
-        if count >= 2 {
-            for (index, values) in series.iter().enumerate() {
-                let colour = COLOURS[index % COLOURS.len()];
-                let mut line = canvas::path::Builder::new();
-                for (position, value) in values.iter().enumerate() {
-                    let x = (position as f32 / (count - 1) as f32) * width;
-                    let y = LABEL_BAND + usable * (1.0 - (value / ceiling).min(1.0) as f32);
-                    let point = Point::new(x, y);
-                    if position == 0 {
-                        line.move_to(point);
-                    } else {
-                        line.line_to(point);
-                    }
-                }
-                frame.stroke(
-                    &line.build(),
-                    canvas::Stroke::default().with_color(colour).with_width(1.5),
-                );
+        for (index, points) in series.iter().enumerate() {
+            if points.len() < 2 {
+                continue;
             }
+            let colour = COLOURS[index % COLOURS.len()];
+            let mut line = canvas::path::Builder::new();
+            for (position, (seconds, value)) in points.iter().enumerate() {
+                let x = (seconds / span).min(1.0) as f32 * width;
+                let y = LABEL_BAND + usable * (1.0 - (value / ceiling).min(1.0) as f32);
+                let point = Point::new(x, y);
+                if position == 0 {
+                    line.move_to(point);
+                } else {
+                    line.line_to(point);
+                }
+            }
+            frame.stroke(
+                &line.build(),
+                canvas::Stroke::default().with_color(colour).with_width(1.5),
+            );
         }
 
         // The chart names itself, then each line in its own colour with its latest value: a chart of two lines
-        // that does not say which is which is a decoration, and neither is one that does not say what it counts.
+        // that does not say which is which is a decoration, and so is one that does not say what it counts.
         frame.fill_text(canvas::Text {
             content: format!("{} ({})", self.name, self.unit),
             position: Point::new(6.0, 24.0),
@@ -168,8 +203,8 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
         for (index, name) in names.iter().enumerate() {
             let latest = series
                 .get(index)
-                .and_then(|values| values.last())
-                .copied()
+                .and_then(|points| points.last())
+                .map(|(_, value)| *value)
                 .unwrap_or(0.0);
             frame.fill_text(canvas::Text {
                 content: format!("{name} {latest:.1}"),
