@@ -81,7 +81,7 @@ should be re-measured rather than trusted.
 | | Do | Don't |
 |---|---|---|
 | **Measure first** | Quote a number you produced with a command in this tree | Quote a percentage from a document, or from memory. See `docs/code-audit.md` for why |
-| **M-HOTPATH** | Benchmark the two paths that matter — the overlay's per-frame upload and the AI batch — before changing them | Optimize a path nobody has profiled. There are no benchmarks in this repository yet |
+| **M-HOTPATH** | Time a path before changing it, with the examples kept for that purpose: `frame_bench` for the overlay's per frame, `ai_frame_bench` for the AI removal's CPU stages, `alloc_bench`, `cache_bench`, `bc7_bench` | Optimize a path nobody has profiled — the numbers below exist because the first guess about the overlay was wrong |
 | **M-MEM-REUSE** / **M-INITIAL-CAPACITY** | `Vec::with_capacity` when the size is known, as the preprocessor does for the 1024×1024×3 input | Grow a per-frame buffer from empty every frame |
 | **M-THROUGHPUT** | Optimize for throughput in the batch paths, latency in the overlay | Trade one for the other without saying which |
 | **M-UNSOUND** | Keep every code path sound | Reach for `unsafe` to make a benchmark look better |
@@ -98,7 +98,7 @@ should be re-measured rather than trusted.
 | | Do | Don't |
 |---|---|---|
 | **M-MODULE-DOCS** / **M-DOC-FIRST-SENTENCE** | `//!` on every module, first sentence on one line, saying what the module is for and when to use it | Leave a module to speak for itself. *(46 files have it; the binaries' new modules are the gap)* |
-| **M-NO-META-DESIGN-DOCUMENTATION** | Document the end state. Put the design journey in `docs/`, as `docs/code-audit.md` does | Write "we chose X over Y" or a change journal into rustdoc. No `//!` line in this tree does, and that is deliberate |
+| **M-NO-META-DESIGN-DOCUMENTATION** | Document the end state. Put the design journey in `docs/`, as `docs/code-audit.md` does | Write "we chose X over Y" or a change journal into rustdoc. *(one did: `src/ai/mod.rs` explained how it came to be split into files, which is my history rather than the module's, and it is removed. The check that first said there were none searched for the wrong phrases, so the claim was wrong before it was true)* |
 | **C-EXAMPLE** / **M-DESIGN-FOR-AI** | Put a runnable example on public API. Agents and newcomers read these first | Ship public API with no example anywhere. *(the library still has no rustdoc examples; `examples/log_events.rs` is the first in `examples/` that shows how to call something rather than measure it)* |
 | **M-DESIGN-FOR-AI** | Keep modules documented, APIs idiomatic, and types strong — compiler checks are what makes an agent's edits safe | Rely on conversation history as the documentation |
 | **M-DOCUMENTED-MAGIC** | Name a number and say where it came from: `ASSET_PREVIEW_PX`, `MAX_IDS_PER_REQUEST` | Leave `100` or `512` in place with no name. *(126 named constants so far)* |
@@ -147,12 +147,51 @@ small boxes, which is the shape mimalloc wins on, and this benchmark does not me
 up in a profile, run the example with `--features mimalloc` and time the window itself. The feature and the
 benchmark are kept, off by default, so that costs one build.
 
+## Measured: where the time goes
+
+Two benchmarks, both run on this machine and both kept as examples so the numbers can be reproduced and
+compared against. The first one's answer was not what I expected.
+
+**The overlay's per frame** — `cargo run --release --features overlay --example frame_bench`, 12 frames of
+480x270 on an Intel Arc MTL through Vulkan:
+
+| | per rebuild | rects | per second at 60 fps |
+|---|---|---|---|
+| input region, step 1 | **1.442 ms** | 109 | **28.8 ms** |
+| input region, step 2 | 0.364 ms | 55 | 7.3 ms |
+| input region, step 4 | 0.095 ms | 28 | 1.9 ms |
+| texture upload | 0.229 ms | — | 13.7 ms |
+
+The upload is 1.4% of a 16.7 ms frame. The **region scan is six times the upload**, and it runs every third
+frame (`REGION_UPDATE_FRAMES`), so it costs 28.8 ms out of every second — 2.9% of the process's wall time,
+spent finding the silhouette. The lever already exists and is the `Auto` step: at step 4 the scan is fifteen
+times cheaper. What to check next is which step `Auto` actually chooses for a real animation, because step 1
+at 109 rectangles is not a silhouette that needs one-pixel resolution.
+
+**The AI removal's CPU stages** — `cargo run --release --example ai_frame_bench`, 1280x720 frames:
+
+| | per frame |
+|---|---|
+| `preprocess` (to 1024x1024 f32) | **82.03 ms** |
+| `mask_from_output` (back to 1280x720) | 50.97 ms |
+| `apply_mask` | 1.96 ms |
+| total | **134.95 ms** |
+
+Against the ~4.9 s per frame the whole pipeline took when it was verified against rembg, these three stages
+are **2.8%**. The model is the cost. Optimising our own code here would not change what a user waits for, so
+the correct action is to leave it — and to know that `preprocess` is 61% of our share if the model ever gets
+faster. This is the useful shape of a benchmark: it stops work as often as it starts it.
+
+Neither number covers the whole picture and both say so in their own output: `frame_bench` reproduces the
+upload's three wgpu calls instead of calling `upload_frame`, because that lives in the binary where an example
+cannot reach it; `ai_frame_bench` leaves out inference and ffmpeg extraction, which `tests/ai_end_to_end.rs`
+covers, ignored, because it wants the 176 MB model.
+
 ## Outstanding, in the order worth doing
 
 1. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
-2. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
-3. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
+2. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
    future readers rather than a resolution.
 
 Done from this list: the two lint overrides; `rust-version`, which turned out to be 1.92 rather than the 1.88 I

@@ -108,3 +108,7 @@ cc = "1"
 [[example]]
 name = "bc7_bench"
 required-features = ["bc7"]
+
+[[example]]
+name = "frame_bench"
+required-features = ["overlay"]
