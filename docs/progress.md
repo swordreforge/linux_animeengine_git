@@ -143,6 +143,10 @@ Interaction and control:
   came out of it: before-and-after numbers, the move-then-let-the-compiler-talk
   method, the nine lessons that cost time, the function-length ratchet, and what
   was deliberately left alone and why.
+- `docs/rust-guidelines.md` — our conventions, as do/don't pairs: Microsoft's
+  Pragmatic Rust Guidelines reduced to the roughly forty items this project
+  actually has to decide, the ones that do not apply and why, and the outstanding
+  five in the order worth doing.
 - `docs/python-app-feature-map.md` — the whole Python app as a porting checklist,
   with the parts that are not worth porting named as such.
 - `docs/python-main-window-recovery.md` — how the main window's bytecode was
