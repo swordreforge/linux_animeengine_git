@@ -192,3 +192,46 @@ cheaper) per-pixel work over a process pool. That is not an oversight: an ONNX s
 process that created it, so a pool would either need one session per worker — loading the model N times —
 or would serialise anyway. Sequential inference with one session is the correct shape for this pipeline,
 and it is worth writing down so the next reader does not "fix" it.
+
+## Worked example: the Tk MDAA manager, and the two generations of `.mdaa`
+
+`advancedCodeAnimations.py`, 483 lines, Tk. It is the predecessor of `AnimaTriggers`, and the part worth
+knowing is that **the two do not share a format** — only the extension.
+
+### What the old one does
+
+A `.mdaa` is a ZIP with exactly three members: `miniatura.png`, `core.exe`, `actions.mddo`. Loading one:
+
+* writes the chosen path into `mdaaStart.txt` (which is what the app reads to restore the last file),
+* unzips it to a temp directory and shows the thumbnail,
+* **runs `core.exe`** — an executable carried inside the bundle,
+* then polls `actions.mddo`, gated by an `activador.act` flag, and for each line
+  `data = eval(line)`, then hands `url` and `position` to `execute_function`, which does
+  `coords(eval(position.split("-")[1]))`.
+
+Creating one is the mirror image: pick a thumbnail, pick a `core.exe`, pick an `actions.mddo`, zip them
+with those names. There is no manifest, no version and no description of what the bundle does.
+
+### The three findings
+
+1. **The extension is shared and nothing else is.** The modern `.mdaa` (`AnimaTriggers/_internal/mdaa_io.py`)
+   holds `pack.json`, `assets/`, `frames/regionN.npz` and `meta.json` — structured data, no executable.
+   So "read a `.mdaa`" is an ambiguous request: the answer is the generation, not the file.
+2. **The old format is partly a plugin bundle.** Loading it **executes code that arrived inside it**, so
+   the file is closer to a program than to a document. That is the real reason the new format is better,
+   and it is worth stating plainly rather than as a matter of taste.
+3. **The interpreter is fed file contents.** `eval(line)` on `actions.mddo`, and again on the coordinate
+   text inside `position`. Anything that produces these files can run whatever it likes in the app.
+
+### Files that are the old format's state
+
+`mdaa.txt`, `mdaaStart.txt`, `activador.act` — the last-touched bundle, the auto-restore path, and the
+activation flag. The new generation keeps the equivalent in `user_data/mdaa_registry.json` with an
+enable/primary/autorun trio, which is a schema instead of three loose files.
+
+### What it is worth porting
+
+The `mdaaStart.txt` behaviour — restoring the last bundle on launch — is a real convenience and the new
+generation does not obviously have it. Everything else here is superseded, including the duplicated
+implementation: `animacionesAvanzadas` and `start` are two near-identical copies of the same feature in
+one file, differing in how many callbacks the caller passes in.
