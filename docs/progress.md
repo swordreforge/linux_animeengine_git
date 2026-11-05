@@ -1159,6 +1159,22 @@ search field with IME, and Workshop browse/search.
       Deliberately absent: file pickers and format dropdowns. They need a native-dialog dependency and they
       would be affordances for a pipeline that cannot run yet — the same trap the overlays tab fell into
       with its ±10% button pair.
+- [x] **The colour-key removal is wired end to end, as a preview.** On the Tools tab: paste a path, Load
+      (frame 0 through `anim::first_frame`), a background swatch or **"use the corner pixel"**, and two
+      sliders — tolerance and feather. Both previews are rebuilt when a control changes, not inside `view`:
+      the pass is cheap for one scaled frame, but a render loop that runs image processing is a habit worth
+      not starting.
+      **"Use the corner pixel" is the control the original never had** — it read the background from a
+      manual colour picker — and white stays the default because the original starts there.
+      The previews sit on `surface_container_highest` for a reason that is not decoration: iced has no
+      transparency backdrop, so a keyed frame landing on the window's own surface looks like nothing
+      happened, and the container is what makes transparent parts read as transparent.
+      **Widgets: nothing new was needed.** Sliders, text input, image, pick_list, button and container all
+      appear elsewhere in this window already. The two things that *would* be new if wanted: `progress_bar`
+      (unused so far) and the `rfd` crate for a native file dialog — the single gap iced leaves for a tool
+      that has to name a file.
+      Not done, and the card says so: **writing the file**. Encoding gif/apng/webp needs an encoder the
+      `image` crate does not fully provide, so that is the next step.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

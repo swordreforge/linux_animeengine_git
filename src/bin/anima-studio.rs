@@ -947,6 +947,15 @@ fn overlay_instances() -> Vec<OverlayInstance> {
 #[derive(Debug, Clone)]
 enum Message {
     Language(String),
+    /// The colour-key panel: the typed path, its background colour, its two numbers.
+    KeyPath(String),
+    KeyLoad,
+    KeyBackground([u8; 3]),
+    /// Take the background from the image's top-left corner — the one control the original tool did not
+    /// have, and the one that saves picking a colour by hand.
+    KeyCorner,
+    KeyTolerance(u8),
+    KeyFeather(u8),
     Refresh,
     Search(String),
     ClearSearch,
@@ -1437,6 +1446,19 @@ struct Studio {
     /// startup: the Tools page reports facts, and spawning processes on a timer to re-learn them would
     /// be work for nothing.
     commands: Vec<(String, bool)>,
+    /// The colour-key panel: a typed path, the frame it decoded (full size, untouched), the key and its
+    /// band, and the two previews. The previews are rebuilt when a control changes rather than per frame:
+    /// the pass itself is cheap for one scaled frame, but running it inside `view` would make it part of
+    /// the render loop, which is a habit worth not starting.
+    key_path: String,
+    key_source: Option<(u32, u32, Vec<u8>)>,
+    key_background: [u8; 3],
+    key_tolerance: u8,
+    key_feather: u8,
+    key_before: Option<iced::widget::image::Handle>,
+    key_after: Option<iced::widget::image::Handle>,
+    /// What the last load said, if it failed.
+    key_note: String,
     /// The settings tab's key field. Deliberately starts empty and is cleared after a save: the stored
     /// key is never rendered, only whether one is stored.
     key_draft: String,
@@ -1495,6 +1517,18 @@ impl Studio {
             motion: motion_enabled(),
             tab: Tab::default(),
             commands: probe_commands(),
+            key_path: String::new(),
+            key_source: None,
+            // White, because that is what the original tool starts on. The corner button is the better
+            // move and says so.
+            key_background: [255, 255, 255],
+            key_tolerance: 50,
+            // Non-zero by default, unlike the original: a hard key is the thing that made its output look
+            // cut out, so the default is the rounded one and zero is the option.
+            key_feather: 12,
+            key_before: None,
+            key_after: None,
+            key_note: String::new(),
             key_draft: String::new(),
             scale_draft: None,
             pending_remove: None,
@@ -1900,6 +1934,28 @@ impl Studio {
                 if let Err(error) = self.i18n.set_language(&code) {
                     self.note = format!("{}: {error}", self.i18n.tr("language not saved"));
                 }
+            }
+            Message::KeyPath(path) => self.key_path = path,
+            Message::KeyLoad => self.key_load(),
+            Message::KeyBackground(rgb) => {
+                self.key_background = rgb;
+                self.key_redraw();
+            }
+            Message::KeyCorner => {
+                if let Some((_, _, rgba)) = &self.key_source
+                    && rgba.len() >= 4
+                {
+                    self.key_background = [rgba[0], rgba[1], rgba[2]];
+                }
+                self.key_redraw();
+            }
+            Message::KeyTolerance(value) => {
+                self.key_tolerance = value;
+                self.key_redraw();
+            }
+            Message::KeyFeather(value) => {
+                self.key_feather = value;
+                self.key_redraw();
             }
             Message::Refresh => {
                 self.refresh();
@@ -2615,6 +2671,86 @@ impl Studio {
     }
 
     /// What the status line knows, laid out so it can be pasted into a bug report.
+    /// Decode the typed path's first frame, at preview size, and key it once.
+    fn key_load(&mut self) {
+        let path = std::path::PathBuf::from(self.key_path.trim());
+        match anima_engine_rs::anim::first_frame(&path) {
+            Ok((width, height, rgba)) => {
+                let shrunk = shrink_preview(width, height, rgba);
+                self.key_source = Some(shrunk);
+                self.key_note = String::new();
+                self.key_redraw();
+            }
+            Err(error) => {
+                self.key_source = None;
+                self.key_before = None;
+                self.key_after = None;
+                self.key_note =
+                    format!("{}: {error}", self.i18n.tr("could not read a first frame"));
+            }
+        }
+    }
+
+    /// Rebuild both previews from the decoded frame and the current controls. One pass over a scaled
+    /// frame, so calling it from every slider tick is fine; calling it from `view` would not be.
+    fn key_redraw(&mut self) {
+        let Some((width, height, rgba)) = self.key_source.clone() else {
+            self.key_before = None;
+            self.key_after = None;
+            return;
+        };
+        self.key_before = Some(iced::widget::image::Handle::from_rgba(
+            width,
+            height,
+            rgba.clone(),
+        ));
+        let mut keyed = rgba;
+        anima_engine_rs::keying::key_out(
+            &mut keyed,
+            self.key_background,
+            self.key_tolerance,
+            self.key_feather,
+        );
+        self.key_after = Some(iced::widget::image::Handle::from_rgba(width, height, keyed));
+    }
+
+    /// The background choices offered as swatches. The corner button beside them is the one that matters
+    /// on a real file; these are for the cases where the corner is not the background.
+    fn key_swatches(&self) -> El<'_> {
+        let mut row_of_swatches = row![].spacing(6);
+        for (label, rgb) in [
+            ("white", [255u8, 255, 255]),
+            ("black", [0, 0, 0]),
+            ("chroma green", [0, 255, 0]),
+            ("chroma blue", [0, 0, 255]),
+        ] {
+            let chosen = self.key_background == rgb;
+            row_of_swatches = row_of_swatches.push(
+                button(text(self.i18n.tr(label)).size(11))
+                    .style(move |theme: &iced_material::Theme, _status| {
+                        let mut style = iced_material::button::outlined(
+                            theme,
+                            iced::widget::button::Status::Active,
+                        );
+                        style.background =
+                            Some(iced::Color::from_rgb8(rgb[0], rgb[1], rgb[2]).into());
+                        if chosen {
+                            style.border.width = 2.0;
+                        }
+                        style
+                    })
+                    .on_press(Message::KeyBackground(rgb)),
+            );
+        }
+        row_of_swatches
+            .push(
+                button(text(self.i18n.tr("use the corner pixel")).size(11))
+                    .style(secondary)
+                    .on_press(Message::KeyCorner),
+            )
+            .into()
+    }
+
     /// The Tools tab. Three pipelines the Python app offers, described accurately and **not wired yet** —
     /// no buttons, because a button that does nothing is worse than a sentence that says so. What *is*
     /// real here is the environment: whether the commands each pipeline needs exist on this machine.
@@ -2632,11 +2768,6 @@ impl Studio {
             (
                 "MP4 to animation",
                 "mp4 — through moviepy for gif, ffmpeg for webp and apng; a zip of images can go back the other way",
-                "ffmpeg",
-            ),
-            (
-                "Background removal by colour",
-                "pick a background colour and a tolerance, applied to every frame of an animation",
                 "ffmpeg",
             ),
             (
@@ -2676,6 +2807,83 @@ impl Studio {
                 .width(Length::Fill),
             );
         }
+
+        // The colour-key panel is the first thing on this page that actually does something, so it is
+        // built here rather than in the placeholder loop above. What it does not do is write a file:
+        // encoding gif/apng/webp is the next step, and the line at the bottom says so.
+        let mut key_card = column![
+            text(self.i18n.tr("Background removal by colour")).size(15),
+            text(self.i18n.tr(
+                "pick a background colour and a tolerance, applied to every frame of an animation",
+            ))
+            .size(11),
+            row![
+                text_input(&self.i18n.tr("paste an animation path"), &self.key_path)
+                    .on_input(Message::KeyPath)
+                    .on_submit(Message::KeyLoad)
+                    .width(Length::Fill),
+                button(text(self.i18n.tr("Load")))
+                    .style(secondary)
+                    .on_press(Message::KeyLoad),
+            ]
+            .spacing(8),
+            self.key_swatches(),
+            row![
+                text(self.i18n.tr("tolerance")).size(11),
+                slider(0..=100u8, self.key_tolerance, Message::KeyTolerance).width(Length::Fill),
+                text(format!("{}%", self.key_tolerance)).size(11),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            row![
+                text(self.i18n.tr("feather")).size(11),
+                slider(0..=100u8, self.key_feather, Message::KeyFeather).width(Length::Fill),
+                text(format!("{}%", self.key_feather)).size(11),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(6);
+
+        if !self.key_note.is_empty() {
+            key_card = key_card.push(text(self.key_note.clone()).size(11));
+        }
+        if let (Some(before), Some(after)) = (self.key_before.clone(), self.key_after.clone()) {
+            key_card = key_card.push(
+                row![
+                    column![
+                        text(self.i18n.tr("original")).size(11),
+                        image(before).height(Length::Fixed(150.0)),
+                    ]
+                    .spacing(4),
+                    column![
+                        text(self.i18n.tr("result")).size(11),
+                        // No transparency backdrop exists in iced, so a keyed frame can land on the
+                        // window's own surface and look like nothing happened. This container is what
+                        // makes the transparent parts read as transparent.
+                        container(image(after).height(Length::Fixed(150.0)))
+                            .style(iced_material::container::surface_container_highest)
+                            .padding(2),
+                    ]
+                    .spacing(4),
+                ]
+                .spacing(12),
+            );
+        }
+        key_card = key_card.push(
+            row![
+                text(self.i18n.tr("write the file")).size(11),
+                space().width(Length::Fill),
+                text(self.i18n.tr("not yet — encoding is the next step")).size(11),
+            ]
+            .spacing(8),
+        );
+        page = page.push(
+            container(key_card)
+                .style(iced_material::container::surface_container)
+                .padding(12)
+                .width(Length::Fill),
+        );
 
         page = page.push(text(self.i18n.tr("checked once at startup")).size(10));
         scrollable(page.spacing(10))
