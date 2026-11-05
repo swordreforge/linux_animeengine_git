@@ -125,7 +125,20 @@
     "choose where to write first": "choose where to write first",
     "paste a video path": "paste a video path",
     "choose a video first": "choose a video first",
-    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal"
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal",
+    "paste an mp4 or gif path": "paste an mp4 or gif path",
+    "an animation in, a folder of png frames out — isnet-anime through ONNX Runtime": "an animation in, a folder of png frames out — isnet-anime through ONNX Runtime",
+    "model ready": "model ready",
+    "no model yet — fetch isnet-anime.onnx from": "no model yet — fetch isnet-anime.onnx from",
+    "output folder": "output folder",
+    "Choose folder": "Choose folder",
+    "choose an animation first": "choose an animation first",
+    "the model is not downloaded yet": "the model is not downloaded yet",
+    "frame count unknown": "frame count unknown",
+    "frames": "frames",
+    "working…": "working…",
+    "stopping…": "stopping…",
+    "Start": "Start"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -253,7 +266,20 @@
     "choose where to write first": "请先选择输出位置",
     "paste a video path": "粘贴视频路径",
     "choose a video first": "请先选择视频",
-    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 —— 一次 ffmpeg 调用，直接读视频；帧率是字段，不是字面量"
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 —— 一次 ffmpeg 调用，直接读视频；帧率是字段，不是字面量",
+    "paste an mp4 or gif path": "粘贴 mp4 或 gif 路径",
+    "an animation in, a folder of png frames out — isnet-anime through ONNX Runtime": "输入一个动画，输出一个 png 帧文件夹 —— isnet-anime，经 ONNX Runtime",
+    "model ready": "模型就绪",
+    "no model yet — fetch isnet-anime.onnx from": "尚无模型 —— 请从这里获取 isnet-anime.onnx",
+    "output folder": "输出文件夹",
+    "Choose folder": "选择文件夹",
+    "choose an animation first": "请先选择动画",
+    "the model is not downloaded yet": "模型尚未下载",
+    "frame count unknown": "帧数未知",
+    "frames": "帧",
+    "working…": "处理中…",
+    "stopping…": "正在停止…",
+    "Start": "开始"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -381,7 +407,20 @@
     "choose where to write first": "請先選擇輸出路徑",
     "paste a video path": "貼上影片路徑",
     "choose a video first": "請先選擇影片",
-    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 —— 一次 ffmpeg 呼叫，直接讀影片；影格率是欄位，不是字面值"
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 —— 一次 ffmpeg 呼叫，直接讀影片；影格率是欄位，不是字面值",
+    "paste an mp4 or gif path": "貼上 mp4 或 gif 路徑",
+    "an animation in, a folder of png frames out — isnet-anime through ONNX Runtime": "輸入一個動畫，輸出一個 png 影格資料夾 —— isnet-anime，經 ONNX Runtime",
+    "model ready": "模型就緒",
+    "no model yet — fetch isnet-anime.onnx from": "尚無模型 —— 請從這裡取得 isnet-anime.onnx",
+    "output folder": "輸出資料夾",
+    "Choose folder": "選擇資料夾",
+    "choose an animation first": "請先選擇動畫",
+    "the model is not downloaded yet": "模型尚未下載",
+    "frame count unknown": "影格數未知",
+    "frames": "影格",
+    "working…": "處理中…",
+    "stopping…": "正在停止…",
+    "Start": "開始"
   },
   "ja": {
     "Refresh": "更新",
@@ -509,6 +548,19 @@
     "choose where to write first": "先に出力先を選んでください",
     "paste a video path": "動画のパスを貼り付け",
     "choose a video first": "先に動画を選んでください",
-    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 — ffmpeg を一度呼ぶだけ。動画を直接読みます。フレームレートは入力欄です"
+    "mp4 — one ffmpeg call, reading the video directly; the frame rate is a field, not a literal": "mp4 — ffmpeg を一度呼ぶだけ。動画を直接読みます。フレームレートは入力欄です",
+    "paste an mp4 or gif path": "mp4 か gif のパスを貼り付け",
+    "an animation in, a folder of png frames out — isnet-anime through ONNX Runtime": "アニメーションを入力し、png フレームのフォルダを出力 — isnet-anime を ONNX Runtime で",
+    "model ready": "モデル準備完了",
+    "no model yet — fetch isnet-anime.onnx from": "モデル未取得 — isnet-anime.onnx の入手先",
+    "output folder": "出力フォルダ",
+    "Choose folder": "フォルダを選択",
+    "choose an animation first": "先にアニメーションを選んでください",
+    "the model is not downloaded yet": "モデルがまだありません",
+    "frame count unknown": "フレーム数不明",
+    "frames": "フレーム",
+    "working…": "処理中…",
+    "stopping…": "停止中…",
+    "Start": "開始"
   }
 }
