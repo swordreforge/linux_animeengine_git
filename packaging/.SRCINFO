@@ -2,6 +2,7 @@ pkgbase = anima-engine
 	pkgdesc = Animated desktop overlays, a Workshop browser, and AI background removal. Builds from source with every feature: about ten to twenty minutes, because the release profile uses fat LTO and one codegen unit.
 	pkgver = 0.1.0
 	pkgrel = 1
+	url = https://github.com/swordreforge/linux_animeengine_git
 	arch = x86_64
 	license = MIT
 	makedepends = rust

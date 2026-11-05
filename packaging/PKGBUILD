@@ -7,6 +7,7 @@ pkgdesc="Animated desktop overlays, a Workshop browser, and AI background remova
         codegen unit."
 arch=('x86_64')
 license=('MIT')
+url="https://github.com/swordreforge/linux_animeengine_git"
 # `ldd` over the six binaries gives glibc and gcc-libs and nothing else: Vulkan and the Wayland client are
 # opened at run time (the overlay's `wayland-client` uses dlopen; wgpu loads Vulkan through ash), so they are
 # dependencies because the window cannot render without them, not because a linker would have said so.
