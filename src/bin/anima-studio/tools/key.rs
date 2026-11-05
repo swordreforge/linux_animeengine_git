@@ -216,3 +216,131 @@ impl Studio {
             .into()
     }
 }
+
+// The messages this card handles. Each one was an arm of the window's single `handle` match; they
+// live here now because this is the state they read and write.
+impl Studio {
+    pub(crate) fn key_pick_file(&mut self) -> Task<Message> {
+        // Blocking is what a native modal does; the portal call is wrapped in a task so the
+        // answer arrives as a message like every other result in this window.
+        Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .add_filter("animations", &["gif", "apng", "png", "webp", "mdaa"])
+                    .pick_file()
+                    .await
+                    .map(|file| file.path().display().to_string())
+            },
+            |picked| match picked {
+                Some(path) => Message::KeyChosen(path),
+                None => Message::KeyChosen(String::new()),
+            },
+        )
+    }
+
+    pub(crate) fn key_format(&mut self, chosen: String) -> Task<Message> {
+        if let Some((_, template)) = anima_engine_rs::ffmpeg::PRESETS
+            .iter()
+            .find(|(name, _)| *name == chosen)
+        {
+            self.key_command = (*template).to_string();
+        }
+        self.key_format = chosen;
+        Task::none()
+    }
+
+    pub(crate) fn key_pick_output(&mut self) -> Task<Message> {
+        let suggested = if self.key_output.is_empty() {
+            self.key_path.clone()
+        } else {
+            self.key_output.clone()
+        };
+        Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_file_name(suggested)
+                    .save_file()
+                    .await
+                    .map(|file| file.path().display().to_string())
+            },
+            |picked| match picked {
+                Some(path) => Message::KeyOutput(path),
+                None => Message::KeyOutput(String::new()),
+            },
+        )
+    }
+
+    pub(crate) fn key_write(&mut self) -> Task<Message> {
+        // Checked here rather than in the worker, because this is where the catalog is: they are
+        // sentences for a person, and the worker's own failures are ffmpeg's and the filesystem's.
+        if self.key_source.is_none() {
+            self.key_note = self.i18n.tr("nothing to write — load an animation first");
+            self.key_writing = false;
+        } else if self.key_output.trim().is_empty() {
+            self.key_note = self.i18n.tr("choose where to write first");
+            self.key_writing = false;
+        } else {
+            self.key_writing = true;
+            self.key_note = String::new();
+            let request = KeyWriteRequest {
+                source: self.key_path.clone(),
+                background: self.key_background,
+                tolerance: self.key_tolerance,
+                feather: self.key_feather,
+                command: self.key_command.clone(),
+                output: self.key_output.clone(),
+                fps: self.key_fps,
+                quality: self.key_quality,
+                lossless: self.key_lossless,
+            };
+            return Task::perform(async move { key_write(request) }, Message::KeyWrote);
+        }
+        Task::none()
+    }
+
+    pub(crate) fn key_wrote(&mut self, result: Result<String, String>) -> Task<Message> {
+        self.key_writing = false;
+        self.key_note = match result {
+            Ok(detail) => detail,
+            Err(error) => error,
+        };
+        Task::none()
+    }
+
+    pub(crate) fn key_chosen(&mut self, path: String) -> Task<Message> {
+        // A chosen path is finished, unlike a typed one, so it loads without a second press.
+        self.key_path = path;
+        if !self.key_path.is_empty() {
+            self.key_load();
+        }
+        Task::none()
+    }
+
+    pub(crate) fn key_background(&mut self, rgb: [u8; 3]) -> Task<Message> {
+        self.key_background = rgb;
+        self.key_redraw();
+        Task::none()
+    }
+
+    pub(crate) fn key_corner(&mut self) -> Task<Message> {
+        if let Some((_, _, rgba)) = &self.key_source
+            && rgba.len() >= 4
+        {
+            self.key_background = [rgba[0], rgba[1], rgba[2]];
+        }
+        self.key_redraw();
+        Task::none()
+    }
+
+    pub(crate) fn key_tolerance(&mut self, value: u8) -> Task<Message> {
+        self.key_tolerance = value;
+        self.key_redraw();
+        Task::none()
+    }
+
+    pub(crate) fn key_feather(&mut self, value: u8) -> Task<Message> {
+        self.key_feather = value;
+        self.key_redraw();
+        Task::none()
+    }
+}

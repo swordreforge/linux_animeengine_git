@@ -2180,84 +2180,16 @@ impl Studio {
                 }
             }
             Message::KeyPath(path) => self.key_path = path,
-            Message::KeyPickFile => {
-                // Blocking is what a native modal does; the portal call is wrapped in a task so the
-                // answer arrives as a message like every other result in this window.
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("animations", &["gif", "apng", "png", "webp", "mdaa"])
-                            .pick_file()
-                            .await
-                            .map(|file| file.path().display().to_string())
-                    },
-                    |picked| match picked {
-                        Some(path) => Message::KeyChosen(path),
-                        None => Message::KeyChosen(String::new()),
-                    },
-                );
-            }
+            Message::KeyPickFile => return self.key_pick_file(),
             Message::KeyLoad => self.key_load(),
-            Message::KeyFormat(chosen) => {
-                if let Some((_, template)) = anima_engine_rs::ffmpeg::PRESETS
-                    .iter()
-                    .find(|(name, _)| *name == chosen)
-                {
-                    self.key_command = (*template).to_string();
-                }
-                self.key_format = chosen;
-            }
+            Message::KeyFormat(chosen) => return self.key_format(chosen),
             Message::KeyCommand(command) => self.key_command = command,
             Message::KeyFps(value) => self.key_fps = value,
             Message::KeyQuality(value) => self.key_quality = value,
             Message::KeyLossless(value) => self.key_lossless = value,
             Message::KeyOutput(path) => self.key_output = path,
-            Message::KeyPickOutput => {
-                let suggested = if self.key_output.is_empty() {
-                    self.key_path.clone()
-                } else {
-                    self.key_output.clone()
-                };
-                return Task::perform(
-                    async move {
-                        rfd::AsyncFileDialog::new()
-                            .set_file_name(suggested)
-                            .save_file()
-                            .await
-                            .map(|file| file.path().display().to_string())
-                    },
-                    |picked| match picked {
-                        Some(path) => Message::KeyOutput(path),
-                        None => Message::KeyOutput(String::new()),
-                    },
-                );
-            }
-            Message::KeyWrite => {
-                // Checked here rather than in the worker, because this is where the catalog is: they are
-                // sentences for a person, and the worker's own failures are ffmpeg's and the filesystem's.
-                if self.key_source.is_none() {
-                    self.key_note = self.i18n.tr("nothing to write — load an animation first");
-                    self.key_writing = false;
-                } else if self.key_output.trim().is_empty() {
-                    self.key_note = self.i18n.tr("choose where to write first");
-                    self.key_writing = false;
-                } else {
-                    self.key_writing = true;
-                    self.key_note = String::new();
-                    let request = KeyWriteRequest {
-                        source: self.key_path.clone(),
-                        background: self.key_background,
-                        tolerance: self.key_tolerance,
-                        feather: self.key_feather,
-                        command: self.key_command.clone(),
-                        output: self.key_output.clone(),
-                        fps: self.key_fps,
-                        quality: self.key_quality,
-                        lossless: self.key_lossless,
-                    };
-                    return Task::perform(async move { key_write(request) }, Message::KeyWrote);
-                }
-            }
+            Message::KeyPickOutput => return self.key_pick_output(),
+            Message::KeyWrite => return self.key_write(),
             Message::AiPath(path) => self.ai_path = path,
             Message::AiPickFile => {
                 return Task::perform(
@@ -2438,40 +2370,12 @@ impl Studio {
                     Err(detail) => detail,
                 };
             }
-            Message::KeyWrote(result) => {
-                self.key_writing = false;
-                self.key_note = match result {
-                    Ok(detail) => detail,
-                    Err(error) => error,
-                };
-            }
-            Message::KeyChosen(path) => {
-                // A chosen path is finished, unlike a typed one, so it loads without a second press.
-                self.key_path = path;
-                if !self.key_path.is_empty() {
-                    self.key_load();
-                }
-            }
-            Message::KeyBackground(rgb) => {
-                self.key_background = rgb;
-                self.key_redraw();
-            }
-            Message::KeyCorner => {
-                if let Some((_, _, rgba)) = &self.key_source
-                    && rgba.len() >= 4
-                {
-                    self.key_background = [rgba[0], rgba[1], rgba[2]];
-                }
-                self.key_redraw();
-            }
-            Message::KeyTolerance(value) => {
-                self.key_tolerance = value;
-                self.key_redraw();
-            }
-            Message::KeyFeather(value) => {
-                self.key_feather = value;
-                self.key_redraw();
-            }
+            Message::KeyWrote(result) => return self.key_wrote(result),
+            Message::KeyChosen(path) => return self.key_chosen(path),
+            Message::KeyBackground(rgb) => return self.key_background(rgb),
+            Message::KeyCorner => return self.key_corner(),
+            Message::KeyTolerance(value) => return self.key_tolerance(value),
+            Message::KeyFeather(value) => return self.key_feather(value),
             Message::Refresh => {
                 self.refresh();
                 // A refresh is also the moment to pick up titles for anything new.
