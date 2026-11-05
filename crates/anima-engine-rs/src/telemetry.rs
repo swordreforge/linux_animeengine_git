@@ -94,7 +94,10 @@ pub struct Sample {
 
 /// The readings so far, oldest first, bounded. A chart needs the history and nothing else does, so the cap
 /// is the only reason this type exists.
-#[derive(Debug, Default)]
+///
+/// `Clone` because a canvas widget is handed the chart by value on every view: the copy is at most a few
+/// hundred readings and is not measurable next to the reading that produced them.
+#[derive(Debug, Clone, Default)]
 pub struct History {
     points: Vec<Sample>,
     limit: usize,

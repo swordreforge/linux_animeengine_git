@@ -59,7 +59,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"], 
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"], optional = true }
 # `tokio` is what gives `iced::time::every`: the default `thread-pool` backend has no
 # timer, so a polling subscription needs the tokio backend.
-iced = { version = "0.14.0", features = ["image", "tokio"], optional = true }
+iced = { version = "0.14.0", features = ["image", "tokio", "canvas"], optional = true }
 # A native file dialog. The xdg-portal backend on purpose: the default one links GTK3, and this only has
 # to open a picker.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"], optional = true }
