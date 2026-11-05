@@ -108,7 +108,8 @@
     "tolerance": "tolerance",
     "feather": "feather",
     "original": "original",
-    "result": "result"
+    "result": "result",
+    "Choose file": "Choose file"
   },
   "zh-CN": {
     "Refresh": "刷新",
@@ -219,7 +220,8 @@
     "tolerance": "容差",
     "feather": "羽化",
     "original": "原图",
-    "result": "结果"
+    "result": "结果",
+    "Choose file": "选择文件"
   },
   "zh-TW": {
     "Refresh": "重新整理",
@@ -330,7 +332,8 @@
     "tolerance": "容差",
     "feather": "羽化",
     "original": "原圖",
-    "result": "結果"
+    "result": "結果",
+    "Choose file": "選擇檔案"
   },
   "ja": {
     "Refresh": "更新",
@@ -441,6 +444,7 @@
     "tolerance": "許容値",
     "feather": "ぼかし",
     "original": "元の画像",
-    "result": "結果"
+    "result": "結果",
+    "Choose file": "ファイルを選択"
   }
 }

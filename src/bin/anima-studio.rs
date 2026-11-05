@@ -949,6 +949,9 @@ enum Message {
     Language(String),
     /// The colour-key panel: the typed path, its background colour, its two numbers.
     KeyPath(String),
+    KeyPickFile,
+    /// A path the user chose in the dialog: unlike typing, this one is finished, so it loads.
+    KeyChosen(String),
     KeyLoad,
     KeyBackground([u8; 3]),
     /// Take the background from the image's top-left corner — the one control the original tool did not
@@ -1936,7 +1939,31 @@ impl Studio {
                 }
             }
             Message::KeyPath(path) => self.key_path = path,
+            Message::KeyPickFile => {
+                // Blocking is what a native modal does; the portal call is wrapped in a task so the
+                // answer arrives as a message like every other result in this window.
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("animations", &["gif", "apng", "png", "webp", "mdaa"])
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().display().to_string())
+                    },
+                    |picked| match picked {
+                        Some(path) => Message::KeyChosen(path),
+                        None => Message::KeyChosen(String::new()),
+                    },
+                );
+            }
             Message::KeyLoad => self.key_load(),
+            Message::KeyChosen(path) => {
+                // A chosen path is finished, unlike a typed one, so it loads without a second press.
+                self.key_path = path;
+                if !self.key_path.is_empty() {
+                    self.key_load();
+                }
+            }
             Message::KeyBackground(rgb) => {
                 self.key_background = rgb;
                 self.key_redraw();
@@ -2820,8 +2847,11 @@ impl Studio {
             row![
                 text_input(&self.i18n.tr("paste an animation path"), &self.key_path)
                     .on_input(Message::KeyPath)
-                    .on_submit(Message::KeyLoad)
+                    .on_submit(Message::KeyPickFile)
                     .width(Length::Fill),
+                button(text(self.i18n.tr("Choose file")))
+                    .style(secondary)
+                    .on_press(Message::KeyPickFile),
                 button(text(self.i18n.tr("Load")))
                     .style(secondary)
                     .on_press(Message::KeyLoad),

@@ -1175,6 +1175,16 @@ search field with IME, and Workshop browse/search.
       that has to name a file.
       Not done, and the card says so: **writing the file**. Encoding gif/apng/webp needs an encoder the
       `image` crate does not fully provide, so that is the next step.
+- [x] **A real file picker, and swatches that are just colour.** `rfd` with the `xdg-portal` backend —
+      deliberately not the default one, which links GTK3 for a dialog — and the answer comes back through
+      the task idiom like every other result in this window. A chosen path **loads** immediately; a typed
+      one does not, because somebody typing is probably still typing, which is why they are two messages
+      and not one.
+      The swatches lost their labels: a colour is its own explanation, so each is now a 24px circle with the
+      name in a tooltip, and the selected one is ringed rather than captioned.
+      Worth knowing for a failure: the portal is a desktop service, so on a session without one the dialog
+      will not appear. The typed path field stays for exactly that case, and this line is the reason it is
+      not redundant.
 - [ ] Scale above 100% stays impossible, and that is a design decision rather than an oversight: the
       overlay only shrinks, so it never resamples. Raising `MAX_SCALE_PERCENT` is a one-line change, but it
       turns scaling into upscaling, and that is the part worth thinking about first.

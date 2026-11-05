@@ -18,7 +18,7 @@ bc7 = []
 overlay = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:pollster", "dep:bytemuck", "dep:wayland-client", "dep:ksni", "dep:ashpd", "dep:futures-util", "dep:tokio"]
 # Enables the `anima-studio` main window (Iced). `workshop-web` brings the keyless
 # Steam metadata the previews come from.
-studio = ["dep:iced", "dep:iced_material", "workshop-web", "dep:notify", "dep:futures-util", "dep:tokio"]
+studio = ["dep:iced", "dep:iced_material", "dep:rfd", "workshop-web", "dep:notify", "dep:futures-util", "dep:tokio"]
 # Enables the shepherd's session-bus interface (`dbus_intent`), so other programs can ask it to
 # supervise an animation. `zbus` is already in the tree via the tray; this reuses that copy.
 dbus = ["dep:zbus"]
@@ -50,6 +50,9 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-
 # `tokio` is what gives `iced::time::every`: the default `thread-pool` backend has no
 # timer, so a polling subscription needs the tokio backend.
 iced = { version = "0.14.0", features = ["image", "tokio"], optional = true }
+# A native file dialog. The xdg-portal backend on purpose: the default one links GTK3, and this only has
+# to open a picker.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"], optional = true }
 iced_material = { version = "0.14.2", optional = true }
 
 [[bin]]
