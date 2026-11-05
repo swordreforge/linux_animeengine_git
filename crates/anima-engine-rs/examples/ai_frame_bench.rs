@@ -102,7 +102,41 @@ fn main() {
         }
     });
 
+    // The three stages above are black boxes, and every estimate about where their time goes was exactly that —
+    // an estimate. These repeat the individual steps that were guessed at, so "the resize is most of it" stops
+    // being an argument and becomes a measurement.
+    let resize_only = best_of(5, || {
+        for frame in &frames {
+            black_box(image::imageops::resize(
+                frame,
+                MODEL_SIZE,
+                MODEL_SIZE,
+                image::imageops::FilterType::Lanczos3,
+            ));
+        }
+    });
+    let mask_resize_only = best_of(5, || {
+        for mask in &masks {
+            black_box(image::imageops::resize(
+                mask,
+                FRAME.0,
+                FRAME.1,
+                image::imageops::FilterType::Lanczos3,
+            ));
+        }
+    });
+    let clone_only = best_of(5, || {
+        for frame in &frames {
+            black_box(frame.clone());
+        }
+    });
+
     let (a, b, c) = (per_frame(first), per_frame(mask), per_frame(apply));
+    let (r, mr, cl) = (
+        per_frame(resize_only),
+        per_frame(mask_resize_only),
+        per_frame(clone_only),
+    );
     println!(
         "  preprocess (to {}x{} f32)      {:>8.2} ms per frame",
         MODEL_SIZE, MODEL_SIZE, a
@@ -122,8 +156,21 @@ fn main() {
         "  {CLIP} frames would spend         {:>8.1} s in these three stages alone",
         total * CLIP as f64 / 1000.0
     );
+    println!();
     println!(
-        "\n  (the reference run of the whole pipeline, inference and ffmpeg included, was about 4.9 s per\n   \
-         frame on this machine; these stages are the part that is ours rather than the model's)\n"
+        "  of preprocess: its Lanczos3 resize   {r:>8.2} ms  ({:.0}% of the stage)",
+        100.0 * r / a
+    );
+    println!(
+        "  of mask_from_output: its resize      {mr:>8.2} ms  ({:.0}% of the stage)",
+        100.0 * mr / b
+    );
+    println!(
+        "  of apply_mask: the frame clone       {cl:>8.2} ms  ({:.0}% of the stage)",
+        100.0 * cl / c
+    );
+    println!(
+        "\n  (the whole pipeline in release is about 1.05 s per frame, and 1.46 s for the first one because it\n   \
+         also loads the 176 MB model. The 4.9 s this line used to quote was the dev profile's model time.)\n"
     );
 }

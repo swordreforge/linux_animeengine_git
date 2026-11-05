@@ -48,10 +48,26 @@ fn the_model_actually_cuts_a_frame() {
     };
     println!("frame {:?} from {sample:?}", frame.dimensions());
 
+    // `load()` is inside the user's wait and outside every timer this project has. It is where ONNX Runtime's
+    // Level 3 fusions are computed, the kernels chosen and 176 MB of weights mapped, so it is the one number an
+    // ahead-of-time saved graph could remove — and it has never been measured.
+    let loading = std::time::Instant::now();
     let mut model = ai::Removal::load().expect("load the model");
-    let started = std::time::Instant::now();
-    let cut = model.remove_background(&frame).expect("cut the frame");
-    let elapsed = started.elapsed();
+    println!("load: {:?}", loading.elapsed());
+    // Twice, and both printed. Every number this test ever produced came from `cargo test`, which is the dev
+    // profile — so our preprocessing, the wrapper's tensor copies and our postprocessing were all unoptimised
+    // while the inference itself was not, since that is a prebuilt C++ library. And the first inference in a
+    // process also pays for the arena, the kernel selection, and 176 MB of weights being paged in. Two rounds
+    // separate those two effects from each other; both are printed.
+    let mut cut = None;
+    for round in 1..=2 {
+        let started = std::time::Instant::now();
+        let result = model.remove_background(&frame).expect("cut the frame");
+        let elapsed = started.elapsed();
+        println!("round {round}: {:?} in {elapsed:?}", result.dimensions());
+        cut = Some((result, elapsed));
+    }
+    let (cut, elapsed) = cut.expect("both rounds ran");
 
     let total = (cut.width() * cut.height()) as usize;
     let opaque = cut.pixels().filter(|pixel| pixel.0[3] > 200).count();
