@@ -2140,6 +2140,73 @@ fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
         .map(|meta| (meta.len(), meta.modified().ok()))
 }
 
+/// Tray and portal commands arrive through the control file. Returns false when it asked the overlay to
+/// quit, which ends the turn early — the loop said `continue` here, and a function cannot.
+fn poll_control(
+    // The binding, not the reference, has to be mutable: the body reborrows it several times.
+    state: &mut OverlayState,
+    control: &mut ControlState,
+    control_mtime: &mut Option<SystemTime>,
+    control_path: &Path,
+    pos_x: i32,
+    pos_y: i32,
+) -> bool {
+    // Tray / portal commands arrive through the control file.
+    let mtime = std::fs::metadata(control_path)
+        .and_then(|m| m.modified())
+        .ok();
+    if mtime != *control_mtime {
+        *control_mtime = mtime;
+        let next = ControlState::load(control_path);
+        if next.generation != control.generation {
+            *control = next;
+            if control.reset {
+                let (left, top) = clamp_margin(state, pos_x, pos_y);
+                state.margin_left = left;
+                state.margin_top = top;
+                state.layer_surface.set_margin(top, 0, 0, left);
+                state.surface.commit();
+                // Reset restores the naive interaction state, like the
+                // Python `_reset_interactions`.
+                state.hover_hide = false;
+                eprintln!("[overlay] reset to initial position");
+            }
+            apply_input_mode(state, control.input_mode);
+            if control.scale_percent != state.scale_percent {
+                apply_scale(state, control.scale_percent);
+            }
+            if control.locked != state.locked {
+                state.locked = control.locked;
+                eprintln!("[overlay] locked {}", state.locked);
+            }
+            if control.hidden != state.hidden {
+                apply_hidden(state, control.hidden);
+            }
+            let orientation =
+                Orientation::from_degrees(control.rotation, control.flip_h, control.flip_v);
+            if orientation != state.orientation {
+                apply_orientation(state, orientation);
+            }
+            let tuning = RegionTuning::from_control(control);
+            if tuning != state.region_tuning {
+                state.region_tuning = tuning;
+                state.region_dirty = true;
+                eprintln!(
+                    "[overlay] region limits: {}",
+                    state.region_tuning.describe()
+                );
+            }
+            persist_geometry(state);
+            if control.quit {
+                state.closed = true;
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `--no-tray` lets the shepherd own the single tray icon; the animation path is the
     // only other argument.
@@ -2289,59 +2356,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             persist_geometry(&state);
         }
 
-        // Tray / portal commands arrive through the control file.
-        let mtime = std::fs::metadata(&control_path)
-            .and_then(|m| m.modified())
-            .ok();
-        if mtime != control_mtime {
-            control_mtime = mtime;
-            let next = ControlState::load(&control_path);
-            if next.generation != control.generation {
-                control = next;
-                if control.reset {
-                    let (left, top) = clamp_margin(&state, pos_x, pos_y);
-                    state.margin_left = left;
-                    state.margin_top = top;
-                    state.layer_surface.set_margin(top, 0, 0, left);
-                    state.surface.commit();
-                    // Reset restores the naive interaction state, like the
-                    // Python `_reset_interactions`.
-                    state.hover_hide = false;
-                    eprintln!("[overlay] reset to initial position");
-                }
-                apply_input_mode(&mut state, control.input_mode);
-                if control.scale_percent != state.scale_percent {
-                    apply_scale(&mut state, control.scale_percent);
-                }
-                if control.locked != state.locked {
-                    state.locked = control.locked;
-                    eprintln!("[overlay] locked {}", state.locked);
-                }
-                if control.hidden != state.hidden {
-                    apply_hidden(&mut state, control.hidden);
-                }
-                let orientation =
-                    Orientation::from_degrees(control.rotation, control.flip_h, control.flip_v);
-                if orientation != state.orientation {
-                    apply_orientation(&mut state, orientation);
-                }
-                let tuning = RegionTuning::from_control(&control);
-                if tuning != state.region_tuning {
-                    state.region_tuning = tuning;
-                    state.region_dirty = true;
-                    eprintln!(
-                        "[overlay] region limits: {}",
-                        state.region_tuning.describe()
-                    );
-                }
-                persist_geometry(&state);
-                if control.quit {
-                    state.closed = true;
-                    continue;
-                }
-            }
+        if !poll_control(
+            &mut state,
+            &mut control,
+            &mut control_mtime,
+            &control_path,
+            pos_x,
+            pos_y,
+        ) {
+            continue;
         }
-
         if let Some((w, h)) = state.configured
             && (w != config.width || h != config.height)
         {
