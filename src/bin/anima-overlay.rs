@@ -27,8 +27,11 @@
 //! stays alive until closed by the compositor or Ctrl+C.
 
 // The pipelines live in their own file: `main` is 852 lines and this is the cleanest piece of it.
+#[path = "anima-overlay/config.rs"]
+mod config;
 #[path = "anima-overlay/frames.rs"]
 mod frames;
+use config::Config;
 #[path = "anima-overlay/gpu.rs"]
 mod gpu;
 use gpu::Gpu;
@@ -2137,102 +2140,39 @@ fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `--no-tray` lets the shepherd own the single tray icon; the animation path is the
     // only other argument.
-    let mut path: Option<PathBuf> = None;
-    let mut tray_wanted = true;
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            "--no-tray" => tray_wanted = false,
-            other => path = Some(PathBuf::from(other)),
-        }
-    }
-    // Announce before decoding: a 1500x1125 animation takes seconds to load, and until the
-    // marker exists the shepherd would think nothing is running and start a second copy.
-    let early_control = ControlState::path_for(
-        path.as_deref()
-            .map(|path| anima_engine_rs::paths::canonical_path(&path.to_string_lossy()))
-            .as_deref(),
-    );
-    match ControlState::announce(&early_control) {
-        Ok(marker) => eprintln!("[overlay] announced {}", marker.display()),
-        Err(error) => eprintln!("[overlay] could not announce liveness: {error}"),
-    }
+    let config = Config::load()?;
+    // The same destructuring the code above this line used to do inline, so nothing below changed.
+    let Config {
+        path,
+        tray_wanted,
+        loaded,
+        width,
+        height,
+        instance_key,
+        slug,
+        label,
+        state_path,
+        control_path,
+        region_tuning,
+        pos_x,
+        pos_y,
+        initial_scale,
+        always_on_top,
+        initial_mode,
+        initial_locked,
+        initial_hover_hide,
+        fps,
+        meta_fps,
+        orientation,
+        disp_w,
+        disp_h,
+    } = config;
     let Loaded {
         animation,
         blocks,
         crop,
         limits: decode_limits,
-    } = load_animation(path.as_deref())?;
-    let frame_count = animation.frames.len();
-    if frame_count == 0 {
-        return Err("animation has no frames".into());
-    }
-    let (width, height) = (animation.width.max(1), animation.height.max(1));
-
-    // Instance identity for persistence: the canonical animation path. The
-    // generated test pattern has no path, so it is never persisted.
-    let instance_key = path
-        .as_deref()
-        .map(|path| anima_engine_rs::paths::canonical_path(&path.to_string_lossy()));
-    // Identity for the per-instance control file and tray item.
-    let slug = instance_key.as_deref().map_or_else(
-        || "default".to_string(),
-        anima_engine_rs::control::instance_slug,
-    );
-    let label = path
-        .as_deref()
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "test pattern".to_string());
-    let state_path = SecondaryState::user_path();
-    let control_path = ControlState::path_for(instance_key.as_deref());
-    let region_tuning = RegionTuning::from_env();
-    eprintln!("[overlay] region limits: {}", region_tuning.describe());
-    let persisted = instance_key
-        .as_deref()
-        .and_then(|key| SecondaryState::load(&state_path).find_by_key(key).cloned());
-    let (pos_x, pos_y) = persisted.as_ref().map_or(DEFAULT_POS, |instance| {
-        (instance.x.max(0), instance.y.max(0))
-    });
-    let initial_scale = persisted
-        .as_ref()
-        .map_or(MAX_SCALE_PERCENT, |instance| instance.scale_percent)
-        .clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
-    // Saved positions are canvas margins; the surface sits `crop` pixels into the
-    // canvas, so its margin is the saved one plus that (and minus it again when
-    // persisting).
-    let (pos_x, pos_y) = (
-        pos_x + (crop.0 * initial_scale / 100) as i32,
-        pos_y + (crop.1 * initial_scale / 100) as i32,
-    );
-    let always_on_top = persisted.as_ref().is_none_or(|i| i.always_on_top);
-    let initial_mode = if persisted.as_ref().is_some_and(|i| i.click_through) {
-        InputMode::PassThrough
-    } else {
-        InputMode::Opaque
-    };
-    let initial_locked = persisted.as_ref().is_some_and(|i| i.locked);
-    let initial_hover_hide = persisted.as_ref().is_some_and(|i| i.hover_hide);
-    let fps = persisted.as_ref().map_or(0, |instance| instance.fps);
-    // `anim_meta.json` is a per-animation override; the instance's own `fps`
-    // wins over it, and 0 in both means "follow the file's frame delays".
-    let meta_fps = AnimMeta::load(&anima_engine_rs::paths::user_data_dir().join(ANIM_META_FILE))
-        .fps_for(instance_key.as_deref().unwrap_or_default())
-        .unwrap_or(0);
-    let orientation = Orientation::from_degrees(
-        persisted.as_ref().map_or(0, |i| i.rotation),
-        persisted.as_ref().is_some_and(|i| i.flip_h),
-        persisted.as_ref().is_some_and(|i| i.flip_v),
-    );
-    let (disp_w, disp_h) = orientation.size((width, height));
-    if persisted.is_some() {
-        eprintln!(
-            "[overlay] restored instance: ({pos_x}, {pos_y}) at {initial_scale}%, \
-             mode {initial_mode:?}, locked {initial_locked}, hover_hide {initial_hover_hide}, \
-             fps {fps} (meta {meta_fps}), quarters {}, flip_h {}, flip_v {}",
-            orientation.quarter_turns, orientation.flip_h, orientation.flip_v
-        );
-    }
-
+    } = loaded;
     let conn = Connection::connect_to_env()?;
     let mut event_queue: EventQueue<OverlayState> = conn.new_event_queue();
     let qh = event_queue.handle();
