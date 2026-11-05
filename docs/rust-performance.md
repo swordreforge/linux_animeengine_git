@@ -195,7 +195,10 @@ across clips.
 
 **2. mimalloc as the global allocator.** The book recommends an alternative allocator for applications and
 quotes "large improvements … in practice"; Microsoft's guideline quotes "up to 25 %". That describes someone
-else's workload, so `examples/alloc_bench.rs` measures ours. Intel Core Ultra 7 155H, glibc 2.44, rustc 1.99.1,
+else's workload, so a stand-alone harness measured ours. **That harness and the `mimalloc` feature it
+switched on are gone** — an A/B needs a build-time switch, and the feature was a switch nobody shipped with. The
+table below stands as the measurement; what is lost is the ability to re-run it from this tree without putting the
+feature back. Intel Core Ultra 7 155H, glibc 2.44, rustc 1.99.1,
 mimalloc 0.1.52, best of fifteen rounds (`docs/rust-guidelines.md`; also commit `0744bd1`):
 
 | case | system | mimalloc |

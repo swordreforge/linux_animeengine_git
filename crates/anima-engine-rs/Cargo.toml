@@ -27,10 +27,6 @@ studio = ["dep:anima-ai", "dep:iced", "dep:iced_material", "dep:rfd", "workshop-
 # Enables the shepherd's session-bus interface (`dbus_intent`), so other programs can ask it to
 # supervise an animation. `zbus` is already in the tree via the tray; this reuses that copy.
 dbus = ["dep:zbus"]
-# Adds mimalloc as the global allocator. Exists so `examples/alloc_bench.rs` can be run with and without it,
-# because the guideline's figure for it comes from someone else's workload. Remove it, and the dependency
-# below, once that comparison has been made either way.
-mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 anima-ai = { workspace = true, optional = true }
@@ -64,8 +60,6 @@ iced = { version = "0.14.0", features = ["image", "tokio", "canvas"], optional =
 # to open a picker.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"], optional = true }
 iced_material = { version = "0.14.2", optional = true }
-# Off by default, behind the `mimalloc` feature. See the note above that feature.
-mimalloc = { version = "0.1", optional = true }
 
 [[bin]]
 name = "anima-overlay"
