@@ -5,7 +5,7 @@
 //! modules here depend on a windowing system or GPU, so they are unit-testable
 //! on any platform. The always-on-top window/render layer is added later.
 
-pub mod ai_removal;
+pub mod ai;
 pub mod anim;
 #[cfg(feature = "bc7")]
 pub mod bc7;
