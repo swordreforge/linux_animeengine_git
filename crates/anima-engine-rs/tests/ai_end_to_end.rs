@@ -1,9 +1,13 @@
 //! The one test that needs the network: the model downloaded, a real frame through it.
 //!
-//! Ignored by default so the suite stays offline. Point it at an anime frame and run it by hand:
+//! Ignored by default so the suite stays offline. It needs an anime frame as well as the model: point
+//! `ANIMA_AI_FRAME` at one, or leave a png in `/tmp/animaframes` and it takes the first it finds. What it
+//! asserts is only what this code promises — the size comes back the same and the colour is untouched — and it
+//! prints the share it cut, which is the model's opinion rather than a guarantee, for a person to read.
 //!
 //! ```text
-//! cargo test --test ai_end_to_end -- --ignored --nocapture
+//! ANIMA_AI_FRAME=/path/to/frame.png \
+//!   cargo test -p anima-engine-rs --features studio --test ai_end_to_end -- --ignored --nocapture
 //! ```
 
 use anima_ai as ai;
