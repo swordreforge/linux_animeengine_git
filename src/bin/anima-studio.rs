@@ -2191,91 +2191,15 @@ impl Studio {
             Message::KeyPickOutput => return self.key_pick_output(),
             Message::KeyWrite => return self.key_write(),
             Message::AiPath(path) => self.ai_path = path,
-            Message::AiPickFile => {
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("animation", &["mp4", "gif", "webm", "mov", "mkv"])
-                            .pick_file()
-                            .await
-                            .map(|file| file.path().display().to_string())
-                    },
-                    |picked| Message::AiChosen(picked.unwrap_or_default()),
-                );
-            }
-            Message::AiChosen(path) => {
-                self.ai_path = path;
-                if !self.ai_path.is_empty() {
-                    // ffprobe reads the frame count here, where it is fast, so the bar the worker draws
-                    // can be a real fraction instead of a spinner.
-                    let frames = anima_engine_rs::ai::probe_frames(&self.ai_path);
-                    self.ai_state.reset(frames);
-                    self.ai_note = match frames {
-                        Some(count) => format!("{} {count}", self.i18n.tr("frames")),
-                        None => self.i18n.tr("frame count unknown").to_string(),
-                    };
-                    if self.ai_output.is_empty() {
-                        let stem = std::path::Path::new(&self.ai_path)
-                            .file_stem()
-                            .map(|stem| stem.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        self.ai_output = format!("{stem} (no background)");
-                    }
-                }
-            }
+            Message::AiPickFile => return self.ai_pick_file(),
+            Message::AiChosen(path) => return self.ai_chosen(path),
             Message::AiOutput(path) => self.ai_output = path,
-            Message::AiPickOutput => {
-                let suggestion = self.ai_output.clone();
-                return Task::perform(
-                    async move {
-                        rfd::AsyncFileDialog::new()
-                            .set_file_name(suggestion)
-                            .pick_folder()
-                            .await
-                            .map(|folder| folder.path().display().to_string())
-                    },
-                    |picked| Message::AiOutput(picked.unwrap_or_default()),
-                );
-            }
-            Message::AiStart => {
-                if self.ai_path.trim().is_empty() {
-                    self.ai_note = self.i18n.tr("choose an animation first").to_string();
-                } else if self.ai_output.trim().is_empty() {
-                    self.ai_note = self.i18n.tr("choose where to write first").to_string();
-                } else if !anima_engine_rs::ai::model_ready() {
-                    self.ai_note = self.i18n.tr("the model is not downloaded yet").to_string();
-                } else {
-                    self.ai_running = true;
-                    self.ai_note = self.i18n.tr("working…").to_string();
-                    self.ai_state
-                        .reset(anima_engine_rs::ai::probe_frames(&self.ai_path));
-                    self.ai_state
-                        .stopped
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                    let request = AiRequest {
-                        video: self.ai_path.clone(),
-                        output: std::path::PathBuf::from(self.ai_output.trim()),
-                        running: self.ai_state.clone(),
-                    };
-                    return Task::perform(async move { ai_cut(request) }, Message::AiDone);
-                }
-            }
-            Message::AiCancel => {
-                // The worker reads this once per frame, so cancelling costs at most one frame's work.
-                self.ai_state
-                    .stopped
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                self.ai_note = self.i18n.tr("stopping…").to_string();
-            }
+            Message::AiPickOutput => return self.ai_pick_output(),
+            Message::AiStart => return self.ai_start(),
+            Message::AiCancel => return self.ai_cancel(),
             // Nothing to do: the message exists so the subscription repaints the bar.
             Message::AiTick => {}
-            Message::AiDone(result) => {
-                self.ai_running = false;
-                self.ai_note = match result {
-                    Ok(detail) => detail,
-                    Err(detail) => detail,
-                };
-            }
+            Message::AiDone(result) => return self.ai_done(result),
             Message::VideoPath(path) => self.video_path = path,
             Message::VideoPickFile => return self.video_pick_file(),
             Message::VideoChosen(path) => return self.video_chosen(path),
