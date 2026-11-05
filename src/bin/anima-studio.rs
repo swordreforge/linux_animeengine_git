@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 
 use anima_engine_rs::control::{ControlState, InputMode, instance_slug};
 use anima_engine_rs::i18n::{I18n, PRIMARY_LANGUAGES, STEAM_LANGUAGES, normalize_language};
+use anima_engine_rs::log;
 use anima_engine_rs::paths::{ensure_dir, user_data_dir};
 use anima_engine_rs::state::SecondaryState;
 use anima_engine_rs::steamcmd::SteamCmd;
@@ -575,7 +576,11 @@ fn resolve_theme() -> iced_material::Theme {
         && let Ok(text) = std::fs::read_to_string(&path)
         && let Some(scheme) = parse_color_scheme(&text)
     {
-        eprintln!("[studio] theme: Material You from {}", path.display());
+        log::event(
+            log::Level::Info,
+            "studio.theme.material_you",
+            &[("from", &path.display())],
+        );
         return iced_material::Theme::new("Material You (noctalia)", scheme);
     }
     iced_material::Theme::Dark
@@ -601,21 +606,30 @@ fn control_events() -> Subscription<Message> {
                 }
             };
             let Ok(mut watcher) = notify::recommended_watcher(handler) else {
-                eprintln!("[studio] no watcher available; the panel falls back to polling");
+                log::event(log::Level::Info, "studio.watch.unavailable", &[]);
                 return;
             };
             let control = user_data_dir().join(anima_engine_rs::control::CONTROL_DIR);
             // Non-recursive on both: recursive would also report every thumbnail written during a
             // decode, which is a refresh nobody asked for.
             if let Err(error) = watcher.watch(&control, RecursiveMode::NonRecursive) {
-                eprintln!("[studio] cannot watch {}: {error}", control.display());
+                log::event(
+                    log::Level::Info,
+                    "studio.watch.failed",
+                    &[("path", &control.display()), ("error", &error)],
+                );
             }
             if let Err(error) = watcher.watch(&user_data_dir(), RecursiveMode::NonRecursive) {
-                eprintln!("[studio] cannot watch the data dir: {error}");
+                log::event(
+                    log::Level::Info,
+                    "studio.watch.data_dir_failed",
+                    &[("error", &error)],
+                );
             }
-            eprintln!(
-                "[studio] watching {} for control changes",
-                control.display()
+            log::event(
+                log::Level::Info,
+                "studio.watch",
+                &[("path", &control.display())],
             );
             // The watcher stops when it is dropped, so this thread keeps it alive for the session.
             loop {
@@ -1283,9 +1297,9 @@ fn load_asset_preview(asset: &Path) -> (PathBuf, Result<Still, String>) {
             } else {
                 if let Some(cache) = &cache {
                     if let Err(error) = ensure_dir(&thumb_dir()) {
-                        eprintln!("[studio] could not create the preview cache: {error}");
+                        log::failure("studio.preview_cache.create_failed", &error);
                     } else if let Err(error) = std::fs::write(cache, encode_asset_preview(&still)) {
-                        eprintln!("[studio] could not cache the asset preview: {error}");
+                        log::failure("studio.preview_cache.write_failed", &error);
                     }
                 }
                 Ok(still)
@@ -1390,9 +1404,10 @@ fn load_metadata(ids: Vec<u64>) -> Vec<(u64, Meta)> {
         Ok(details) => details,
         Err(error) => {
             // Not fatal, and not worth a status line: the rows keep their file names.
-            eprintln!(
-                "[studio] metadata batch of {} id(s) failed: {error}",
-                ids.len()
+            log::event(
+                log::Level::Info,
+                "studio.metadata.batch_failed",
+                &[("ids", &ids.len()), ("error", &error)],
             );
             return Vec::new();
         }
@@ -1407,11 +1422,15 @@ fn load_metadata(ids: Vec<u64>) -> Vec<(u64, Meta)> {
             details: meta.clone(),
         };
         if let Err(error) = ensure_dir(&thumb_dir()) {
-            eprintln!("[studio] could not create the metadata cache: {error}");
+            log::failure("studio.metadata_cache.create_failed", &error);
         } else if let Err(error) =
             anima_engine_rs::paths::atomic_write_json(&meta_cache_path(id), &entry)
         {
-            eprintln!("[studio] could not cache metadata for {id}: {error}");
+            log::event(
+                log::Level::Info,
+                "studio.metadata_cache.write_failed",
+                &[("id", &id), ("error", &error)],
+            );
         }
         loaded.push((id, meta));
     }
@@ -1459,10 +1478,10 @@ fn installed_meta_task(studio: &Studio) -> Option<Task<Message>> {
     })
     .into_iter()
     .next()?;
-    eprintln!(
-        "[studio] metadata: asking for {} of {} installed item(s)",
-        batch.len(),
-        ids.len()
+    log::event(
+        log::Level::Debug,
+        "studio.metadata.asking",
+        &[("batch", &batch.len()), ("installed", &ids.len())],
     );
     Some(Task::perform(
         async move { load_metadata(batch) },
@@ -1490,9 +1509,13 @@ fn meta_for(id: u64) -> Option<Meta> {
     if let Some(cached) = &cached
         && cache_is_fresh(cached.fetched, now)
     {
-        eprintln!(
-            "[studio] metadata {id}: cache ({}s old)",
-            now.saturating_sub(cached.fetched)
+        log::event(
+            log::Level::Debug,
+            "studio.metadata.cached",
+            &[
+                ("id", &id),
+                ("age_seconds", &now.saturating_sub(cached.fetched)),
+            ],
         );
         return Some(cached.details.clone());
     }
@@ -1504,15 +1527,15 @@ fn meta_for(id: u64) -> Option<Meta> {
                 details: meta.clone(),
             };
             if let Err(error) = ensure_dir(&thumb_dir()) {
-                eprintln!("[studio] could not create the metadata cache: {error}");
+                log::failure("studio.metadata_cache.create_failed", &error);
             } else if let Err(error) = anima_engine_rs::paths::atomic_write_json(&path, &entry) {
-                eprintln!("[studio] could not cache the metadata: {error}");
+                log::failure("studio.metadata_cache.write_failed", &error);
             }
-            eprintln!("[studio] metadata {id}: fetched");
+            log::event(log::Level::Debug, "studio.metadata.fetched", &[("id", &id)]);
             Some(meta)
         }
         None => cached.map(|cached| {
-            eprintln!("[studio] metadata {id}: stale cache, Steam unreachable");
+            log::event(log::Level::Debug, "studio.metadata.stale", &[("id", &id)]);
             Meta {
                 stale: true,
                 ..cached.details
@@ -1549,9 +1572,9 @@ fn preview_bytes(id: u64, dir: &Path, url: Option<&str>) -> Result<Vec<u8>, Stri
         .map_err(|error| error.to_string())?
         .to_vec();
     if let Err(error) = ensure_dir(&thumb_dir()) {
-        eprintln!("[studio] could not create the thumbnail cache: {error}");
+        log::failure("studio.thumbnail_cache.create_failed", &error);
     } else if let Err(error) = std::fs::write(&cached, &bytes) {
-        eprintln!("[studio] could not cache the thumbnail: {error}");
+        log::failure("studio.thumbnail_cache.write_failed", &error);
     }
     Ok(bytes)
 }
@@ -1566,10 +1589,15 @@ fn load_item(id: u64, dir: PathBuf) -> Loaded {
         let decoded = ::image::load(std::io::Cursor::new(&bytes), format)
             .map_err(|error| error.to_string())?;
         let rgba = decoded.to_rgba8();
-        eprintln!(
-            "[studio] preview {id}: {format:?} {}x{}",
-            rgba.width(),
-            rgba.height()
+        log::event(
+            log::Level::Debug,
+            "studio.preview",
+            &[
+                ("id", &id),
+                ("format", &format!("{format:?}")),
+                ("width", &rgba.width()),
+                ("height", &rgba.height()),
+            ],
         );
         Ok((rgba.width(), rgba.height(), rgba.into_raw()))
     });
@@ -1860,7 +1888,7 @@ impl Studio {
                 .unwrap_or_else(|| "-".to_string()),
             self.i18n.entries()
         );
-        eprintln!("[studio] {}", self.note);
+        log::event(log::Level::Info, "studio.refresh", &[("note", &self.note)]);
     }
 
     /// Put the cached answers for the installed list into `meta`, which is what the rows read. No
@@ -1877,9 +1905,10 @@ impl Studio {
             .collect();
         let hydrated = hydrate_from(ids, now, read_cached_meta);
         if !hydrated.is_empty() {
-            eprintln!(
-                "[studio] metadata: {} item(s) came from the cache",
-                hydrated.len()
+            log::event(
+                log::Level::Info,
+                "studio.metadata.hydrated",
+                &[("items", &hydrated.len())],
             );
         }
         self.meta.extend(hydrated);
@@ -2010,7 +2039,11 @@ impl Studio {
                         .find(|instance| instance.path == focused)
                 {
                     self.overlay_selected = Some(instance.path.clone());
-                    eprintln!("[studio] following overlay {}", instance.label);
+                    log::event(
+                        log::Level::Info,
+                        "studio.overlay.following",
+                        &[("overlay", &instance.label)],
+                    );
                 }
             }
         }
@@ -2030,9 +2063,10 @@ impl Studio {
         }
         self.overlay_signature = signature;
         self.reload_overlay();
-        eprintln!(
-            "[studio] overlay panel refreshed: {} instance(s)",
-            self.overlay.len()
+        log::event(
+            log::Level::Debug,
+            "studio.overlay.refreshed",
+            &[("instances", &self.overlay.len())],
         );
     }
 

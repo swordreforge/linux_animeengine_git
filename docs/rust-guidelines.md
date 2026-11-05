@@ -41,7 +41,7 @@ should be re-measured rather than trusted.
 
 | | Do | Don't |
 |---|---|---|
-| **M-LOG-NOT-PRINT** | Emit diagnostics through `log` (`src/log.rs`): an event name and named fields, one line, on stderr, with `ANIMA_LOG=off\|info\|debug` choosing how much of it a user sees. Two things stay outside it: a `println!` to stdout where that stdout *is* the interface (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`, and the shepherd's `status`, `list`, `prune`), and a fatal "cannot start" message, which a log level should not be able to hide | `println!`/`eprintln!` for anything a user can run without. *(the overlay's 50 sites and the shepherd's 22 are moved; the studio's 34 remain)* |
+| **M-LOG-NOT-PRINT** | Emit diagnostics through `log` (`src/log.rs`): an event name and named fields, one line, on stderr, with `ANIMA_LOG=off\|info\|debug` choosing how much of it a user sees. Three kinds stay outside it, each for its own reason: a `println!` to stdout where that stdout *is* the interface (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`, and the shepherd's `status`, `list`, `prune`); a fatal "cannot start" message, which a log level should not be able to hide; and a print inside a test, whose output is read by whoever ran it | `println!`/`eprintln!` on a path a user runs. *(done: the overlay's 50 sites, the shepherd's 22, the studio's 23)* |
 | **M-LOG-STRUCTURED** | One event per line with named fields, so it can be grepped and parsed: `overlay.instance.restored x=100 y=200 scale=100 mode=Opaque` | A sentence with interpolated values, which needs a regular expression to read back |
 | **M-LOG-OVERHEAD** | Keep a logging call off the per-frame path, or guard it | Formatting a string every frame and throwing it away |
 
@@ -149,15 +149,14 @@ benchmark are kept, off by default, so that costs one build.
 
 ## Outstanding, in the order worth doing
 
-1. Move `anima-studio.rs`'s 34 console sites onto `log`; the overlay and the shepherd are done.
-   `examples/log_events.rs` shows the format without needing a compositor.
-2. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
+1. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
-3. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
-4. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
+2. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
+3. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
    future readers rather than a resolution.
 
 Done from this list: the two lint overrides; `rust-version`, which turned out to be 1.92 rather than the 1.88 I
-derived; and `Debug` on the public types, which is now a `#![deny(missing_debug_implementations)]` in
-`src/lib.rs` rather than a promise — a new public type without it fails the build. That guard covers the
-library only, which is the scope the rule is about: a `pub` type in a binary is not public API.
+derived; `Debug` on the public types, which is now a `#![deny(missing_debug_implementations)]` in
+`src/lib.rs` rather than a promise — a new public type without it fails the build, and that guard covers the
+library only, which is the scope the rule is about, since a `pub` type in a binary is not public API; and the
+console output, which `log` now handles in all three binaries, with `examples/log_events.rs` to see the format.
