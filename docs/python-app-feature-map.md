@@ -51,6 +51,53 @@ browser with four sub-pages, a discover grid and four "side" action pages — an
 9. **Profile export/import** — `MInteraDesktopExport.zip`, the legacy profile format, with autostart and
    monitor choice.
 
+## The AI removal: what the model actually is, and what to build it on
+
+Confirmed from the shipped tree, not from documentation:
+
+* **It is ONNX.** `_internal/onnxruntime/` ships with the app, `rembg` is vendored beside it, and
+  `eliminarFondo.py` calls `new_session(name, providers=["CUDAExecutionProvider" | "CPUExecutionProvider"])`
+  — those provider names *are* ONNX Runtime's. The model name comes from the chosen file's basename, and the
+  picker opens at `~/.u2net`, which is where rembg keeps the `.onnx` it downloads.
+* **No weights ship.** There is no `.onnx` anywhere in the tree, so the first use downloads the model.
+  Worth knowing for a case like this one: the AI removal is the only tool on the page that cannot work
+  offline on a fresh machine, and it fails by downloading rather than by erroring.
+* **The model that matters is `isnet-anime`**, which `ey.py` hard-codes three times — not `u2net`.
+  Anime-line-art segmentation is exactly what a wallpaper animation needs, and the general model is
+  noticeably worse at it. That choice is the single most valuable thing in the whole tool.
+
+### AOT, JIT, or both — and why the question is shaped differently for ONNX
+
+ONNX Runtime is **already** ahead-of-time with respect to the graph: at session creation it fuses,
+folds constants and picks kernels, once. What remains genuinely just-in-time is kernel selection for the
+execution provider, and what remains genuinely ahead-of-time is three other things:
+
+| Layer | AOT or JIT | Portable? |
+|---|---|---|
+| **Graph optimisation** (fusing, folding) | AOT, once per session, ~100 ms | yes, automatic |
+| **Quantised INT8 weights** | true AOT, done offline | **yes** — architecture-independent, half the size, ~4× faster on CPU |
+| **Compiled engine** (TensorRT engine, OpenVINO blob, ORT's `EPContext`) | true AOT, minutes to build | **no** — tied to one machine, GPU and driver |
+| **Kernel selection per provider** | JIT at load | yes |
+
+So the recommendation is a mix, but not the one the two words usually suggest: **JIT-on-load by default,
+AOT for the weights, and never ship a compiled engine.**
+
+* Runtime: the `ort` crate, not `tch`/libtorch. One dependency against a 2 GB toolchain, and it is the same
+  runtime the original used, so the model files are directly reusable.
+* Default path: `ort` with ORT's own graph optimisation and the CPU provider. Nothing to build, nothing to
+  ship, works on any machine.
+* The AOT that earns its place: **ship an INT8-quantised `isnet-anime.onnx`**. The model is small enough to
+  vendor, quantisation is offline and architecture-independent, and it turns a 176 MB download into
+  something that can be in the installer.
+* The optional layer: cache a compiled engine per machine (`EPContext`, or an OpenVINO blob) after the
+  first run, for users with a GPU provider. Compile once, load in milliseconds, and keep it out of any
+  installer — a blob built on one GPU is a runtime error on another.
+
+And the number that should decide the schedule rather than the theory: `isnet-anime` on CPU is roughly
+100-300 ms per 1024×1024 frame, so a 60-frame animation is **ten to twenty seconds of work**. Batching,
+a progress bar and a way to cancel matter more here than any of the four rows above, and the original has
+none of the three.
+
 ## Not portable, and not worth pretending otherwise
 
 * **`SendVideoRequestWindow`** sends through Firebase Firestore using the bundled Admin SDK, so it
