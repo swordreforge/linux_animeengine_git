@@ -2,6 +2,9 @@
 name = "anima-engine-rs"
 version = "0.1.0"
 edition = "2024"
+# Set by the dependency with the highest floor, not by any feature we use: `ort` (ONNX Runtime) is not
+# optional and requires 1.92. Cargo refuses to build on anything lower, which is how the number was found.
+rust-version = "1.92"
 description = "Rust rewrite of AnimaEngine — pure logic core (animation state, frame cache, preferences, i18n)."
 license = "MIT"
 

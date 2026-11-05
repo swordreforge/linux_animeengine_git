@@ -618,7 +618,13 @@ mod menu {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    // The ten arguments are one shape: a frame, the origin it is measured from, two endpoints, a half
+    // width and a colour. Grouping them into a type would read better than a long list, and is tracked in
+    // `docs/rust-guidelines.md`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one shape's geometry; a type would say the same thing more clearly, and is on the list in docs/rust-guidelines.md"
+    )]
     fn push_diagonal(
         out: &mut Vec<MenuVertex>,
         frame: (f32, f32),

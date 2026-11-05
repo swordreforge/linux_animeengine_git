@@ -24,8 +24,8 @@ should be re-measured rather than trusted.
 
 | | Do | Don't |
 |---|---|---|
-| **M-LINT-OVERRIDE-EXPECT** | Silence a lint with `#[expect(clippy::x, reason = "why")]`, which fails when the lint stops firing | Use `#[allow]` outside generated code — it goes stale silently. *(2 sites to convert)* |
-| **M-MSRV** | Declare `rust-version` in `Cargo.toml`, so cargo refuses a toolchain that cannot build us. The floor is set by the newest feature we use: `edition = "2024"` needs 1.85, `is_multiple_of` needs 1.87, let-chains need 1.88 | Leave the MSRV implicit. Nothing here derives the number — only 1.99.1 is installed, so 1.88 is where the list points, not something this tree has proven |
+| **M-LINT-OVERRIDE-EXPECT** | Silence a lint with `#[expect(clippy::x, reason = "why")]`, which fails when the lint stops firing | Use `#[allow]` outside generated code — it goes stale silently. *(both former sites are dealt with: one fixture was rewritten so it no longer needs the lint, the other is an `#[expect]` carrying its reason)* |
+| **M-MSRV** | Declare `rust-version` in `Cargo.toml`, and find the number by running a `cargo +<older toolchain>` command: cargo names every dependency that refuses that toolchain, and the highest refusal is the floor | Derive it from the language features you use. Ours is 1.92, set by the non-optional `ort` (ONNX Runtime) — not the 1.88 that let-chains and `is_multiple_of` suggest, which is what I wrote first |
 | **M-STATIC-VERIFICATION** | Keep `cargo clippy --all-targets` at zero for every feature set we ship. The function-length ratchet is part of it | Add a binary without adding it to a feature set that CI builds |
 
 ## Errors
@@ -117,10 +117,12 @@ should be re-measured rather than trusted.
 
 ## Outstanding, in the order worth doing
 
-1. `#[allow]` → `#[expect(…, reason = …)]`; add `rust-version`; derive `Debug` on the 30 public types.
+1. Derive `Debug` on the 30 public types. *(The `#[allow]` sites and `rust-version` are done.)*
 2. `mimalloc` as the global allocator — then measure it. The guideline says "up to 25%", which is a claim from
    someone else's benchmark, not a result in this tree.
 3. Move the overlay's `eprintln!` diagnostics onto `telemetry`.
 4. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
 5. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
+6. `push_diagonal`'s ten arguments want a type. It carries an `#[expect]` saying so, which is a note to
+   future readers rather than a resolution.

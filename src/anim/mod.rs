@@ -893,7 +893,6 @@ mod tests {
 
     const GIF_PALETTE: [u8; 12] = [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255];
 
-    #[allow(clippy::field_reassign_with_default)]
     fn gif_frame(
         w: u16,
         h: u16,
@@ -903,15 +902,16 @@ mod tests {
         dispose: gif::DisposalMethod,
         delay: u16,
     ) -> gif::Frame<'static> {
-        let mut frame = gif::Frame::default();
-        frame.width = w;
-        frame.height = h;
-        frame.left = left;
-        frame.top = top;
-        frame.delay = delay;
-        frame.dispose = dispose;
-        frame.buffer = Cow::Owned(vec![idx; (w as usize) * (h as usize)]);
-        frame
+        gif::Frame {
+            width: w,
+            height: h,
+            left,
+            top,
+            delay,
+            dispose,
+            buffer: Cow::Owned(vec![idx; (w as usize) * (h as usize)]),
+            ..gif::Frame::default()
+        }
     }
 
     fn encode_gif(dim: (u16, u16), frames: &[gif::Frame]) -> Vec<u8> {
