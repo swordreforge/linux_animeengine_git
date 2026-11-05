@@ -5,6 +5,7 @@
 //! `Gpu` is what `frames::build` wanted all along, so its call sites go back to passing two things.
 
 use crate::*;
+use anima_engine_rs::log;
 
 /// Everything here is an Arc-backed wgpu handle, so cloning is a refcount bump. The surface is not a field:
 /// it belongs to the window, and it is not `Clone`, which is what settled the question.
@@ -59,10 +60,13 @@ impl Gpu {
             descriptor.required_features = wgpu::Features::TEXTURE_COMPRESSION_BC;
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))?;
-        eprintln!(
-            "[overlay] gpu {} | bc7 blocks: {}",
-            adapter.get_info().name,
-            if bc7 { "supported" } else { "unavailable" }
+        log::event(
+            log::Level::Info,
+            "overlay.gpu",
+            &[
+                ("adapter", &adapter.get_info().name),
+                ("bc7", &(if bc7 { "supported" } else { "unavailable" })),
+            ],
         );
 
         let limits = adapter.limits();

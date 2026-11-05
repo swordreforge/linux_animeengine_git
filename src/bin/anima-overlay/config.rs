@@ -5,6 +5,7 @@
 //! variables, which is why it was the safest slice to take on its own.
 
 use crate::*;
+use anima_engine_rs::log;
 
 pub(super) struct Config {
     pub path: Option<PathBuf>,
@@ -50,8 +51,12 @@ impl Config {
                 .as_deref(),
         );
         match ControlState::announce(&early_control) {
-            Ok(marker) => eprintln!("[overlay] announced {}", marker.display()),
-            Err(error) => eprintln!("[overlay] could not announce liveness: {error}"),
+            Ok(marker) => log::event(
+                log::Level::Info,
+                "overlay.liveness.announced",
+                &[("marker", &marker.display())],
+            ),
+            Err(error) => log::failure("overlay.liveness.announce_failed", &error),
         }
         let Loaded {
             animation,
@@ -83,7 +88,11 @@ impl Config {
         let state_path = SecondaryState::user_path();
         let control_path = ControlState::path_for(instance_key.as_deref());
         let region_tuning = RegionTuning::from_env();
-        eprintln!("[overlay] region limits: {}", region_tuning.describe());
+        log::event(
+            log::Level::Info,
+            "overlay.region_limits",
+            &[("limits", &region_tuning.describe())],
+        );
         let persisted = instance_key
             .as_deref()
             .and_then(|key| SecondaryState::load(&state_path).find_by_key(key).cloned());
@@ -123,11 +132,22 @@ impl Config {
         );
         let (disp_w, disp_h) = orientation.size((width, height));
         if persisted.is_some() {
-            eprintln!(
-                "[overlay] restored instance: ({pos_x}, {pos_y}) at {initial_scale}%, \
-             mode {initial_mode:?}, locked {initial_locked}, hover_hide {initial_hover_hide}, \
-             fps {fps} (meta {meta_fps}), quarters {}, flip_h {}, flip_v {}",
-                orientation.quarter_turns, orientation.flip_h, orientation.flip_v
+            log::event(
+                log::Level::Info,
+                "overlay.instance.restored",
+                &[
+                    ("x", &pos_x),
+                    ("y", &pos_y),
+                    ("scale", &initial_scale),
+                    ("mode", &format!("{initial_mode:?}")),
+                    ("locked", &initial_locked),
+                    ("hover_hide", &initial_hover_hide),
+                    ("fps", &fps),
+                    ("meta_fps", &meta_fps),
+                    ("quarters", &orientation.quarter_turns),
+                    ("flip_h", &orientation.flip_h),
+                    ("flip_v", &orientation.flip_v),
+                ],
             );
         }
 

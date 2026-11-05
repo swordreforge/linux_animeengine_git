@@ -41,8 +41,8 @@ should be re-measured rather than trusted.
 
 | | Do | Don't |
 |---|---|---|
-| **M-LOG-NOT-PRINT** | Route diagnostics from the overlay, studio and shepherd through `telemetry`; write to stdout only in the CLI binaries (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`), where it *is* the interface | `println!`/`eprintln!` in a GUI or daemon. *(`anima-overlay` 41, `anima-shepherd` 46, `anima-studio` 34 sites to move)* |
-| **M-LOG-STRUCTURED** | One message per event with named fields, so it can be filtered and grepped | Interpolating a whole sentence. `"[overlay] rebuilt frames: 12 frame(s) 480x270"` becomes fields `frames`, `width`, `height` |
+| **M-LOG-NOT-PRINT** | Emit diagnostics through `log` (`src/log.rs`): an event name and named fields, one line, on stderr, with `ANIMA_LOG=off\|info\|debug` choosing how much of it a user sees. CLI binaries whose stdout *is* the interface (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`) keep printing | `println!`/`eprintln!` in a GUI or daemon, which always prints and cannot be turned down. *(`anima-overlay`'s five modules are converted; its own 41 sites, the shepherd's 46 and the studio's 34 remain)* |
+| **M-LOG-STRUCTURED** | One event per line with named fields, so it can be grepped and parsed: `overlay.instance.restored x=100 y=200 scale=100 mode=Opaque` | A sentence with interpolated values, which needs a regular expression to read back |
 | **M-LOG-OVERHEAD** | Keep a logging call off the per-frame path, or guard it | Formatting a string every frame and throwing it away |
 
 ## Types
@@ -149,7 +149,8 @@ benchmark are kept, off by default, so that costs one build.
 
 ## Outstanding, in the order worth doing
 
-1. Move the overlay's `eprintln!` diagnostics onto `telemetry`.
+1. Finish moving the console output onto `log`: the remaining 41 sites in `anima-overlay.rs` itself, then
+   `anima-shepherd.rs` at 46 and `anima-studio.rs` at 34.
 2. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
 3. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.

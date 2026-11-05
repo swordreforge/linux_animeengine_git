@@ -7,6 +7,7 @@
 
 use super::gpu::Gpu;
 use crate::*;
+use anima_engine_rs::log;
 
 pub(super) fn build(gpu: &Gpu, loaded: Loaded) -> Frames {
     let Loaded {
@@ -30,23 +31,38 @@ pub(super) fn build(gpu: &Gpu, loaded: Loaded) -> Frames {
         && block_bytes <= ARRAY_BUDGET;
     let use_array = bc7_array || rgba_array;
     let layers = if use_array { frame_count as u32 } else { 1 };
-    eprintln!(
-        "[overlay] {} frame(s) {}x{} — {:.1} MiB decoded, {:.1} MiB gpu.bc7, {} (decode cap {:.0} MiB)",
-        frame_count,
-        width,
-        height,
-        total_bytes as f64 / (1024.0 * 1024.0),
-        block_bytes as f64 / (1024.0 * 1024.0),
-        if bc7_array {
-            "gpu.bc7 array texture"
-        } else if blocks_usable {
-            "gpu.bc7 just-in-time upload"
-        } else if rgba_array {
-            "rgba array texture"
-        } else {
-            "rgba just-in-time upload"
-        },
-        decode_limits.max_bytes as f64 / (1024.0 * 1024.0)
+    log::event(
+        log::Level::Info,
+        "overlay.frames",
+        &[
+            ("frames", &frame_count),
+            ("width", &width),
+            ("height", &height),
+            (
+                "decoded_mib",
+                &format!("{:.1}", total_bytes as f64 / (1024.0 * 1024.0)),
+            ),
+            (
+                "bc7_mib",
+                &format!("{:.1}", block_bytes as f64 / (1024.0 * 1024.0)),
+            ),
+            (
+                "storage",
+                &(if bc7_array {
+                    "gpu.bc7 array texture"
+                } else if blocks_usable {
+                    "gpu.bc7 just-in-time upload"
+                } else if rgba_array {
+                    "rgba array texture"
+                } else {
+                    "rgba just-in-time upload"
+                }),
+            ),
+            (
+                "decode_cap_mib",
+                &format!("{:.0}", decode_limits.max_bytes as f64 / (1024.0 * 1024.0)),
+            ),
+        ],
     );
 
     // BC textures are measured in pixels but stored in whole 4x4 blocks, so the

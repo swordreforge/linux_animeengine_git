@@ -6,6 +6,31 @@
 //! `main` still touches afterwards.
 
 use crate::*;
+use anima_engine_rs::log;
+use smithay_client_toolkit::reexports::client::globals::GlobalList;
+
+/// Prints every global the compositor announced. This is for sandboxed runs — a Flatpak that does not offer
+/// a global the overlay needs — where the only useful question is what the compositor actually offered.
+fn report_globals(globals: &GlobalList) {
+    let mut offered = globals.contents().clone_list();
+    offered.sort_by(|left, right| left.interface.cmp(&right.interface));
+    for global in &offered {
+        log::event(
+            log::Level::Debug,
+            "overlay.wayland.global",
+            &[
+                ("interface", &global.interface),
+                ("version", &global.version),
+                ("name", &global.name),
+            ],
+        );
+    }
+    log::event(
+        log::Level::Debug,
+        "overlay.wayland.globals",
+        &[("count", &offered.len())],
+    );
+}
 
 pub(super) struct Wayland {
     pub conn: Connection,
@@ -39,18 +64,10 @@ impl Wayland {
         let qh = event_queue.handle();
         let (globals, _) = registry_queue_init::<OverlayState>(&conn)?;
 
-        // Diagnostic for sandboxed runs (e.g. a Flatpak that does not offer a global):
-        // print what the compositor actually announced, then continue as usual.
+        // Diagnostic for sandboxed runs (a Flatpak that does not offer a global the overlay
+        // needs): say what the compositor actually announced, then continue as usual.
         if std::env::var_os("ANIMA_DUMP_GLOBALS").is_some() {
-            let mut offered = globals.contents().clone_list();
-            offered.sort_by(|left, right| left.interface.cmp(&right.interface));
-            for global in &offered {
-                eprintln!(
-                    "[overlay] global {} v{} (name {})",
-                    global.interface, global.version, global.name
-                );
-            }
-            eprintln!("[overlay] {} global(s) offered", offered.len());
+            report_globals(&globals);
         }
 
         let compositor: wl_compositor::WlCompositor = globals
@@ -157,7 +174,7 @@ impl Wayland {
         control.region_soft_rects = region_tuning.soft_rects;
         control.region_max_rects = region_tuning.max_rects;
         if let Err(err) = control.save(&control_path) {
-            eprintln!("[overlay] control file init failed: {err}");
+            log::failure("overlay.control.init_failed", &err);
         }
         let control_mtime = std::fs::metadata(&control_path)
             .and_then(|m| m.modified())
