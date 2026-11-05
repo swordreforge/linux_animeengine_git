@@ -12,6 +12,10 @@
 //! makes two subjects comparable, and because three charts of one metric each is the same code three times
 //! rather than three nearly identical pieces of code.
 //!
+//! The colours come from the window's own theme rather than from a palette of its own: the two lines are
+//! material's primary and secondary, and the ink is chosen for a light or a dark scheme, so the chart reads as
+//! part of the window it is in and stays legible when the user's palette is light.
+//!
 //! Each point carries the instant it was read, and the x axis is that in seconds from the oldest point still
 //! held. A tick that never fired is therefore a gap in the line rather than a compression of it: the readings
 //! come from a timer, and a chart that counts readings instead of time would draw the same shape whether they
@@ -27,13 +31,6 @@ use anima_engine_rs::telemetry::Sample;
 
 /// How much history to keep: five minutes at one sample per second.
 const POINTS: usize = 300;
-
-/// One colour per subject, in the order the subjects arrive. Fixed for now — reading them from the material
-/// scheme is the refinement, and it changes nothing about whether the numbers are right.
-const COLOURS: [Color; 2] = [
-    Color::from_rgb(0.55, 0.75, 1.0),
-    Color::from_rgb(1.00, 0.70, 0.40),
-];
 
 /// The space the labels take at the top of the chart, which the lines must not be drawn through.
 const LABEL_BAND: f32 = 16.0;
@@ -141,7 +138,7 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
         &self,
         _state: &(),
         renderer: &Renderer,
-        _theme: &iced_material::Theme,
+        theme: &iced_material::Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -149,13 +146,22 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
         let (series, peak) = self.window();
         let names: Vec<&'static str> = self.series.keys().copied().collect();
 
-        // A wash behind the lines, so they are legible on either scheme. The window's own background shows
-        // through the rest.
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            Color::from_rgba(0.0, 0.0, 0.0, 0.25),
-        );
+        // The two lines are material's own accents, and the ink and the wash are picked for a light or a dark
+        // scheme rather than assumed to be light — a Material You palette can be either, and a chart drawn in
+        // white on a light window is a chart nobody can read.
+        let colours = [theme.colors().primary.color, theme.colors().secondary.color];
+        let (ink, wash) = if theme.is_dark() {
+            (
+                Color::from_rgba(1.0, 1.0, 1.0, 0.75),
+                Color::from_rgba(0.0, 0.0, 0.0, 0.20),
+            )
+        } else {
+            (
+                Color::from_rgba(0.0, 0.0, 0.0, 0.75),
+                Color::from_rgba(1.0, 1.0, 1.0, 0.30),
+            )
+        };
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), wash);
 
         let width = bounds.width;
         let usable = (bounds.height - LABEL_BAND).max(1.0);
@@ -173,7 +179,7 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
             if points.len() < 2 {
                 continue;
             }
-            let colour = COLOURS[index % COLOURS.len()];
+            let colour = colours[index % colours.len()];
             let mut line = canvas::path::Builder::new();
             for (position, (seconds, value)) in points.iter().enumerate() {
                 let x = (seconds / span).min(1.0) as f32 * width;
@@ -196,7 +202,7 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
         frame.fill_text(canvas::Text {
             content: format!("{} ({})", self.name, self.unit),
             position: Point::new(6.0, 24.0),
-            color: Color::from_rgba(1.0, 1.0, 1.0, 0.55),
+            color: Color { a: 0.55, ..ink },
             size: iced::Pixels(10.0),
             ..canvas::Text::default()
         });
@@ -209,7 +215,7 @@ impl canvas::Program<crate::Message, iced_material::Theme, Renderer> for Chart {
             frame.fill_text(canvas::Text {
                 content: format!("{name} {latest:.1}"),
                 position: Point::new(6.0, 11.0 + index as f32 * 13.0),
-                color: COLOURS[index % COLOURS.len()],
+                color: colours[index % colours.len()],
                 size: iced::Pixels(11.0),
                 ..canvas::Text::default()
             });
