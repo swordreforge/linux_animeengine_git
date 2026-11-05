@@ -152,8 +152,8 @@ benchmark are kept, off by default, so that costs one build.
 Two benchmarks, both run on this machine and both kept as examples so the numbers can be reproduced and
 compared against. The first one's answer was not what I expected.
 
-**The overlay's per frame** — `cargo run --release --features overlay --example frame_bench`, 12 frames of
-480x270 on an Intel Arc MTL through Vulkan:
+**The overlay's per frame** — `cargo run --release --features overlay --example frame_bench` (add an animation path for the real
+numbers below), 12 frames of 480x270 on an Intel Arc MTL through Vulkan:
 
 | | per rebuild | rects | per second at 60 fps |
 |---|---|---|---|
@@ -164,9 +164,28 @@ compared against. The first one's answer was not what I expected.
 
 The upload is 1.4% of a 16.7 ms frame. The **region scan is six times the upload**, and it runs every third
 frame (`REGION_UPDATE_FRAMES`), so it costs 28.8 ms out of every second — 2.9% of the process's wall time,
-spent finding the silhouette. The lever already exists and is the `Auto` step: at step 4 the scan is fifteen
-times cheaper. What to check next is which step `Auto` actually chooses for a real animation, because step 1
-at 109 rectangles is not a silhouette that needs one-pixel resolution.
+spent finding the silhouette.
+
+That raised an obvious question — which step does `Auto` pick for a real animation? — so the same example takes
+an animation path and answers it. Three real workshop clips:
+
+| | surface | step 1 | rects, worst frame | step 1 cost | max_step | `Auto` picks |
+|---|---|---|---|---|---|---|
+| `Miku Miku Dance.gif` | 200x164 | 0.481 ms | 128 | 9.6 ms/s | 1 | step 1 → 1.0% of wall time |
+| `Cute Dancing GIF.gif` | 200x200 | 0.471 ms | 273 | 9.4 ms/s | 1 | step 1 → 0.9% |
+| `boeeee.apng` | 370x370 | **1.559 ms** | 264 | **31.2 ms/s** | 2 | step 1 → **3.1%** |
+
+Two answers, and the first is the more useful one. **`Auto` picks step 1 every time, because real silhouettes
+produce 128 to 273 rectangles and the soft budget is 768.** The coarsening path — the `while rects.len() >
+soft_rects` loop, the doubling, the `max_step` bound — never runs on this input. It is machinery that no real
+animation reaches, which is not the same as it being wrong, but it is worth knowing before trusting it.
+
+The second: the cost scales with the *surface area*, not with the animation's file size or frame count.
+200x200 costs 9.4 ms/s and 370x370 costs 31.2 ms/s — 3.3x for 3.4x the pixels. So the number that matters for a
+given overlay is its displayed size, and at 370x370 the scan is 3.1% of wall time. That is real but small, and
+the knob is `ANIMA_REGION_SOFT_RECTS`: at 256, `boeeee.apng`'s 264 rectangles would push `Auto` to step 2 and
+8 ms/s instead of 31, paying for it in two-pixel-batch input accuracy. Worth trading only if the 3% ever shows
+up somewhere.
 
 **The AI removal's CPU stages** — `cargo run --release --example ai_frame_bench`, 1280x720 frames:
 
