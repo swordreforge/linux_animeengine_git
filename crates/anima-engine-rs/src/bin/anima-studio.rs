@@ -1668,7 +1668,9 @@ impl Studio {
     fn sample_telemetry(&mut self) {
         let sample = self.resources.sample();
         log_resource("studio", std::process::id(), &sample);
-        self.chart.push("studio", &sample);
+        for chart in &mut self.charts {
+            chart.push("studio", &sample);
+        }
 
         // Discovered, not remembered — see `overlays` on the struct. The control directory says which
         // instances exist, the liveness marker says which of them are running, and the two together are what
@@ -1709,7 +1711,9 @@ impl Studio {
         };
         if !self.overlays.is_empty() {
             log_overlays(self.overlays.len(), &sum);
-            self.chart.push("overlays", &sum);
+            for chart in &mut self.charts {
+                chart.push("overlays", &sum);
+            }
         }
     }
 }
@@ -1843,9 +1847,9 @@ struct Studio {
     /// from, so a process needs one of its own: two processes through one sampler would subtract each
     /// other's counters and report nonsense.
     resources: Sampler,
-    /// Memory over time, for the chart. The readings live in it rather than here because nothing else reads
-    /// them and only the chart knows how much history it wants.
-    chart: crate::chart::Chart,
+    /// The charts, one per metric, each holding its own history. The readings live in them rather than here
+    /// because nothing else reads them and only a chart knows how much history it needs.
+    charts: [crate::chart::Chart; 3],
     /// The overlays that are running, by slug, with a sampler each.
     ///
     /// Rebuilt from the control directory every tick rather than remembered from the spawn, because this
@@ -1939,7 +1943,11 @@ impl Studio {
             overlay_selected: None,
             children: Vec::new(),
             resources: Sampler::new(),
-            chart: crate::chart::Chart::default(),
+            charts: [
+                crate::chart::Chart::memory(),
+                crate::chart::Chart::cpu(),
+                crate::chart::Chart::gpu(),
+            ],
             overlays: std::collections::BTreeMap::new(),
             overlay_signature: String::new(),
             focus_seen: None,
@@ -2896,14 +2904,16 @@ impl Studio {
         for line in self.diagnostics_lines() {
             lines = lines.push(text(line).size(12));
         }
-        lines = lines.push(
-            // `canvas` hands the program to the widget by value. A canvas `Program` is what makes this possible
-            // at all in a window whose elements are typed by `iced_material::Theme`: the theme is a parameter of
-            // the trait, so this one is written for the theme the window actually uses.
-            iced::widget::canvas(self.chart.clone())
-                .width(iced::Length::Fill)
-                .height(iced::Length::Fixed(160.0)),
-        );
+        // `canvas` hands the program to the widget by value. A canvas `Program` is what makes this possible at
+        // all in a window whose elements are typed by `iced_material::Theme`: the theme is a parameter of that
+        // trait, so these are written for the theme the window actually uses.
+        for chart in &self.charts {
+            lines = lines.push(
+                iced::widget::canvas(chart.clone())
+                    .width(iced::Length::Fill)
+                    .height(iced::Length::Fixed(140.0)),
+            );
+        }
         lines = lines.push(
             button(text(self.i18n.tr("Copy all")))
                 .style(secondary)
