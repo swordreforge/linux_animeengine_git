@@ -274,11 +274,18 @@ pub fn parse_pss(rollup: &str) -> Option<u64> {
 }
 
 /// The GPU nanoseconds this process has been given, summed over every `drm-engine-*` line in its fdinfo.
+///
+/// One element per file, and the lines are found inside them. Taking the first colon of each element
+/// instead — which is what this did — reads the first line of each fdinfo file, and a fdinfo file begins
+/// with something like `pos:` or `flags:`, so every real file summed to nothing and the GPU figure was
+/// always zero. The test did not catch it because it passed one line per element: the shape it fed was not
+/// the shape its caller has.
 pub fn parse_gpu_nanoseconds(contents: &[String]) -> u64 {
     contents
         .iter()
-        .filter_map(|text| {
-            let (key, value) = text.split_once(':')?;
+        .flat_map(|text| text.lines())
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
             if !key.starts_with("drm-engine-") || key.contains("-capacity-") {
                 return None;
             }
@@ -416,16 +423,15 @@ mod tests {
 
     #[test]
     fn gpu_nanoseconds_are_summed_across_engines_and_labels_ignored() {
-        let lines = vec![
-            "drm-total-system0:\t12\n".to_string(),
-            "drm-engine-render:\t1000 ns\n".to_string(),
-            "drm-engine-copy:\t500 ns\n".to_string(),
-            "drm-engine-capacity-video:\t2\n".to_string(),
-            "drm-client-id:\t7\n".to_string(),
-            "pos:\t0\n".to_string(),
+        // Whole files, in the shape the caller passes, with the engine lines where a fdinfo file really has
+        // them: after something else. The version of this test that fed one line per element passed while
+        // every real file parsed to zero.
+        let files = vec![
+            "pos:\t0\nflags:\t02400002\ndrm-total-system0:\t12\ndrm-engine-render:\t1000 ns\ndrm-engine-copy:\t500 ns\ndrm-engine-capacity-video:\t2\ndrm-client-id:\t7\n".to_string(),
+            "pos:\t0\ndrm-engine-render:\t7 ns\n".to_string(),
         ];
-        // 1000 + 500: the capacity line is a count, not a duration, and must not be added.
-        assert_eq!(parse_gpu_nanoseconds(&lines), 1500);
+        // 1000 + 500 + 7: the capacity line is a count, not a duration, and must not be added.
+        assert_eq!(parse_gpu_nanoseconds(&files), 1507);
     }
 
     #[test]
