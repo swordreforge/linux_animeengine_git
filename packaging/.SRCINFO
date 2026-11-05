@@ -8,7 +8,6 @@ pkgbase = anima-engine
 	makedepends = rust
 	makedepends = gcc
 	depends = glibc
-	depends = gcc-libs
 	depends = vulkan-icd-loader
 	depends = wayland
 	optdepends = mesa: a Vulkan driver, without which the overlay and the studio cannot render
@@ -16,6 +15,7 @@ pkgbase = anima-engine
 	optdepends = steamcmd: download and sync Workshop items
 	optdepends = xdg-desktop-portal: file dialogs in the studio
 	optdepends = libsteam_api: Steam presence, if built with the steamworks feature
+	options = !lto
 	source = anima-engine-0.1.0.tar.gz::https://github.com/swordreforge/linux_animeengine_git/archive/v0.1.0.tar.gz
 	sha256sums = c506b1479783a2180eb1e8b6dac9f69631500782510cdcf3d12a0684657c7e18
 
