@@ -21,7 +21,7 @@ optdepends=(
   'libsteam_api: Steam presence, if built with the steamworks feature'
 )
 source=("$pkgname-$pkgver.tar.gz::https://github.com/swordreforge/linux_animeengine_git/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # fill this in before uploading to the AUR
+sha256sums=('c506b1479783a2180eb1e8b6dac9f69631500782510cdcf3d12a0684657c7e18')
 
 build() {
   cd "$pkgname-$pkgver"
