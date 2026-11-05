@@ -42,8 +42,9 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     (
         "src/bin/anima-shepherd.rs",
         "menu",
-        172,
-        "the tray menu's entries, described in one place on purpose",
+        166,
+        "the tray menu's entries, described in one place on purpose; it shrank by six lines when the \
+         save-and-report shape its five actions repeated became two helpers",
     ),
 ];
 

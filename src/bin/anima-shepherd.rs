@@ -19,11 +19,12 @@
 //! plain JSON file, so the main window can hand work over by editing it.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use anima_engine_rs::control::{ControlState, write_marker};
+use anima_engine_rs::log;
 use anima_engine_rs::paths;
 use anima_engine_rs::shepherd::{self, Action, Registry, Supervisor};
 
@@ -214,7 +215,11 @@ fn prune(dry_run: bool, backup: bool) -> Result<(), String> {
         for path in [&registry_path, &persisted_path] {
             let target = PathBuf::from(format!("{}.before-prune-{stamp}", path.display()));
             if let Err(error) = std::fs::copy(path, &target) {
-                eprintln!("[shepherd] could not back up {}: {error}", path.display());
+                log::event(
+                    log::Level::Info,
+                    "shepherd.prune.backup_failed",
+                    &[("path", &path.display()), ("error", &error)],
+                );
             }
         }
         // One pair is enough: the rest are the same two files from earlier runs.
@@ -247,7 +252,11 @@ fn prune(dry_run: bool, backup: bool) -> Result<(), String> {
     for path in &files {
         match std::fs::remove_file(path) {
             Ok(()) => removed += 1,
-            Err(error) => eprintln!("[shepherd] could not remove {}: {error}", path.display()),
+            Err(error) => log::event(
+                log::Level::Info,
+                "shepherd.prune.remove_failed",
+                &[("path", &path.display()), ("error", &error)],
+            ),
         }
     }
     println!("removed {removed} file(s) and {references} reference(s)");
@@ -472,9 +481,7 @@ impl ksni::Tray for ShepherdTray {
                             activate: Box::new(move |_: &mut Self| {
                                 let mut registry = Registry::load(&registry_path);
                                 registry.enable(&animation);
-                                if let Err(error) = registry.save(&registry_path) {
-                                    eprintln!("[shepherd] registry write failed: {error}");
-                                }
+                                save_registry(&registry, &registry_path);
                             }),
                             ..Default::default()
                         }));
@@ -488,9 +495,7 @@ impl ksni::Tray for ShepherdTray {
                             checked: !state.hidden,
                             activate: Box::new(move |_: &mut Self| {
                                 let next = ControlState::load(&toggle).toggle_hidden();
-                                if let Err(error) = next.save(&toggle) {
-                                    eprintln!("[shepherd] tray write failed: {error}");
-                                }
+                                save_control(&next, &toggle);
                             }),
                             ..Default::default()
                         }));
@@ -498,9 +503,7 @@ impl ksni::Tray for ShepherdTray {
                             label: "Quit this overlay".into(),
                             activate: Box::new(move |_: &mut Self| {
                                 let next = ControlState::load(&path).request_quit();
-                                if let Err(error) = next.save(&path) {
-                                    eprintln!("[shepherd] tray write failed: {error}");
-                                }
+                                save_control(&next, &path);
                             }),
                             ..Default::default()
                         }));
@@ -513,9 +516,7 @@ impl ksni::Tray for ShepherdTray {
                             activate: Box::new(move |_: &mut Self| {
                                 let mut registry = Registry::load(&registry_path);
                                 registry.disable(&animation);
-                                if let Err(error) = registry.save(&registry_path) {
-                                    eprintln!("[shepherd] registry write failed: {error}");
-                                }
+                                save_registry(&registry, &registry_path);
                             }),
                             ..Default::default()
                         }));
@@ -529,9 +530,7 @@ impl ksni::Tray for ShepherdTray {
                         label: "Quit this overlay".into(),
                         activate: Box::new(move |_: &mut Self| {
                             let next = ControlState::load(&quit).request_quit();
-                            if let Err(error) = next.save(&quit) {
-                                eprintln!("[shepherd] tray write failed: {error}");
-                            }
+                            save_control(&next, &quit);
                         }),
                         ..Default::default()
                     }));
@@ -561,7 +560,11 @@ impl ksni::Tray for ShepherdTray {
                     label: "Open main window".into(),
                     activate: Box::new(move |_: &mut Self| {
                         if let Err(error) = std::process::Command::new(&studio).spawn() {
-                            eprintln!("[shepherd] could not open {}: {error}", studio.display());
+                            log::event(
+                                log::Level::Info,
+                                "shepherd.studio.open_failed",
+                                &[("studio", &studio.display()), ("error", &error)],
+                            );
                         }
                     }),
                     ..Default::default()
@@ -591,10 +594,12 @@ fn spawn_tray(registry_path: PathBuf) -> Option<ksni::blocking::Handle<ShepherdT
         studio: sibling_binary("anima-studio"),
     };
     match &tray.studio {
-        Some(studio) => eprintln!("[shepherd] main window: {}", studio.display()),
-        None => eprintln!(
-            "[shepherd] main window not found — build with --features studio or install it"
+        Some(studio) => log::event(
+            log::Level::Info,
+            "shepherd.studio",
+            &[("path", &studio.display())],
         ),
+        None => log::event(log::Level::Info, "shepherd.studio.not_found", &[]),
     }
     match tray
         .disable_dbus_name(false)
@@ -602,11 +607,11 @@ fn spawn_tray(registry_path: PathBuf) -> Option<ksni::blocking::Handle<ShepherdT
         .spawn()
     {
         Ok(handle) => {
-            eprintln!("[shepherd] tray registered (StatusNotifierItem)");
+            log::event(log::Level::Info, "shepherd.tray.registered", &[]);
             Some(handle)
         }
         Err(error) => {
-            eprintln!("[shepherd] tray unavailable (no StatusNotifierWatcher?): {error}");
+            log::failure("shepherd.tray.unavailable", &error);
             None
         }
     }
@@ -632,21 +637,39 @@ fn sibling_binary(name: &str) -> Option<PathBuf> {
     anima_engine_rs::steamcmd::find_in_path(name)
 }
 
+/// Saves the supervision registry, saying so if it fails. Every tray action that changes supervision has this
+/// shape, so the message lives here rather than in five copies of the same three lines.
+fn save_registry(registry: &Registry, path: &Path) {
+    if let Err(error) = registry.save(path) {
+        log::failure("shepherd.registry.write_failed", &error);
+    }
+}
+
+/// Writes one overlay's control file, the way the tray's visibility and quit actions do.
+fn save_control(state: &ControlState, path: &Path) {
+    if let Err(error) = state.save(path) {
+        log::failure("shepherd.control.write_failed", &error);
+    }
+}
+
 fn supervise(once: bool) -> ExitCode {
     let Some(overlay) = overlay_binary() else {
         eprintln!("anima-shepherd: anima-overlay not found — build or install it first");
         return ExitCode::FAILURE;
     };
     if let Err(error) = write_marker(&shepherd::marker_path(), "anima-shepherd") {
-        eprintln!("anima-shepherd: could not announce liveness: {error}");
+        log::failure("shepherd.liveness.announce_failed", &error);
     }
 
     let registry_path = shepherd::registry_path();
     let mut supervisor = Supervisor::new(registry_path.clone(), Registry::load(&registry_path));
-    eprintln!(
-        "[shepherd] {} animation(s) wanted, overlay {}",
-        supervisor.registry().wanted().count(),
-        overlay.display()
+    log::event(
+        log::Level::Info,
+        "shepherd.starting",
+        &[
+            ("wanted", &supervisor.registry().wanted().count()),
+            ("overlay", &overlay.display()),
+        ],
     );
 
     // One icon for all of them; a single pass (`--once`) does not need one.
@@ -663,7 +686,7 @@ fn supervise(once: bool) -> ExitCode {
         let registry = registry_path.clone();
         std::thread::spawn(move || {
             if let Err(error) = anima_engine_rs::dbus_intent::serve(registry) {
-                eprintln!("[shepherd] D-Bus intent unavailable: {error}");
+                log::failure("shepherd.dbus.unavailable", &error);
             }
         });
     }
@@ -678,12 +701,20 @@ fn supervise(once: bool) -> ExitCode {
         let now = Instant::now();
         children.retain(|animation, child| match child.try_wait() {
             Ok(Some(status)) => {
-                eprintln!("[shepherd] {animation} exited ({status})");
+                log::event(
+                    log::Level::Info,
+                    "shepherd.exited",
+                    &[("animation", &animation), ("status", &status)],
+                );
                 false
             }
             Ok(None) => true,
             Err(error) => {
-                eprintln!("[shepherd] could not wait for {animation}: {error}");
+                log::event(
+                    log::Level::Info,
+                    "shepherd.wait_failed",
+                    &[("animation", &animation), ("error", &error)],
+                );
                 false
             }
         });
@@ -699,16 +730,28 @@ fn supervise(once: bool) -> ExitCode {
         });
         for action in &actions {
             match action {
-                Action::Started(path) => eprintln!("[shepherd] started {path}"),
+                Action::Started(path) => {
+                    log::event(log::Level::Info, "shepherd.started", &[("path", &path)])
+                }
                 Action::Exited { path, failures } => {
-                    eprintln!("[shepherd] {path} exited early ({failures} time(s))");
+                    log::event(
+                        log::Level::Info,
+                        "shepherd.exited_early",
+                        &[("path", &path), ("failures", &failures)],
+                    );
                 }
                 Action::SpawnFailed { path, error } => {
-                    eprintln!("[shepherd] could not start {path}: {error}");
+                    log::event(
+                        log::Level::Info,
+                        "shepherd.start_failed",
+                        &[("path", &path), ("error", &error)],
+                    );
                 }
                 Action::StoppedOnPurpose(path) => {
-                    eprintln!(
-                        "[shepherd] {path} was quit on purpose; not restarting (supervision off)"
+                    log::event(
+                        log::Level::Info,
+                        "shepherd.stopped_on_purpose",
+                        &[("path", &path)],
                     );
                 }
             }
@@ -719,7 +762,11 @@ fn supervise(once: bool) -> ExitCode {
             last_reap = now;
             for marker in shepherd::stale_markers() {
                 if let Err(error) = std::fs::remove_file(&marker) {
-                    eprintln!("[shepherd] could not remove {}: {error}", marker.display());
+                    log::event(
+                        log::Level::Info,
+                        "shepherd.marker.remove_failed",
+                        &[("marker", &marker.display()), ("error", &error)],
+                    );
                 }
             }
         }

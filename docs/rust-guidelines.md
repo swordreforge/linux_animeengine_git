@@ -41,7 +41,7 @@ should be re-measured rather than trusted.
 
 | | Do | Don't |
 |---|---|---|
-| **M-LOG-NOT-PRINT** | Emit diagnostics through `log` (`src/log.rs`): an event name and named fields, one line, on stderr, with `ANIMA_LOG=off\|info\|debug` choosing how much of it a user sees. CLI binaries whose stdout *is* the interface (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`) keep printing | `println!`/`eprintln!` in a GUI or daemon, which always prints and cannot be turned down. *(`anima-overlay` is finished — all 50 of its sites; the shepherd's 46 and the studio's 34 remain)* |
+| **M-LOG-NOT-PRINT** | Emit diagnostics through `log` (`src/log.rs`): an event name and named fields, one line, on stderr, with `ANIMA_LOG=off\|info\|debug` choosing how much of it a user sees. Two things stay outside it: a `println!` to stdout where that stdout *is* the interface (`anima-workshop`, `anima-i18n`, `anima-overlay-ctl`, and the shepherd's `status`, `list`, `prune`), and a fatal "cannot start" message, which a log level should not be able to hide | `println!`/`eprintln!` for anything a user can run without. *(the overlay's 50 sites and the shepherd's 22 are moved; the studio's 34 remain)* |
 | **M-LOG-STRUCTURED** | One event per line with named fields, so it can be grepped and parsed: `overlay.instance.restored x=100 y=200 scale=100 mode=Opaque` | A sentence with interpolated values, which needs a regular expression to read back |
 | **M-LOG-OVERHEAD** | Keep a logging call off the per-frame path, or guard it | Formatting a string every frame and throwing it away |
 
@@ -149,8 +149,8 @@ benchmark are kept, off by default, so that costs one build.
 
 ## Outstanding, in the order worth doing
 
-1. Move the console output in `anima-shepherd.rs` (46 sites) and `anima-studio.rs` (34) onto `log`;
-   `anima-overlay` is done. `examples/log_events.rs` shows the format without needing a compositor.
+1. Move `anima-studio.rs`'s 34 console sites onto `log`; the overlay and the shepherd are done.
+   `examples/log_events.rs` shows the format without needing a compositor.
 2. `src/ai/` into its own crate, which means introducing a workspace. `anim/mod.rs`, at 1540 lines with a
    77-line maximum function, is the separate case: it wants splitting by subject, not by function.
 3. One benchmark for the overlay's frame path and one for the AI batch, before optimizing either.
