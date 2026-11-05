@@ -29,18 +29,52 @@ re-walk that class of finding.
 
 ## Build configuration
 
-The book's closing line on this chapter is "Benchmark all changes, one at a time", and that is the status of
-almost every row here: this workspace has **no `[profile.release]` at all** (the root `Cargo.toml` and
-`crates/anima-engine-rs/Cargo.toml` carry only `[features]` and the default profile), so every runtime-speed
-flag the chapter offers is a candidate, none is measured, and none is set.
+The book's closing line on this chapter is "Benchmark all changes, one at a time". One block of them is now set
+and measured, together rather than one at a time, which is why the attribution below is a plan rather than a
+result.
+
+Commit `3470bab` added a `[profile.release]` at the workspace root — the only place Cargo reads profile settings
+— holding `opt-level = 3`, `lto = "fat"`, `codegen-units = 1` (for this crate *and*, via
+`[profile.release.package."*"]`, for the dependencies), `panic = "abort"`, and the size and debug flags. The
+dependencies are at `opt-level = 3` rather than the `"z"` that usually accompanies this profile: `"z"` optimizes
+the crates we do not control for *size*, which is the opposite of what the block is for.
+
+**Measured, with the fifty-round bench, nothing else changed:**
+
+| | before, no profile | after |
+|---|---|---|
+| step 1 | 1.438 ms per rebuild, 28.77 ms/s | **0.914 ms, 18.29 ms/s** |
+| step 2 | 0.365 ms, 7.29 ms/s | **0.234 ms, 4.69 ms/s** |
+| rectangles | 117 mean / 127 worst, 59 / 63 | identical |
+
+**36 % off both steps, output byte-identical.** It is the one change in this audit that is unambiguously a win:
+two independent baseline runs gave 1.437 and 1.438 ms, so the bench reproduces to a tenth of a percent and 36 %
+is not a noise-floor argument — which is more than can be said for the 2.1 % claimed and then withdrawn earlier
+in this document.
+
+**But it is unattributed**, five changes at once. To attribute it: start from no profile and add one flag per
+rebuild, each about two minutes. The leading candidates are `lto = "fat"` and `codegen-units = 1`, the two the
+book puts at "10–20 %" and which were measured at 36 % — plausibly because every call in the scan's inner loop,
+`alpha_rects_step` → `alpha_at_unit` → `alpha_at`, crosses a crate boundary, and fat LTO is what lets those
+inline. Which also means the `#[inline]` on the first two is probably subsumed now; it is left in until that is
+measured rather than assumed.
+
+**Two costs, both real.** The example alone took `real 1m50s` and `user 9m59s` to rebuild, so a five-binary
+release build is longer — the dev profile is untouched, which is what a working loop uses. And `strip = true`
+with `panic = "abort"` makes a release backtrace poorer than it was, which the book warns about in the same
+chapter.
+
+**Every other number in this document and in `docs/rust-guidelines.md` was measured before this profile
+existed.** They are lower bounds on what the code does now — 36 % lower-bound on the two paths they describe —
+and should be re-taken before being quoted again.
 
 | | Do | Don't |
 |---|---|---|
 | **Release build** | Run the shipped binaries and the benchmarks with `--release`; the dev profile omits the optimizations every number in `docs/rust-guidelines.md` assumes. `examples/frame_bench.rs:4` prints the release invocation in its own header | Compare a dev number against a release one |
-| **`codegen-units = 1`** | Try it and re-time `frame_bench` before/after if you want it. **Unmeasured** — no `[profile.release]` exists to hold it | Set it because the book says "one" improves runtime speed, without a before/after on this machine |
-| **`lto = "thin" \| "fat"`** | Same treatment: the book's "10–20 % or more" is about other programs. **Unmeasured** | Assume a percentage from the book lands on a wgpu/iced desktop binary |
+| **`codegen-units = 1`** | Set. Measured only **as part of the block above** — 36 % together with the rest, unattributed. *Take:* one rebuild from the no-profile baseline. *Measure:* the fifty-round bench | Credit it with the 36 % |
+| **`lto = "thin" \| "fat"`** | Set to `"fat"`. Same standing: measured only inside the block, and the likeliest source of most of it because the hot loop crosses a crate boundary. *Take:* a baseline with `lto` off and everything else as it is. *Measure:* the same bench | Assume the book's "10–20 %" is the number here; it was 36 % |
 | **`-C target-cpu=native`** | — (deliberately not done) | Target a CPU we do not know. `docs/rust-guidelines.md`'s *Deliberately not applicable* and `M-TARGET-CPU` already settled this: a desktop binary ships to unknown CPUs, so the baseline target is correct, and portability is the cost the book warns about |
-| **`panic = "abort"`** | It is *eligible*: neither crate calls `catch_unwind` (grep: none) and `unwrap`/`expect` is the house style, and the book's condition is precisely "if you do not need to unwind". **Unmeasured** — not set anywhere | Set it without checking a dependency does not rely on unwinding |
+| **`panic = "abort"`** | Set, and *eligible* by the book's own condition: neither crate calls `catch_unwind` (grep: none) and `unwrap`/`expect` is the house style. **Unmeasured individually** | Set it and forget the second half: with `strip = true` it is what makes a release backtrace poorer than it was |
 | **Faster linker (`lld`/`mold`)** | Nothing to do: the book notes `lld` has been the Linux default since Rust 1.90, and this machine builds with rustc 1.99.1 — the flag would be a no-op | Add `-C link-arg=-fuse-ld=` for a compile-time win the default already gives |
 | **PGO / BOLT** | Only if a profile ever shows the binary is hot and a training pass is possible; the book also notes PGO is incompatible with `cargo install` distribution. **Unmeasured**; no `cargo-pgo` in the tree | Adopt it for the book's "10 % or more" |
 | **Dev-profile `debug`** | Consider `[profile.dev] debug = false` if dev builds feel slow; the book says 20–40 % off *their* builds. **Unmeasured** | Set it and then be surprised that stack traces lose lines |
