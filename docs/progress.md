@@ -148,6 +148,7 @@ Interaction and control:
   actually has to decide, the ones that do not apply and why, and the outstanding
   five in the order worth doing.
 - `docs/rust-performance.md` — the same code read against *The Rust Performance
+- [ai-performance.md](ai-performance.md) — what the AI removal costs per frame, the four explanations that the profile disproved, and the int8 measurements that were kept and rejected.
   Book*, in the same do/don't shape: rows by topic with the `file:line` each one
   touches, the techniques that do not fit an application, the measured decisions
   against (mimalloc, the AI stages, the region scan), the outstanding small items
