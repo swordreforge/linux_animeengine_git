@@ -214,7 +214,8 @@ It is faster on many small short-lived allocations and on cross-thread contentio
 which is what this program's per-frame work is. What settles it is the arithmetic, not the ratios: the
 small-object win is 2.5 ms over 50,000 allocations, about **50 ns each**, so a frame making a hundred of them
 saves **5 µs** of a 16.7 ms budget, while the same frame is dominated by the allocation mimalloc is slower at.
-The `mimalloc` feature and the benchmark are kept, off by default (`crates/anima-engine-rs/Cargo.toml:33`); the
+The `mimalloc` feature and the benchmark are **gone**, and so is the ability to re-run this from
+the tree without putting them back; the
 studio's Iced element tree is the shape mimalloc is *supposed* to win and `alloc_bench` does not measure it — if
 a profile ever points there, run `alloc_bench --features mimalloc` and time the window, which costs one build.
 
@@ -242,6 +243,42 @@ reads **118 960 kB** as `VmRSS` but **48 267 kB** as `Pss` (`131 924` / `37 554`
 figure is the same story: two live overlays read **0.7 %**, which matched the raw `drm-engine-*` counters
 (**0.77 %**) over the same interval (commit `f1477bd`).
 
+## Measured: the frame texture, the frames, and the cold start
+
+Four decisions from one Workshop clip — 1200x900, 959 frames, 249 MB on disk.
+
+**The texture holds one frame, not the animation.** The overlay built a `frame_count`-layer array texture whenever
+the frames fit under a 256 MiB budget and the device's layer limit, spending the animation's whole memory to save
+one upload per frame. The per-frame path was already complete, so the array path is gone: `layers` is always 1 and
+the frame that is showing is re-uploaded when the index changes. Removing it also removed an `adapter.limits()`
+mistake that panicked on a 331-frame clip: a device built from default `required_limits` accepts fewer layers than
+its adapter advertises, so the guard passed and the validation failed at the number it had just approved.
+
+**Uploading a frame is not worth buffering.** `Queue::write_texture` of about 800 KiB of BC7 blocks, 275 samples:
+minimum 190 µs, **median 288 µs**, p95 383 µs, worst 1448 µs. Against a 41.7 ms frame that is **0.7 %**, so one
+buffer is right and a second would buy nothing.
+
+**The decode cap was already doing most of the work, and the frames still had to go.** At its 1 GiB default,
+`max_bytes` decimates 959 frames to 240 *before* the overlay sees them, so it held 753.4 MiB rather than 3.86 GiB.
+The hit test and the region scan only ask whether alpha is at least 25, and both reach it through `alpha_at`, so
+`Frame` carries one bit per pixel and the pixels are released once the BC7 encoder — the last reader — is done:
+**753.4 MiB → 18 MiB of masks**, with hit-testing unchanged because the mask is built from the same threshold.
+
+**Returning memory to the allocator is not returning it to the kernel.** After the shrink, RSS sat at **644.6 MiB**
+for twenty-four seconds, steady to a tenth of a megabyte. `malloc_trim(0)` took it to **322.1 MiB**, of which 188.3
+is the BC7 blocks that are still being uploaded from — so the floor for this clip is the blocks plus the texture, not
+the frames.
+
+**The cold start was the encoder, not the decoder.** 5.44 s to decode, 61.52 s to encode 240 frames — the opposite
+of the guess: APNG frames are deltas and cannot be decoded in parallel, while `encode` is a pure function of one
+frame. `std::thread::scope` over `available_parallelism()` chunks: **61.52 s → 5.86 s, 10.5x** on 22 cores, bounded
+by memory bandwidth rather than core count. The cold start goes from about **67 s to 11.4 s**.
+
+Three of these were only visible by running the thing: the shrink never fired (its trigger was the encoder thread,
+which does not start on a cache hit), a run aborted on a division by zero (the placeholder lost `frame_count`), and
+it then re-ran every frame (`freed_mib=0.0`, 24 times a second). Compile, clippy and the test suite were green
+throughout.
+
 ## Outstanding, in the order worth doing
 
 Cheapest first. Each says what it would take and what would have to be measured to accept it.
@@ -256,8 +293,9 @@ Cheapest first. Each says what it would take and what would have to be measured 
    *Measure:* Cachegrind to see whether inlining actually changed, plus `frame_bench`. The book warns the effect
    can be zero or negative, so this is a try, not a fix.
 4. **Try the build-configuration flags, one at a time, against `frame_bench`** — `codegen-units = 1`, then
-   `lto = "thin"`, then `panic = "abort"`. *Take:* a `[profile.release]` in the root `Cargo.toml` (none exists
-   today). *Measure:* `frame_bench` before and after each, changing one flag per build, as the book's summary
+   `lto = "thin"`, then `panic = "abort"`. *Done:* the root `Cargo.toml` has a `[profile.release]` now
+   (`lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`), measured at **−36 %** on the region
+   scan; the individual flags were not separated. *Measure:* `frame_bench` before and after each, changing one flag per build, as the book's summary
    says. Accept each on its own number, not on the chapter's.
 5. **Only if a profile ever shows the window:** measure the studio's redraw, where the 55 clones and the Iced
    element tree live. *Take:* a `perf` run of `cargo build --features studio` (or the `mimalloc` feature, re-run

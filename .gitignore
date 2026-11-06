@@ -9,3 +9,10 @@ packaging/flatpak/.flatpak-builder/
 # legitimately tracks gifs and a blanket rule would quietly stop adding them.
 生成视频*.gif
 animation.gif
+
+# makepkg artefacts: downloaded sources and built packages are not source
+packaging/*.tar.gz
+packaging/*.tar.xz
+packaging/*.pkg.tar.zst
+packaging/src/
+packaging/pkg/

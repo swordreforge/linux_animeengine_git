@@ -1,0 +1,52 @@
+# One workspace, two crates, both under `crates/`: the engine — its library and five binaries — and the AI
+# background removal. The split is worth it for reasons that are measurable rather than aesthetic: `src/ai`
+# referenced nothing else in the library, and it was the sole reason this tree depended on ONNX Runtime,
+# `ureq` and `md-5`, and therefore on a newer toolchain than the rest needs.
+[workspace]
+resolver = "3"
+members = ["crates/anima-ai", "crates/anima-engine-rs"]
+
+[workspace.package]
+version = "0.1.2"
+edition = "2024"
+license = "MIT"
+
+# Dependencies that more than one crate uses, or that cross the workspace boundary. A dependency with a single
+# consumer stays in that crate until a second one appears.
+[workspace.dependencies]
+anima-ai = { path = "crates/anima-ai", version = "0.1.0" }
+image = { version = "0.25", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+
+# Runtime speed, at the cost of build time, binary size and backtraces. `docs/rust-performance.md` lists every
+# one of these as unmeasured; this is the profile to measure them with, one flag at a time, against
+# `examples/frame_bench.rs` with its fifty rounds. Two notes kept beside the values:
+#
+# `panic = "abort"` and `strip = true` together are why a release backtrace is poorer than it was. That is the
+# trade; `docs/rust-performance.md` records it.
+#
+# The dependencies are built for speed as well, not for size. An `opt-level = "z"` there is the common
+# companion to this profile and would be the wrong one here: it optimizes the crates we do not control for
+# *size*, which is the opposite of what this profile is for.
+[profile.release]
+opt-level = 3
+lto = "fat"
+rpath = false
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+debug = false
+strip = true
+debug-assertions = false
+incremental = false
+
+[profile.release.package."*"]
+opt-level = 3
+codegen-units = 1
+strip = true
+debug = false
+debug-assertions = false
+overflow-checks = false

@@ -1,0 +1,14 @@
+[Unit]
+Description=AnimaEngine shepherd — supervises the desktop overlays
+# A user unit, because the shepherd talks to the session's compositor and to the user's Steam library.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/anima-shepherd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
