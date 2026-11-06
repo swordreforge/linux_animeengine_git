@@ -87,7 +87,20 @@ impl Animation {
     /// the encoded blocks instead. The mask keeps hit-testing exact at one bit per pixel, so a
     /// 1200x900x959 clip drops from 4.13 GiB of frames to 0.13 GiB.
     pub fn shrink_to_alpha(&mut self) -> u64 {
+        self.build_alpha_bits();
         let mut freed = 0;
+        for frame in &mut self.frames {
+            freed += frame.rgba.len() as u64;
+            frame.rgba = Vec::new();
+        }
+        freed
+    }
+
+    /// Fill in every frame's one-bit alpha mask, leaving the pixels alone.
+    ///
+    /// Cheap enough to run at load time and worth it there: [`InkBox::scan`] walks every pixel of every sampled
+    /// frame, and reading the mask is a byte load and a shift where `alpha_mask` allocated a megabyte per frame.
+    pub fn build_alpha_bits(&mut self) {
         for frame in &mut self.frames {
             if !frame.alpha_bits.is_empty() {
                 continue;
@@ -99,10 +112,7 @@ impl Animation {
                 }
             }
             frame.alpha_bits = bits;
-            freed += frame.rgba.len() as u64;
-            frame.rgba = Vec::new();
         }
-        freed
     }
 }
 
@@ -128,10 +138,23 @@ impl InkBox {
 
         let mut index = 0usize;
         while index < animation.frames.len() {
-            let alpha = animation.frames[index].alpha_mask();
+            let frame = &animation.frames[index];
+            let masked = !frame.alpha_bits.is_empty();
             for y in 0..height {
                 for x in 0..width {
-                    if alpha[(y * width + x) as usize] < VISIBLE_ALPHA {
+                    let pixel = (y * width + x) as usize;
+                    let visible = if masked {
+                        frame
+                            .alpha_bits
+                            .get(pixel / 8)
+                            .is_some_and(|byte| byte & (1 << (pixel % 8)) != 0)
+                    } else {
+                        frame
+                            .rgba
+                            .get(pixel * 4 + 3)
+                            .is_some_and(|a| *a >= VISIBLE_ALPHA)
+                    };
+                    if !visible {
                         continue;
                     }
                     found = Some(match found {

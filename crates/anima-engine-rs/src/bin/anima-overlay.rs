@@ -1307,7 +1307,8 @@ unsafe extern "C" {
 /// teto234, 73% of bochi455's canvas), and the overlay clamps against the whole
 /// canvas — so without this the art can never reach a screen edge. Cropping also
 /// shrinks the texture, the input-region scan and GPU memory.
-fn crop_to_ink(animation: Animation) -> (Animation, (u32, u32)) {
+fn crop_to_ink(mut animation: Animation) -> (Animation, (u32, u32)) {
+    animation.build_alpha_bits();
     let canvas = (animation.width, animation.height);
     let step = if animation.frames.len() > 200 { 2 } else { 1 };
     let Some(ink) = anima_engine_rs::anim::InkBox::scan(&animation, step) else {
