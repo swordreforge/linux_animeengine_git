@@ -1136,6 +1136,10 @@ fn upload_frame(queue: &wgpu::Queue, frames: &Frames, index: usize, layer: u32) 
 /// First run (or reload) for a file without a BC7 sidecar: encode one in the background
 /// while the RGBA path plays. A later reload uploads the blocks directly.
 #[cfg(feature = "bc7")]
+/// Set by the BC7 encoder when it has finished reading every frame's pixels. Consumed once by the main
+/// loop, and only when this run holds usable blocks — see the guard in `shrink_frames`.
+static BC7_ENCODED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn spawn_bc7_encode(
     path: Option<&std::path::Path>,
     animation: &Arc<Animation>,
@@ -1188,7 +1192,40 @@ fn spawn_bc7_encode(
             ),
             Err(err) => log::failure("overlay.bc7.write_failed", &err),
         }
+        BC7_ENCODED.store(true, std::sync::atomic::Ordering::Release);
     });
+}
+
+/// Reduce every frame to its alpha mask once the BC7 encoder has finished with the pixels.
+///
+/// The encoder is the last reader: `upload_frame` uses the blocks when it has them, the hit test and the ink
+/// scan have already run, and a `bc7` build never writes an RGBA cache entry. `Arc::get_mut` needs the only
+/// reference, so the copy held by `frames` becomes an empty placeholder first — cloning the animation would
+/// copy the whole allocation being freed. The `blocks_usable` guard keeps a first run intact: there the
+/// blocks live only in the encoder thread until the next start reads them back, so the pixels are still
+/// needed and shrinking would render a black frame.
+fn shrink_frames(frames: &mut Frames, state: &mut OverlayState) {
+    if !BC7_ENCODED.swap(false, std::sync::atomic::Ordering::Acquire) || !frames.blocks_usable {
+        return;
+    }
+    let (width, height) = (frames.animation.width, frames.animation.height);
+    frames.animation = Arc::new(Animation {
+        width,
+        height,
+        frames: Vec::new(),
+    });
+    let Some(animation) = Arc::get_mut(&mut state.animation) else {
+        return;
+    };
+    let freed = animation.shrink_to_alpha();
+    log::event(
+        log::Level::Info,
+        "overlay.shrink",
+        &[(
+            "freed_mib",
+            &format!("{:.1}", freed as f64 / (1024.0 * 1024.0)),
+        )],
+    );
 }
 
 /// Crop the author's transparent padding away, reporting where the art started.
@@ -2398,8 +2435,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         uniform,
         bind_group_layout,
     } = gpu.clone();
-    // --- frame storage, as a builder: BC7 blocks when we have them and the GPU takes
-    //     them, else the whole RGBA array if it fits, else one re-uploaded layer ---
+    // --- frame storage: BC7 blocks when available, else decoded RGBA, one layer either way ---
     let mut frames = frames::build(
         &gpu,
         Loaded {
@@ -2432,6 +2468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut hot_reload = HotReload::new(path.as_deref());
 
     while !state.closed {
+        shrink_frames(&mut frames, &mut state);
         // Snapshot before dispatch: every Motion in this batch shares one base.
         state.frame_margin_left = state.margin_left;
         state.frame_margin_top = state.margin_top;
