@@ -1203,7 +1203,13 @@ fn shrink_frames(frames: &mut Frames, state: &mut OverlayState) {
     // Nothing to do twice, and nothing to do when this run has no blocks in memory: on a first run they
     // exist only inside the encoder thread, which writes them to disk, so `upload_frame` still needs the
     // pixels until the next start reads them back. Shrinking then would render a black frame.
-    if frames.animation.frames.is_empty() || !frames.blocks_usable {
+    if frames
+        .animation
+        .frames
+        .first()
+        .is_none_or(|frame| frame.rgba.is_empty())
+        || !frames.blocks_usable
+    {
         return;
     }
     // The placeholder has to keep the frame *count*: the loop advances `index` modulo `frame_count()`, and
