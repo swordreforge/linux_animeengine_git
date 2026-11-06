@@ -1910,7 +1910,15 @@ fn apply_scale(state: &mut OverlayState, percent: u32) {
 /// unmapping it: the surface — and therefore our event loop, tray and pointer
 /// handling — stays alive, which Wayland needs, since an unmapped surface cannot
 /// be brought back.
-fn apply_hidden(state: &mut OverlayState, hidden: bool) {
+fn apply_hidden(
+    state: &mut OverlayState,
+    hidden: bool,
+    gpu: (
+        &wgpu::Device,
+        &wgpu::Surface<'static>,
+        &mut wgpu::SurfaceConfiguration,
+    ),
+) {
     if state.hidden == hidden {
         return;
     }
@@ -1925,6 +1933,13 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
     state.desired_size = (width, height);
     state.layer_surface.set_size(width, height);
     state.surface.commit();
+    // `set_size` only asks the compositor, and on Wayland the new configure arrives with a frame — which a
+    // hidden overlay never presents. The surface therefore kept its old size and the last full-size frame
+    // stayed on screen, frozen. Resizing the swapchain here is what makes the 1x1 real.
+    let (device, wgpu_surface, config) = gpu;
+    config.width = width.max(1);
+    config.height = height.max(1);
+    wgpu_surface.configure(device, config);
     state.applied_rects.clear();
     log::event(
         log::Level::Info,
@@ -2385,6 +2400,11 @@ fn source_stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
 /// quit, which ends the turn early — the loop said `continue` here, and a function cannot.
 fn poll_control(
     // The binding, not the reference, has to be mutable: the body reborrows it several times.
+    gpu: (
+        &wgpu::Device,
+        &wgpu::Surface<'static>,
+        &mut wgpu::SurfaceConfiguration,
+    ),
     state: &mut OverlayState,
     control: &mut ControlState,
     control_mtime: &mut Option<SystemTime>,
@@ -2426,7 +2446,7 @@ fn poll_control(
                 );
             }
             if control.hidden != state.hidden {
-                apply_hidden(state, control.hidden);
+                apply_hidden(state, control.hidden, gpu);
             }
             let orientation =
                 Orientation::from_degrees(control.rotation, control.flip_h, control.flip_v);
@@ -2548,7 +2568,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_hide = false;
     let mut region_index: Option<usize> = None;
     let mut hot_reload = HotReload::new(path.as_deref());
-
     while !state.closed {
         shrink_frames(&mut frames, &mut state);
         // Snapshot before dispatch: every Motion in this batch shares one base.
@@ -2613,6 +2632,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if !poll_control(
+            (&device, &wgpu_surface, &mut config),
             &mut state,
             &mut control,
             &mut control_mtime,
