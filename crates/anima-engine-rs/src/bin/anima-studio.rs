@@ -3600,8 +3600,6 @@ impl Studio {
             // Resource use is a trend over seconds, so this runs on its own clock rather than on the
             // overlay poll's: tying a chart's resolution to a constant that exists for another reason would
             // make it an accident.
-            iced::time::every(std::time::Duration::from_millis(TELEMETRY_MS))
-                .map(|_| Message::Telemetry),
             iced::time::every(std::time::Duration::from_millis(WORKSHOP_POLL_MS))
                 .map(|_| Message::PollWorkshop),
             // The floor. Everything above can fail — an event the watcher never got, an `.acf` Steam has
@@ -3609,6 +3607,15 @@ impl Studio {
             iced::time::every(std::time::Duration::from_millis(WORKSHOP_FALLBACK_MS))
                 .map(|_| Message::Refresh),
         ];
+        // Only while the tab that shows them is in front. The chart's history is a trend over seconds and it is
+        // read by one screen; polling `/proc`, the overlay's control files and the GPU counters for a window that
+        // is showing the library buys nothing. Switching back re-seeds within one tick.
+        if self.tab == Tab::Diagnostics {
+            subscriptions.push(
+                iced::time::every(std::time::Duration::from_millis(TELEMETRY_MS))
+                    .map(|_| Message::Telemetry),
+            );
+        }
         if self.animating() {
             subscriptions.push(
                 iced::time::every(std::time::Duration::from_millis(FRAME_MS)).map(Message::Frame),
