@@ -1086,6 +1086,7 @@ impl Frames {
 /// Upload one frame into the frame texture: BC7 blocks when we have usable ones,
 /// otherwise the decoded RGBA. Only writes to the texture, so `&Frames` is enough.
 fn upload_frame(queue: &wgpu::Queue, frames: &Frames, index: usize, layer: u32) {
+    let started = std::time::Instant::now();
     let texture = &frames.texture;
     let (tex_width, tex_height) = (frames.tex_width, frames.tex_height);
     let (width, height) = (frames.animation.width, frames.animation.height);
@@ -1130,6 +1131,14 @@ fn upload_frame(queue: &wgpu::Queue, frames: &Frames, index: usize, layer: u32) 
             height: size.1,
             depth_or_array_layers: 1,
         },
+    );
+    log::event(
+        log::Level::Debug,
+        "overlay.upload",
+        &[
+            ("us", &started.elapsed().as_micros()),
+            ("kb", &(size.0 as u64 * size.1 as u64 * 16 / 16 / 1024)),
+        ],
     );
 }
 
