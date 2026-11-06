@@ -1206,11 +1206,25 @@ fn shrink_frames(frames: &mut Frames, state: &mut OverlayState) {
     if frames.animation.frames.is_empty() || !frames.blocks_usable {
         return;
     }
-    let (width, height) = (frames.animation.width, frames.animation.height);
+    // The placeholder has to keep the frame *count*: the loop advances `index` modulo `frame_count()`, and
+    // the delays are what the next start re-uses if the blocks are read back early. Pixels and masks are
+    // empty, which is a few kilobytes rather than the animation.
+    let width = frames.animation.width;
+    let height = frames.animation.height;
+    let frames_meta = frames
+        .animation
+        .frames
+        .iter()
+        .map(|frame| Frame {
+            rgba: Vec::new(),
+            delay_ms: frame.delay_ms,
+            alpha_bits: Vec::new(),
+        })
+        .collect();
     frames.animation = Arc::new(Animation {
         width,
         height,
-        frames: Vec::new(),
+        frames: frames_meta,
     });
     let Some(animation) = Arc::get_mut(&mut state.animation) else {
         return;
