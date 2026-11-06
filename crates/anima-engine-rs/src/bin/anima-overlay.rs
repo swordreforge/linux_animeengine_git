@@ -1083,6 +1083,43 @@ impl Frames {
     }
 }
 
+/// Write whatever the surface should show: the frame, or nothing at all when the overlay is hidden.
+///
+/// Blanking rather than freezing matters because the surface is 1x1 by then — the single pixel it samples has to
+/// be transparent, or the compositor keeps the last full-size frame on screen.
+fn upload_current(queue: &wgpu::Queue, frames: &Frames, index: usize, hidden: bool) {
+    if hidden {
+        upload_transparent(queue, frames);
+    } else {
+        upload_frame(queue, frames, index, 0);
+    }
+}
+
+/// Blank the whole frame texture. Used when the overlay is hidden: the surface is 1x1 by then, so the single
+/// pixel it samples is transparent and nothing of the last frame is left for the compositor to show.
+fn upload_transparent(queue: &wgpu::Queue, frames: &Frames) {
+    let blank = vec![0u8; (frames.tex_width * frames.tex_height) as usize * 4];
+    queue.write_texture(
+        TexelCopyTextureInfo {
+            texture: &frames.texture,
+            mip_level: 0,
+            origin: Origin3d::ZERO,
+            aspect: TextureAspect::All,
+        },
+        &blank,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(frames.tex_width * 4),
+            rows_per_image: Some(frames.tex_height),
+        },
+        Extent3d {
+            width: frames.tex_width,
+            height: frames.tex_height,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
 /// Upload one frame into the frame texture: BC7 blocks when we have usable ones,
 /// otherwise the decoded RGBA. Only writes to the texture, so `&Frames` is enough.
 fn upload_frame(queue: &wgpu::Queue, frames: &Frames, index: usize, layer: u32) {
@@ -2659,7 +2696,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if uploaded_layer0 != index {
-            upload_frame(&queue, &frames, index, 0);
+            upload_current(&queue, &frames, index, state.hidden);
             uploaded_layer0 = index;
         }
         let layer = 0u32;
