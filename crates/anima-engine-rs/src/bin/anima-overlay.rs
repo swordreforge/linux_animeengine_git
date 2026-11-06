@@ -2392,6 +2392,7 @@ fn poll_control(
     pos_x: i32,
     pos_y: i32,
 ) -> bool {
+    let started = std::time::Instant::now();
     // Tray / portal commands arrive through the control file.
     let mtime = std::fs::metadata(control_path)
         .and_then(|m| m.modified())
@@ -2450,6 +2451,11 @@ fn poll_control(
         }
     }
 
+    log::event(
+        log::Level::Debug,
+        "overlay.poll_control",
+        &[("us", &started.elapsed().as_micros())],
+    );
     true
 }
 
