@@ -1918,7 +1918,7 @@ fn apply_hidden(state: &mut OverlayState, hidden: bool) {
     state.visual_dirty = true;
     state.region_dirty = true;
     let (width, height) = if hidden {
-        (1, 1)
+        state.desired_size
     } else {
         fit_to_output(state, scaled_size(state))
     };
@@ -2655,7 +2655,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Skip presenting when the visible content did not change (a static
         // image) or while hidden; the compositor keeps the last frame.
-        let present_now = !state.hidden
+        let present_now = (!state.hidden || state.visual_dirty)
             && (state.visual_dirty || last_presented != Some(index) || hide_now != last_hide);
         if present_now {
             // Rotation/mirror can change at runtime through the control channel.
@@ -2713,7 +2713,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pass.set_pipeline(&pipeline);
                         pass.set_bind_group(0, &frames.bind_group, &[]);
                         if !hide_now {
-                            pass.draw(0..3, 0..1);
+                            pass.draw(0..if state.hidden { 0 } else { 3 }, 0..1); // hidden: clear only
                         }
                         if !menu_verts.is_empty() {
                             pass.set_pipeline(&menu_pipeline);
