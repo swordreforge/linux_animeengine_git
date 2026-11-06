@@ -2459,6 +2459,8 @@ fn poll_control(
     true
 }
 
+// `bc7` from the `Gpu` destructuring is read only by the feature's encoder, so the other build would warn.
+#[cfg_attr(not(feature = "bc7"), allow(unused_variables))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `--no-tray` lets the shepherd own the single tray icon; the animation path is the
     // only other argument.
