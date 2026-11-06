@@ -1163,15 +1163,48 @@ fn spawn_bc7_encode(
     std::thread::spawn(move || {
         let started = Instant::now();
         let params = anima_engine_rs::bc7::Bc7Params::default();
-        let mut data = Vec::with_capacity(frames.frames.len() * frames.frame_bytes() as usize);
-        for frame in &frames.frames {
-            match anima_engine_rs::bc7::encode(&frame.rgba, frames.width, frames.height, params) {
-                Ok(blocks) => data.extend_from_slice(&blocks),
-                Err(err) => {
-                    log::failure("overlay.bc7.encode_failed", &err);
-                    return;
-                }
-            }
+        // Frames are independent and `encode` is a pure function of pixels and size, so the work splits by
+        // range. Measured before this: 240 frames of 1200x900 took 61.5 s on one thread, against 5.4 s for
+        // decoding the whole file — the encode, not the decode, is the cold start.
+        let per_block = anima_engine_rs::bc7::encoded_size(frames.width, frames.height) as usize;
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |count| count.get())
+            .clamp(1, frames.frames.len().max(1));
+        let chunk = frames.frames.len().div_ceil(threads).max(1);
+        let width = frames.width;
+        let height = frames.height;
+        let encoded: Vec<Vec<u8>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = frames
+                .frames
+                .chunks(chunk)
+                .map(|part| {
+                    scope.spawn(move || {
+                        let mut out = Vec::with_capacity(part.len() * per_block);
+                        for frame in part {
+                            match anima_engine_rs::bc7::encode(&frame.rgba, width, height, params) {
+                                Ok(blocks) => out.extend_from_slice(&blocks),
+                                Err(err) => {
+                                    log::failure("overlay.bc7.encode_failed", &err);
+                                    return None;
+                                }
+                            }
+                        }
+                        Some(out)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().ok().flatten())
+                .collect::<Option<Vec<_>>>()
+        })
+        .unwrap_or_default();
+        if encoded.is_empty() {
+            return;
+        }
+        let mut data = Vec::with_capacity(frames.frames.len() * per_block);
+        for part in encoded {
+            data.extend_from_slice(&part);
         }
         let blocks = Blocks {
             width: frames.width,
