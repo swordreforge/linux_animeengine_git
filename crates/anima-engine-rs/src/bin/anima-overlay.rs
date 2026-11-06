@@ -1394,7 +1394,11 @@ fn test_animation() -> Animation {
                 }
             }
         }
-        frames.push(Frame { rgba, delay_ms: 70 });
+        frames.push(Frame {
+            rgba,
+            delay_ms: 70,
+            alpha_bits: Vec::new(),
+        });
     }
     Animation {
         width,

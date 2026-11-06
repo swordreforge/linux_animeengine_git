@@ -32,6 +32,10 @@ pub struct Frame {
     /// `width * height * 4` bytes, row-major, straight RGBA.
     pub rgba: Vec<u8>,
     pub delay_ms: u32,
+    /// One bit per pixel, set when alpha is at or above the overlay's hit threshold. Filled by
+    /// [`Animation::shrink_to_alpha`] once every pixel reader is finished; empty means "read `rgba`",
+    /// which is what a build without the `bc7` feature keeps doing.
+    pub alpha_bits: Vec<u8>,
 }
 
 /// Delay used when a file stores none (0 ms): browsers clamp these so a GIF with
@@ -74,6 +78,31 @@ impl Animation {
 
     pub fn frame_count(&self) -> usize {
         self.frames.len()
+    }
+
+    /// Replace each frame's RGBA with a one-bit-per-pixel alpha mask and return the bytes released.
+    ///
+    /// Only valid once every reader of the pixels is finished: the hit test and [`InkBox::scan`] must have
+    /// run, and the BC7 encoder — the last reader — must have completed, after which `upload_frame` reads
+    /// the encoded blocks instead. The mask keeps hit-testing exact at one bit per pixel, so a
+    /// 1200x900x959 clip drops from 4.13 GiB of frames to 0.13 GiB.
+    pub fn shrink_to_alpha(&mut self) -> u64 {
+        let mut freed = 0;
+        for frame in &mut self.frames {
+            if !frame.alpha_bits.is_empty() {
+                continue;
+            }
+            let mut bits = vec![0u8; (frame.rgba.len() / 4).div_ceil(8)];
+            for (index, pixel) in frame.rgba.as_chunks::<4>().0.iter().enumerate() {
+                if pixel[3] >= region::VISIBLE_ALPHA {
+                    bits[index / 8] |= 1 << (index % 8);
+                }
+            }
+            frame.alpha_bits = bits;
+            freed += frame.rgba.len() as u64;
+            frame.rgba = Vec::new();
+        }
+        freed
     }
 }
 
@@ -230,6 +259,7 @@ mod tests {
 
     fn plain_frame(delay_ms: u32) -> Frame {
         Frame {
+            alpha_bits: Vec::new(),
             rgba: vec![0, 0, 0, 255],
             delay_ms,
         }
@@ -248,8 +278,13 @@ mod tests {
             width: size,
             height: size,
             frames: vec![
-                Frame { rgba, delay_ms: 30 },
                 Frame {
+                    rgba,
+                    delay_ms: 30,
+                    alpha_bits: Vec::new(),
+                },
+                Frame {
+                    alpha_bits: Vec::new(),
                     rgba: vec![0u8; (size * size * 4) as usize],
                     delay_ms: 70,
                 },
@@ -289,6 +324,7 @@ mod tests {
     fn ink_box_unions_frames_and_handles_blanks() {
         let mut animation = padded_animation(8, 2, 5);
         animation.frames.push(Frame {
+            alpha_bits: Vec::new(),
             rgba: {
                 let mut rgba = vec![0u8; 8 * 8 * 4];
                 rgba[((6 * 8 + 6) * 4) as usize + 3] = 255;
@@ -303,6 +339,7 @@ mod tests {
             width: 4,
             height: 4,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![0u8; 4 * 4 * 4],
                 delay_ms: 10,
             }],
@@ -317,7 +354,11 @@ mod tests {
         let animation = Animation {
             width: 3,
             height: 1,
-            frames: vec![Frame { rgba, delay_ms: 5 }],
+            frames: vec![Frame {
+                rgba,
+                delay_ms: 5,
+                alpha_bits: Vec::new(),
+            }],
         };
         let ink = InkBox::scan(&animation, 1).unwrap();
         assert_eq!(ink.padding((3, 1)), (1, 0, 1, 0));
@@ -696,6 +737,7 @@ mod tests {
             width: 2,
             height: 1,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![255, 0, 0, 255, 0, 255, 0, 0],
                 delay_ms: 0,
             }],
@@ -730,6 +772,7 @@ mod tests {
             width: 3,
             height: 2,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![255; 3 * 2 * 4],
                 delay_ms: 0,
             }],
@@ -741,6 +784,7 @@ mod tests {
             width: 2,
             height: 2,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 255],
                 delay_ms: 0,
             }],
@@ -755,6 +799,7 @@ mod tests {
             width: 2,
             height: 2,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![0; 2 * 2 * 4],
                 delay_ms: 0,
             }],
@@ -766,6 +811,7 @@ mod tests {
             width: 2,
             height: 1,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![255, 0, 0, 255, 0, 255, 0, 0],
                 delay_ms: 0,
             }],
@@ -777,6 +823,7 @@ mod tests {
             width: 1,
             height: 1,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![0, 0, 0, 10],
                 delay_ms: 0,
             }],
@@ -824,6 +871,7 @@ mod tests {
             width: 2,
             height: 1,
             frames: vec![Frame {
+                alpha_bits: Vec::new(),
                 rgba: vec![255, 0, 0, 255, 0, 0, 0, 0],
                 delay_ms: 0,
             }],

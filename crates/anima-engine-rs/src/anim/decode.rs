@@ -353,6 +353,7 @@ fn still(path: &Path) -> Result<Animation> {
         width: image.width(),
         height: image.height(),
         frames: vec![Frame {
+            alpha_bits: Vec::new(),
             rgba: image.into_raw(),
             delay_ms: 0,
         }],
@@ -388,6 +389,7 @@ where
 
 fn convert_frame(frame: image::Frame) -> Frame {
     Frame {
+        alpha_bits: Vec::new(),
         delay_ms: delay_ms(frame.delay()),
         rgba: frame.into_buffer().into_raw(),
     }

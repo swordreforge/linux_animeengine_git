@@ -159,6 +159,7 @@ impl SpriteFrameConfig {
         let frames = slice_sprite_sheet(sheet, self)
             .into_iter()
             .map(|frame| Frame {
+                alpha_bits: Vec::new(),
                 rgba: frame.into_raw(),
                 delay_ms: self.frame_time,
             })

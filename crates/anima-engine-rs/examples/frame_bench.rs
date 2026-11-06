@@ -71,7 +71,11 @@ fn synthetic_frame(width: u32, height: u32, seed: u32) -> Frame {
             rgba[index + 3] = (alpha * 255.0) as u8;
         }
     }
-    Frame { rgba, delay_ms: 33 }
+    Frame {
+        rgba,
+        delay_ms: 33,
+        alpha_bits: Vec::new(),
+    }
 }
 
 /// One measurement at one step: the cost of a rebuild, and the rectangle counts the policy compares with its

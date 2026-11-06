@@ -44,6 +44,7 @@ impl Animation {
                     rgba.extend_from_slice(&frame.rgba[start..start + (width * 4) as usize]);
                 }
                 Frame {
+                    alpha_bits: Vec::new(),
                     rgba,
                     delay_ms: frame.delay_ms,
                 }

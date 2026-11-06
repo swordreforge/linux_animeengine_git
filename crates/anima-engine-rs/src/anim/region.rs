@@ -25,8 +25,14 @@ impl Animation {
         let Some(frame) = self.frames.get(frame) else {
             return 0;
         };
-        let index = (y as usize * self.width as usize + x as usize) * 4 + 3;
-        frame.rgba.get(index).copied().unwrap_or(0)
+        let pixel = y as usize * self.width as usize + x as usize;
+        if frame.alpha_bits.is_empty() {
+            return frame.rgba.get(pixel * 4 + 3).copied().unwrap_or(0);
+        }
+        match frame.alpha_bits.get(pixel / 8) {
+            Some(byte) if byte & (1 << (pixel % 8)) != 0 => 255,
+            _ => 0,
+        }
     }
 
     /// Hit-test a point in surface-local coordinates, where the frame is

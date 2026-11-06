@@ -127,7 +127,11 @@ pub fn animation_from_blocks(
     for (index, &delay_ms) in delays.iter().enumerate() {
         let start = index * frame_bytes;
         let rgba = decode(&data[start..start + frame_bytes], width, height)?;
-        frames.push(Frame { rgba, delay_ms });
+        frames.push(Frame {
+            rgba,
+            delay_ms,
+            alpha_bits: Vec::new(),
+        });
     }
     Ok(Animation {
         width,

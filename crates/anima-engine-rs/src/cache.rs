@@ -356,7 +356,11 @@ fn read_entry(path: &Path) -> Result<Animation> {
     for delay_ms in delays {
         let mut rgba = vec![0u8; frame_bytes];
         decoder.read_exact(&mut rgba)?;
-        frames.push(Frame { rgba, delay_ms });
+        frames.push(Frame {
+            alpha_bits: Vec::new(),
+            rgba,
+            delay_ms,
+        });
     }
 
     Ok(Animation {
@@ -519,10 +523,12 @@ mod tests {
             height: 2,
             frames: vec![
                 Frame {
+                    alpha_bits: Vec::new(),
                     rgba: [255, 0, 0, 255].repeat(4),
                     delay_ms: 50,
                 },
                 Frame {
+                    alpha_bits: Vec::new(),
                     rgba: [0, 255, 0, 255].repeat(4),
                     delay_ms: 70,
                 },
