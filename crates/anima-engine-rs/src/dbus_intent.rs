@@ -108,7 +108,11 @@ pub fn serve(registry: impl Into<PathBuf>) -> zbus::Result<()> {
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, Intent::new(registry))?
         .build()?;
-    eprintln!("[shepherd] D-Bus intent: {BUS_NAME} {OBJECT_PATH}");
+    crate::log::event(
+        crate::log::Level::Info,
+        "shepherd.dbus",
+        &[("name", &BUS_NAME), ("path", &OBJECT_PATH)],
+    );
     loop {
         std::thread::park();
     }

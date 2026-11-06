@@ -209,7 +209,7 @@ impl Supervisor {
                 let mut cleared = state.clone();
                 cleared.quit = false;
                 if let Err(error) = cleared.save(&control) {
-                    eprintln!("[shepherd] could not clear the quit flag: {error}");
+                    crate::log::failure("shepherd.quit_flag", &error);
                 }
                 if progress.seen_running {
                     progress.seen_running = false;
@@ -219,7 +219,7 @@ impl Supervisor {
                     let mut registry = Registry::load(&self.registry_path);
                     registry.disable(&entry.path);
                     if let Err(error) = registry.save(&self.registry_path) {
-                        eprintln!("[shepherd] could not update the registry: {error}");
+                        crate::log::failure("shepherd.registry", &error);
                     }
                     if let Some(found) = self
                         .registry

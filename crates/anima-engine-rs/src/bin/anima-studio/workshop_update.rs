@@ -49,7 +49,11 @@ impl Studio {
     ) -> Task<Message> {
         if request != self.remote_request {
             // A reply to a search the user has already left.
-            eprintln!("[studio] dropping a stale Workshop reply (page {page})");
+            crate::log::event(
+                crate::log::Level::Debug,
+                "studio.workshop.stale_reply",
+                &[("page", &page)],
+            );
             return Task::none();
         }
         self.remote_page = page;
@@ -168,7 +172,11 @@ impl Studio {
         for (id, meta) in loaded {
             self.meta.insert(id, meta);
         }
-        eprintln!("[studio] metadata: {count} item(s) arrived in the batch");
+        crate::log::event(
+            crate::log::Level::Debug,
+            "studio.workshop.metadata",
+            &[("count", &count)],
+        );
         Task::none()
     }
 }
