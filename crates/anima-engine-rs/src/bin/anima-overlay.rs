@@ -1136,10 +1136,6 @@ fn upload_frame(queue: &wgpu::Queue, frames: &Frames, index: usize, layer: u32) 
 /// First run (or reload) for a file without a BC7 sidecar: encode one in the background
 /// while the RGBA path plays. A later reload uploads the blocks directly.
 #[cfg(feature = "bc7")]
-/// Set by the BC7 encoder when it has finished reading every frame's pixels. Consumed once by the main
-/// loop, and only when this run holds usable blocks — see the guard in `shrink_frames`.
-static BC7_ENCODED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 fn spawn_bc7_encode(
     path: Option<&std::path::Path>,
     animation: &Arc<Animation>,
@@ -1192,7 +1188,6 @@ fn spawn_bc7_encode(
             ),
             Err(err) => log::failure("overlay.bc7.write_failed", &err),
         }
-        BC7_ENCODED.store(true, std::sync::atomic::Ordering::Release);
     });
 }
 
@@ -1205,7 +1200,10 @@ fn spawn_bc7_encode(
 /// blocks live only in the encoder thread until the next start reads them back, so the pixels are still
 /// needed and shrinking would render a black frame.
 fn shrink_frames(frames: &mut Frames, state: &mut OverlayState) {
-    if !BC7_ENCODED.swap(false, std::sync::atomic::Ordering::Acquire) || !frames.blocks_usable {
+    // Nothing to do twice, and nothing to do when this run has no blocks in memory: on a first run they
+    // exist only inside the encoder thread, which writes them to disk, so `upload_frame` still needs the
+    // pixels until the next start reads them back. Shrinking then would render a black frame.
+    if frames.animation.frames.is_empty() || !frames.blocks_usable {
         return;
     }
     let (width, height) = (frames.animation.width, frames.animation.height);
