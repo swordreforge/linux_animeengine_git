@@ -22,7 +22,7 @@ const KNOWN: &[(&str, &str, usize, &str)] = &[
     (
         "src/bin/anima-overlay.rs",
         "main",
-        315,
+        310,
         "the overlay's startup, layout, event loop and painting in one function — the audit's step three. It \
          grew by three lines when its last console prints became structured events, which is the honest cost \
          of that change rather than new logic; the playback-loop extraction brings it down",

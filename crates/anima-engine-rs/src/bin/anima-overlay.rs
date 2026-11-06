@@ -80,10 +80,6 @@ use wgpu::{
     TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 
-/// GPU budget for a fully pre-uploaded frame array. Larger animations fall back
-/// to uploading the current frame just in time.
-const ARRAY_BUDGET: u64 = 256 * 1024 * 1024;
-
 /// Alpha value (0-255) at or above which a pixel counts as "solid" for drag.
 const ALPHA_HIT_THRESHOLD: u8 = 25;
 
@@ -1074,7 +1070,6 @@ struct Frames {
     blocks_usable: bool,
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
-    use_array: bool,
     tex_width: u32,
     tex_height: u32,
     /// `(width / tex_width, height / tex_height)`: 1:1 for RGBA, < 1 for the BC7
@@ -2394,7 +2389,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         queue,
         mut config,
         format,
-        limits: _,
         bc7,
         sampler: _,
         uniform,
@@ -2426,7 +2420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- playback loop -----------------------------------------------------
     let mut index = 0usize;
     let mut next_change = Instant::now();
-    let mut uploaded_layer0 = 0usize;
+    let mut uploaded_layer0 = usize::MAX; // no layer uploaded yet
     let mut presented: u64 = 0;
     let mut last_presented: Option<usize> = None;
     let mut last_hide = false;
@@ -2479,7 +2473,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             index = 0;
-            uploaded_layer0 = 0;
+            uploaded_layer0 = usize::MAX;
             last_presented = None;
             next_change = Instant::now();
             reapply_clamp(&mut state);
@@ -2521,15 +2515,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let layer = if frames.use_array {
-            index as u32
-        } else {
-            if uploaded_layer0 != index {
-                upload_frame(&queue, &frames, index, 0);
-                uploaded_layer0 = index;
-            }
-            0
-        };
+        if uploaded_layer0 != index {
+            upload_frame(&queue, &frames, index, 0);
+            uploaded_layer0 = index;
+        }
+        let layer = 0u32;
         let menu_verts = state.menu.vertices(state.surface_size, state.input_mode);
         if !menu_verts.is_empty() {
             queue.write_buffer(&menu_vbo, 0, bytemuck::cast_slice(&menu_verts));

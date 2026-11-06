@@ -1,5 +1,6 @@
-//! Frame storage: one texture holding the whole animation — a BC7 array, an RGBA array, or a single
-//! re-uploaded layer.
+//! Frame storage: one texture holding a **single** frame, re-uploaded as playback advances — BC7 blocks
+//! when we have usable ones, decoded RGBA otherwise. Only a `1`-layer texture is ever created, because a
+//! `frame_count`-layer array spends the whole animation's worth of memory to save one upload per frame.
 //!
 //! Moved out of `main` verbatim, from the closure that was already shaped like this function. Its captures
 //! were the whole of its interface: the device and queue, the bind group layout, the adapter's limits, and
@@ -24,13 +25,7 @@ pub(super) fn build(gpu: &Gpu, loaded: Loaded) -> Frames {
     let frame_bytes = u64::from(width) * u64::from(height) * 4;
     let total_bytes = frame_bytes * frame_count as u64;
     let block_bytes = blocks.as_ref().map_or(0, |blocks| blocks.data.len() as u64);
-    let rgba_array =
-        frame_count as u32 <= gpu.limits.max_texture_array_layers && total_bytes <= ARRAY_BUDGET;
-    let bc7_array = blocks_usable
-        && frame_count as u32 <= gpu.limits.max_texture_array_layers
-        && block_bytes <= ARRAY_BUDGET;
-    let use_array = bc7_array || rgba_array;
-    let layers = if use_array { frame_count as u32 } else { 1 };
+    let layers = 1;
     log::event(
         log::Level::Info,
         "overlay.frames",
@@ -48,14 +43,10 @@ pub(super) fn build(gpu: &Gpu, loaded: Loaded) -> Frames {
             ),
             (
                 "storage",
-                &(if bc7_array {
-                    "gpu.bc7 array texture"
-                } else if blocks_usable {
-                    "gpu.bc7 just-in-time upload"
-                } else if rgba_array {
-                    "rgba array texture"
+                &(if blocks_usable {
+                    "bc7 blocks, one layer"
                 } else {
-                    "rgba just-in-time upload"
+                    "rgba, one layer"
                 }),
             ),
             (
@@ -121,23 +112,14 @@ pub(super) fn build(gpu: &Gpu, loaded: Loaded) -> Frames {
             },
         ],
     });
-    let frames = Frames {
+    Frames {
         animation,
         blocks,
         blocks_usable,
         texture,
         bind_group,
-        use_array,
         tex_width,
         tex_height,
         scale,
-    };
-    if use_array {
-        for index in 0..frame_count {
-            upload_frame(&gpu.queue, &frames, index, index as u32);
-        }
-    } else {
-        upload_frame(&gpu.queue, &frames, 0, 0);
     }
-    frames
 }

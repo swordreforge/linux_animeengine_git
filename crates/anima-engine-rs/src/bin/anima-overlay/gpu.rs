@@ -15,7 +15,6 @@ pub(super) struct Gpu {
     pub queue: wgpu::Queue,
     pub config: SurfaceConfiguration,
     pub format: wgpu::TextureFormat,
-    pub limits: wgpu::Limits,
     pub bc7: bool,
     pub sampler: wgpu::Sampler,
     pub uniform: wgpu::Buffer,
@@ -69,7 +68,7 @@ impl Gpu {
             ],
         );
 
-        let limits = adapter.limits(); // for the size check; the struct keeps `device.limits()`, which is stricter
+        let limits = adapter.limits(); // the check below runs before a device exists
         if width > limits.max_texture_dimension_2d || height > limits.max_texture_dimension_2d {
             return Err(format!(
                 "frame {width}x{height} exceeds max texture size {}",
@@ -160,7 +159,6 @@ impl Gpu {
         Ok((
             wgpu_surface,
             Gpu {
-                limits: device.limits(),
                 device,
                 queue,
                 config,
